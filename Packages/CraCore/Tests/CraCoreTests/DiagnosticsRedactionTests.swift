@@ -23,6 +23,12 @@ struct DiagnosticsRedactionTests {
         #expect(DiagnosticsRedaction.redact(line, home: home) == kept)
     }
 
+    @Test func windowsHomeFolderBecomesTilde() {
+        let report = #"{"path":"C:\\Users\\someone\\AppData\\Local\\Cra"} C:\Users\someone\Downloads"#
+        #expect(DiagnosticsRedaction.redact(report, home: #"C:\Users\someone"#)
+            == #"{"path":"~\\AppData\\Local\\Cra"} ~\Downloads"#)
+    }
+
     @Test func homeFolderBecomesTilde() {
         let report = #"{"path":"\/Users\/someone\/Applications\/Cra.app"} /Users/someone/Library/Logs"#
         #expect(DiagnosticsRedaction.redact(report, home: home) == #"{"path":"~\/Applications\/Cra.app"} ~/Library/Logs"#)

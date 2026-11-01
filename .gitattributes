@@ -1,0 +1,4 @@
+# Test fixtures are compared byte for byte (ModelFixtureTests, the importers' parsers). Keep
+# Git from converting their line endings, which it does by default on Windows checkouts.
+Packages/CraCore/Tests/CraCoreTests/Fixtures/** -text
+Tests/Fixtures/** -text

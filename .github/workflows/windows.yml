@@ -1,0 +1,40 @@
+name: Windows
+
+# The Windows port shares Packages/CraCore with the macOS app. This job keeps it building and
+# passing its tests off Apple platforms, on Windows and (as a cheap second check) Linux.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  core-windows:
+    name: CraCore on Windows
+    runs-on: windows-2022
+    steps:
+      - uses: compnerd/gha-setup-swift@v0.5.1
+        with:
+          swift-version: swift-6.1.2-release
+          swift-build: 6.1.2-RELEASE
+
+      - uses: actions/checkout@v4
+
+      - name: Build and test CraCore
+        run: swift test --package-path Packages/CraCore
+
+  core-linux:
+    name: CraCore on Linux
+    runs-on: ubuntu-24.04
+    container: swift:6.1.2-noble
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test CraCore
+        run: swift test --package-path Packages/CraCore

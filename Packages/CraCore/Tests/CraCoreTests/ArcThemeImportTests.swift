@@ -39,7 +39,11 @@ struct ArcThemeImportTests {
 
     /// Fitted to Arc's rendering in 0.1.23; a change here changes how imported spaces look.
     @Test func vibrantLightGradient() throws {
-        let theme = try #require(Self.theme("gradientVibrantLight"))
+        var theme = try #require(Self.theme("gradientVibrantLight"))
+        // Arc stores the factor to 17 digits. Foundation off Apple platforms parses it one unit in
+        // the last place away, so compare it within that and the rest of the theme exactly.
+        #expect(abs(theme.intensity - 0.25217215013901756) < 1e-15)
+        theme.intensity = 0.25217215013901756
         #expect(theme == SpaceTheme(colors: ["#F1E58A", "#FBC67D"], intensity: 0.25217215013901756, noise: 0.35,
                                     appearance: "light", vibrant: true, accent: "#F8D558"))
     }

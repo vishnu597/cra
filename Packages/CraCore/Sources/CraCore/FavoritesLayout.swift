@@ -1,4 +1,9 @@
+// CGFloat and CGRect come from Foundation off Apple platforms (Windows, Linux).
+#if canImport(CoreGraphics)
 import CoreGraphics
+#else
+import Foundation
+#endif
 
 /// Where a space's favorite tiles go in a grid `width` points wide (the sidebar less 8 pt each side).
 ///
