@@ -4,13 +4,17 @@ import Foundation
 /// sites, not pages, and not the user.
 public enum DiagnosticsRedaction {
     /// Addresses keep their scheme and host, without a `user:password@`; the home folder becomes
-    /// `~`, also in the `\/`-escaped form JSON (crash reports) writes. The single sign-on hosts IT
+    /// `~`, also in the `\/`-escaped form JSON (crash reports) writes, and in the `\\`-escaped form
+    /// a Windows home (`C:\Users\someone`) takes in JSON. The single sign-on hosts IT
     /// allowlisted (Chromium's command line in gpu.json) name the user's employer.
     public static func redact(_ text: String, home: String) -> String {
         var s = text
         if !home.isEmpty {
             s = s.replacingOccurrences(of: home, with: "~")
                 .replacingOccurrences(of: home.replacingOccurrences(of: "/", with: #"\/"#), with: "~")
+            if home.contains("\\") {
+                s = s.replacingOccurrences(of: home.replacingOccurrences(of: "\\", with: "\\\\"), with: "~")
+            }
         }
         for (pattern, template) in [(#"\b([A-Za-z][A-Za-z0-9+.-]*://)[^/\s"'<>)\]@]*@"#, "$1"),
                                     (#"\b((?:https?|wss?|ftp|chrome-extension)://[^/\s"'<>)\]]+)[/?#][^\s"'<>)\]]*"#, "$1/…"),

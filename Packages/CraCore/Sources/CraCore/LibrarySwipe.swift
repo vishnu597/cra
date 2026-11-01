@@ -1,4 +1,9 @@
+// CGFloat and CGRect come from Foundation off Apple platforms (Windows, Linux).
+#if canImport(CoreGraphics)
 import CoreGraphics
+#else
+import Foundation
+#endif
 import Foundation
 
 /// Swiping into the Library: past the first space two fingers pull the Library in from the left,
