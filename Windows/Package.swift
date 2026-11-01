@@ -1,0 +1,86 @@
+// swift-tools-version:5.10
+import PackageDescription
+
+// The Windows shell of Cra: a WinUI 3 window (Swift/WinRT projections from The Browser
+// Company) around Chromium through CEF. Shares the models in Packages/CraCore with the
+// macOS app.
+//
+// Windows/scripts/fetch-deps.ps1 puts the dependencies in Windows/vendor:
+//   vendor/cef        CEF's Windows binary distribution, with libcef_dll_wrapper built
+//   vendor/winrt/*    swift-cwinrt, swift-uwp, swift-windowsfoundation,
+//                     swift-windowsappsdk and swift-winui at pinned commits (their
+//                     manifests refer to each other by relative path, so they sit side by side)
+let root = Context.packageDirectory
+let cefRoot = "\(root)/vendor/cef"
+let winrt = "\(root)/vendor/winrt"
+
+// The defines and runtime CEF builds its wrapper with (cmake/cef_variables.cmake), with
+// the runtime switched to /MD because Swift on Windows links the DLL runtime.
+let cefCXXFlags: [String] = [
+    "-I", cefRoot,
+    "-DWIN32", "-D_WINDOWS", "-DUNICODE", "-D_UNICODE", "-DNOMINMAX", "-DWIN32_LEAN_AND_MEAN",
+    "-D_HAS_EXCEPTIONS=0",
+]
+let cefLinkerFlags: [String] = [
+    "-L\(cefRoot)/build/libcef_dll_wrapper/Release",
+    "-L\(cefRoot)/Release",
+]
+
+let package = Package(
+    name: "CraWindows",
+    products: [
+        .executable(name: "Cra", targets: ["CraWin"]),
+        .executable(name: "CraHelper", targets: ["CraHelperWin"]),
+    ],
+    dependencies: [
+        .package(path: "../Packages/CraCore"),
+        .package(path: "vendor/winrt/swift-winui"),
+        .package(path: "vendor/winrt/swift-windowsappsdk"),
+        .package(path: "vendor/winrt/swift-windowsfoundation"),
+        .package(path: "vendor/winrt/swift-uwp"),
+    ],
+    targets: [
+        // C++ bridge to CEF with a plain C surface (include/CraCEFWin.h), the Windows
+        // counterpart of Sources/CraCEF.
+        .target(
+            name: "CraCEFWin",
+            path: "Sources/CraCEFWin",
+            publicHeadersPath: "include",
+            cxxSettings: [.unsafeFlags(cefCXXFlags)],
+            linkerSettings: [
+                .unsafeFlags(cefLinkerFlags),
+                .linkedLibrary("libcef_dll_wrapper"),
+                .linkedLibrary("libcef"),
+                .linkedLibrary("user32"),
+            ]
+        ),
+        // Every Chromium subprocess (renderer, GPU, utility) runs this executable.
+        .executableTarget(
+            name: "CraHelperWin",
+            path: "Sources/CraHelperWin",
+            cxxSettings: [.unsafeFlags(cefCXXFlags)],
+            linkerSettings: [
+                .unsafeFlags(cefLinkerFlags + ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]),
+                .linkedLibrary("libcef_dll_wrapper"),
+                .linkedLibrary("libcef"),
+            ]
+        ),
+        .executableTarget(
+            name: "CraWin",
+            dependencies: [
+                "CraCEFWin",
+                .product(name: "CraCore", package: "CraCore"),
+                .product(name: "WinUI", package: "swift-winui"),
+                .product(name: "WinAppSDK", package: "swift-windowsappsdk"),
+                .product(name: "WindowsFoundation", package: "swift-windowsfoundation"),
+                .product(name: "UWP", package: "swift-uwp"),
+            ],
+            path: "Sources/CraWin",
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"],
+                             .when(configuration: .release)),
+            ]
+        ),
+    ],
+    cxxLanguageStandard: .cxx20
+)

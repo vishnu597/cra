@@ -1,7 +1,7 @@
 name: Windows
 
-# The Windows port shares Packages/CraCore with the macOS app. This job keeps it building and
-# passing its tests off Apple platforms, on Windows and (as a cheap second check) Linux.
+# The Windows port: Packages/CraCore building and passing its tests off Apple platforms (on
+# Windows and, as a cheap second check, Linux), and the Windows app in Windows/ building.
 on:
   push:
     branches: [main]
@@ -38,3 +38,30 @@ jobs:
 
       - name: Build and test CraCore
         run: swift test --package-path Packages/CraCore
+
+  app-windows:
+    name: Build Cra for Windows
+    runs-on: windows-2022
+    steps:
+      - uses: compnerd/gha-setup-swift@v0.5.1
+        with:
+          swift-version: swift-6.1.2-release
+          swift-build: 6.1.2-RELEASE
+
+      - uses: actions/checkout@v4
+
+      - name: Cache CEF
+        uses: actions/cache@v4
+        with:
+          path: Windows/vendor/cef
+          key: cef-windows64-${{ hashFiles('scripts/fetch-cef.sh') }}
+
+      - name: Build
+        shell: pwsh
+        run: Windows/scripts/build.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Cra-windows-x64
+          path: Windows/build/Cra
+          retention-days: 7
