@@ -74,10 +74,14 @@ jobs:
 
       # The WinUI projections take about 12 minutes to compile from scratch.
       # Restored and saved as separate steps so a failed build still saves what it compiled.
+      # The projections' sources (vendor/winrt) are cached with the build: cloned afresh they
+      # get new timestamps, and SwiftPM then compiles every projection again.
       - name: Restore Swift build
         uses: actions/cache/restore@v4
         with:
-          path: Windows/.build
+          path: |
+            Windows/.build
+            Windows/vendor/winrt
           key: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-${{ github.sha }}
           restore-keys: |
             swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-
@@ -104,10 +108,12 @@ jobs:
         run: swift package --package-path Windows resolve
 
       # The WinUI projections are large generated modules; build them on their own first so a
-      # slow or hung compile shows which module it is.
+      # slow or hung compile shows which module it is. The flags must be the ones build.ps1
+      # passes: with any other (-v included, which reaches every swiftc command) the next step
+      # compiles all four projections a second time.
       - name: Build the WinUI projections
         timeout-minutes: 30
-        run: swift build --package-path Windows -c release --target WinUI -v
+        run: swift build --package-path Windows -c release --target WinUI -Xlinker /DEBUG
 
       - name: Build and assemble Cra
         shell: pwsh
@@ -118,7 +124,9 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: Windows/.build
+          path: |
+            Windows/.build
+            Windows/vendor/winrt
           key: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-${{ github.sha }}
 
       # Uploaded even when the start-up check fails, so the build can be tried on a real PC.
