@@ -20,6 +20,9 @@ enum UI {
                        _ action: @escaping @MainActor () -> Void) -> Button {
         let b = Button()
         b.content = content
+        // On press: a click from a page moves Win32 focus into the XAML island, and the release
+        // that would finish a release-mode click was lost.
+        b.clickMode = .press
         b.background = fill ?? clear
         b.borderThickness = Thickness(left: 0, top: 0, right: 0, bottom: 0)
         b.padding = padding

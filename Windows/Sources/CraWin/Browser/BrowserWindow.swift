@@ -457,7 +457,11 @@ extension BrowserWindow: WebPageDelegate {
 
     func pageDidClose(_ page: WebPage) {
         if closing {
-            if cra_cef_live_browser_count() == 0 { finishClosing() }
+            // After this callback: it comes from inside CEF's OnBeforeClose, and destroying the
+            // pages' parent window there crashed libcef.
+            if cra_cef_live_browser_count() == 0 {
+                _ = try? dispatcher.tryEnqueue { [weak self] in self?.finishClosing() }
+            }
             return
         }
         guard let id = tabID(of: page), pages[id] === page else { return }
