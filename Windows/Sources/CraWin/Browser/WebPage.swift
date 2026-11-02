@@ -2,13 +2,21 @@ import CraCEFWin
 import Foundation
 
 /// A key press on a page, as Chromium reports it (CraKeyEvent).
-struct KeyPress: Equatable {
+struct KeyPress: Equatable, Sendable {
     /// The Windows virtual-key code ('A'...'Z' and '0'...'9' are their ASCII values).
     var keyCode: Int32
     var control: Bool
     var shift: Bool
     var alt: Bool
     var isRepeat: Bool
+
+    init(keyCode: Int32, control: Bool, shift: Bool, alt: Bool, isRepeat: Bool = false) {
+        self.keyCode = keyCode
+        self.control = control
+        self.shift = shift
+        self.alt = alt
+        self.isRepeat = isRepeat
+    }
 
     init(_ event: CraKeyEvent) {
         keyCode = Int32(event.key_code)
@@ -19,8 +27,8 @@ struct KeyPress: Equatable {
     }
 }
 
-struct DownloadInfo {
-    enum State { case inProgress, complete, cancelled, interrupted }
+struct DownloadInfo: Sendable {
+    enum State: Sendable { case inProgress, complete, cancelled, interrupted }
     var identifier: UInt32
     var url: String
     var fullPath: String
@@ -31,7 +39,7 @@ struct DownloadInfo {
     var state: State
 }
 
-struct PermissionKinds: OptionSet {
+struct PermissionKinds: OptionSet, Sendable {
     let rawValue: UInt32
     static let camera = PermissionKinds(rawValue: 1)
     static let microphone = PermissionKinds(rawValue: 2)
@@ -42,7 +50,8 @@ struct PermissionKinds: OptionSet {
 
 /// What a page tells the shell: CraBrowserDelegate on macOS (Sources/CraCEF/include/CraCEF.h),
 /// with the same method names so code ported from the Mac reads the same. Every method has an
-/// empty default. Everything runs on the main thread (CraCEFWin.h).
+/// empty default. Everything runs on the main thread (CraCEFWin.h), the main actor's.
+@MainActor
 protocol WebPageDelegate: AnyObject {
     func page(_ page: WebPage, didChangeTitle title: String)
     func page(_ page: WebPage, didChangeURL url: String)
@@ -105,8 +114,9 @@ struct PixelRect: Equatable {
 
 /// One Chromium page in a Win32 child window: CraBrowser on macOS. Chromium holds the page
 /// until `pageDidClose`; a WebPage stays alive until then even when the shell lets go of it.
-/// Main thread only, like every call into CraCEFWin.
-final class WebPage {
+/// Main thread only, like every call into CraCEFWin (hence the unchecked Sendable: it is only
+/// ever handed to the main actor, on the main thread).
+final class WebPage: @unchecked Sendable {
     weak var delegate: WebPageDelegate?
     /// Anything the shell wants to hang on the page (the tab id).
     var userInfo: AnyHashable?
@@ -181,7 +191,7 @@ final class WebPage {
     fileprivate func didClose() {
         isClosed = true
         handle = nil
-        delegate?.pageDidClose(self)
+        onMain { delegate?.pageDidClose(self) }
     }
 
     fileprivate var opaque: OpaquePointer? { handle }
@@ -230,25 +240,20 @@ final class WebPage {
         }
         cb.popup_host_requested = { ctx, url, background in
             let url = string(url)
-            var host: OpaquePointer?
-            WebPage.with(ctx) { page in
-                host = page.delegate?.page(page, popupHostForURL: url, inBackground: background != 0)?.opaque
+            let host = WebPage.with(ctx, UInt(0)) { page in
+                page.delegate?.page(page, popupHostForURL: url, inBackground: background != 0)?.opaque.map { UInt(bitPattern: $0) } ?? 0
             }
-            return host
+            return OpaquePointer(bitPattern: host)
         }
         cb.key_event = { ctx, event in
             guard let event else { return 0 }
             let key = KeyPress(event.pointee)
-            var consumed = false
-            WebPage.with(ctx) { consumed = $0.delegate?.page($0, handleKey: key) ?? false }
-            return consumed ? 1 : 0
+            return WebPage.with(ctx, false) { $0.delegate?.page($0, handleKey: key) ?? false } ? 1 : 0
         }
         cb.unhandled_key_event = { ctx, event in
             guard let event else { return 0 }
             let key = KeyPress(event.pointee)
-            var consumed = false
-            WebPage.with(ctx) { consumed = $0.delegate?.page($0, handleUnhandledKey: key) ?? false }
-            return consumed ? 1 : 0
+            return WebPage.with(ctx, false) { $0.delegate?.page($0, handleUnhandledKey: key) ?? false } ? 1 : 0
         }
         cb.download_updated = { ctx, info in
             guard let d = info?.pointee else { return }
@@ -291,9 +296,16 @@ final class WebPage {
         return cb
     }
 
-    private static func with(_ context: UnsafeMutableRawPointer?, _ body: (WebPage) -> Void) {
-        guard let context else { return }
-        body(Unmanaged<WebPage>.fromOpaque(context).takeUnretainedValue())
+    /// The page a callback's context stands for, on the main actor (the callback is on the
+    /// main thread already).
+    private static func with<T>(_ context: UnsafeMutableRawPointer?, _ fallback: T, _ body: @MainActor (WebPage) -> T) -> T {
+        guard let context else { return fallback }
+        let page = Unmanaged<WebPage>.fromOpaque(context).takeUnretainedValue()
+        return onMain { body(page) }
+    }
+
+    private static func with(_ context: UnsafeMutableRawPointer?, _ body: @MainActor (WebPage) -> Void) {
+        with(context, (), body)
     }
 }
 
