@@ -3,7 +3,7 @@ import Foundation
 
 /// Run before Chromium starts: Cra restores its own tabs, so Chromium's own crash recovery
 /// (a stock Chromium window with the last session, after a run that didn't quit cleanly) is
-/// turned off by clearing it from the profiles (ChromiumProfile).
+/// turned off by clearing it from the profiles (ChromiumCrashState).
 enum CrashRecovery {
     static func prepare(cache: URL) {
         // A running Cra keeps Chromium's lockfile open, so it can't be deleted: leave that
@@ -13,8 +13,8 @@ enum CrashRecovery {
         if FileManager.default.fileExists(atPath: lock.path) {
             guard (try? FileManager.default.removeItem(at: lock)) != nil else { return }
         }
-        for profile in ChromiumProfile.folders(in: cache) {
-            ChromiumProfile.markExitedCleanly(profile)
+        for profile in ChromiumCrashState.folders(in: cache) {
+            ChromiumCrashState.markExitedCleanly(profile)
         }
     }
 }
