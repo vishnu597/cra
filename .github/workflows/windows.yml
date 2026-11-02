@@ -57,6 +57,14 @@ jobs:
           path: Windows/vendor/cef
           key: cef-windows64-${{ hashFiles('scripts/fetch-cef.sh') }}
 
+      # The WinUI projections take about 12 minutes to compile from scratch.
+      - name: Cache Swift build
+        uses: actions/cache@v4
+        with:
+          path: Windows/.build
+          key: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-${{ github.sha }}
+          restore-keys: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-
+
       - name: Fetch CEF and the Swift/WinRT projections
         shell: pwsh
         timeout-minutes: 20
