@@ -186,12 +186,13 @@ struct SidebarStoreTests {
 
     @Test func anIncognitoWindowKeepsItsTabsToItself() {
         let f = StoreFixture()
+        let personal = f.space
         let normal = f.store.createTab(url: "https://normal.test/")
         let w = f.store.addIncognitoWindow(frame: nil)
         let sid = w.focusedSpaceID!
         #expect(f.store.isIncognito(space: sid) && f.store.space(sid)?.theme == SpaceTheme.incognito)
         #expect(f.store.pagedSpaces(window: w.id).map(\.id) == [sid])
-        #expect(f.store.pagedSpaces(window: nil).map(\.id) == [f.space.id])
+        #expect(f.store.pagedSpaces(window: nil).map(\.id) == [personal.id])
         #expect(!f.store.hidesSpaceHeader(sid))
         let secret = f.store.createTab(url: "https://secret.test/", window: w.id)
         #expect(f.store.isIncognito(item: secret.id) && f.store.selectedTabID(window: w.id) == secret.id)
@@ -207,12 +208,12 @@ struct SidebarStoreTests {
         f.store.activeWindowID = w.id
         #expect(f.store.lastNormalWindowID != w.id)
         f.store.selectTab(normal.id)
-        #expect(f.store.window(f.store.lastNormalWindowID).selectedTabPerSpace[f.space.id] == normal.id)
+        #expect(f.store.window(f.store.lastNormalWindowID).selectedTabPerSpace[personal.id] == normal.id)
         f.store.selectTab(normal.id, window: w.id)
         #expect(f.store.selectedTabID(window: w.id) == secret.id)
         f.store.moveItem(normal.id, to: f.store.space(sid)!.todayContainerID, index: nil)
-        #expect(f.store.spaceID(ofItem: normal.id) == f.space.id)
-        f.store.focusSpace(f.space.id, window: w.id)
+        #expect(f.store.spaceID(ofItem: normal.id) == personal.id)
+        f.store.focusSpace(personal.id, window: w.id)
         #expect(f.store.focusedSpaceID(window: w.id) == sid)
         f.store.recordQuerySelection(query: "secret", url: "https://secret.test/")
         #expect(f.store.ranking.queriesToSelected.isEmpty)
