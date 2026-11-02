@@ -20,6 +20,7 @@ enum TestRoot { case today }
     func item(_ id: UUID) -> TestItem? { items[id] }
     func isIncognito(item: UUID) -> Bool { false }
     func profilePath(item: UUID) -> String? { nil }
+    func profileDirectoryName(item: UUID) -> String { "Default" }
     func spaceID(ofItem: UUID) -> UUID? { nil }
     func rootContainer(of: UUID) -> TestRoot? { nil }
     func updateTab(_ id: UUID, url: String? = nil, title: String? = nil) {
@@ -28,6 +29,7 @@ enum TestRoot { case today }
     }
     func setThemeColor(_ id: UUID, _ hex: String) { items[id]?.tab?.themeColor = hex }
     func recordVisit(url: String, title: String) {}
+    func clearHistory(_ range: BrowsingDataClear.Range) {}
     func selectTab(_ id: UUID, window: UUID?) {}
     func markUnread(_ id: UUID, _ unread: Bool) {}
     @discardableResult
@@ -38,7 +40,18 @@ enum TestRoot { case today }
         return item
     }
 }
+/// The extensions turned on in the Default profile.
+@MainActor final class ExtensionStore {
+    struct Entry { let extensionID: String }
+    static let shared = ExtensionStore()
+    var entries: [Entry] = []
+    func entries(inProfile name: String) -> [Entry] { entries }
+}
 enum FaviconKey { static func key(for url: String) -> String? { url } }
+enum BrowsingDataClear {
+    enum Range { case allTime }
+    static func historyRange(messageJSON: String, now: Date) -> Range? { nil }
+}
 final class FaviconCache {
     func store(_ image: NSImage, forKey: String, persist: Bool) {}
 }

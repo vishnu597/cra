@@ -8,7 +8,8 @@ import AppKit
 /// with the connection state and a More menu. A tile's 14 pt badge pins it to the toolbar:
 /// filled for pinned extensions, grey on hover for the others.
 struct SiteControlCenterActions {
-    var share: () -> Void = {}
+    /// Gets the Share button, to hang the share list from.
+    var share: (NSView) -> Void = { _ in }
     var copyURL: () -> Void = {}
     var capture: () -> Void = {}
     var captureFullPage: () -> Void = {}
@@ -18,6 +19,8 @@ struct SiteControlCenterActions {
     var clearCache: () -> Void = {}
     var clearCookies: () -> Void = {}
     var siteSettings: () -> Void = {}
+    /// The lock: the page's certificate. nil without one (http, Chromium's pages).
+    var showCertificate: (() -> Void)?
 }
 
 enum SiteControlCenterMetrics {
@@ -33,16 +36,24 @@ enum SiteControlCenterMetrics {
 final class SiteControlCenterView: NSView {
     private typealias M = SiteControlCenterMetrics
     private let url: String
+    /// The connection badge (ConnectionSecurity).
+    private let secure: Bool
     private let colors: SiteControlCenterColors
     private let actions: SiteControlCenterActions
     private let store: SidebarStore
     /// The page's Chromium profile folder: only its extensions are offered.
     private let profile: String
+    /// The page's tab, whose extension icons the tiles show.
+    private let tab: UUID?
     private var extensions: ExtensionStore { .shared }
+    /// The tiles by extension ID, whose icons follow the extensions' own changes in place.
+    private var extensionTiles: [String: SiteExtensionTile] = [:]
 
-    init(url: String, dark: Bool, profile: String, actions: SiteControlCenterActions, store: SidebarStore) {
+    init(url: String, secure: Bool, dark: Bool, profile: String, tab: UUID?, actions: SiteControlCenterActions, store: SidebarStore) {
         self.url = url
+        self.secure = secure
         self.profile = profile
+        self.tab = tab
         colors = SiteControlCenterColors(dark: dark)
         self.actions = actions
         self.store = store
@@ -50,6 +61,11 @@ final class SiteControlCenterView: NSView {
         wantsLayer = true
         layer?.backgroundColor = colors.background.cgColor
         observe()
+        // An extension changing its icon redraws only its tile, so the one under the pointer
+        // keeps its hover. Ends with the view: then nothing observable is read.
+        observeChanges(of: { [weak self] in self?.liveIcons() ?? [:] }) { [weak self] icons in
+            for (id, icon) in icons { self?.extensionTiles[id]?.show(icon: icon) }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -58,13 +74,11 @@ final class SiteControlCenterView: NSView {
 
     var onResize: (NSSize) -> Void = { _ in }
 
-    private var isSecure: Bool { url.hasPrefix("https://") || url.hasPrefix("chrome://") || url.hasPrefix("chrome-extension://") }
-
     /// Arc: pinned extensions in toolbar order, then the rest by name.
     private var orderedExtensions: [ExtensionStore.Entry] {
         let entries = extensions.entries(inProfile: profile)
-        let pinned = extensions.pinnedIDs.compactMap { id in entries.first { $0.extensionID == id } }
-        let rest = entries.filter { !extensions.isPinned($0.extensionID) }
+        let pinned = extensions.pinnedIDs(inProfile: profile).compactMap { id in entries.first { $0.extensionID == id } }
+        let rest = entries.filter { !extensions.isPinned($0.extensionID, inProfile: profile) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         return pinned + rest
     }
@@ -72,7 +86,7 @@ final class SiteControlCenterView: NSView {
     private func observe() {
         withObservationTracking {
             _ = extensions.entries
-            _ = extensions.pinnedIDs
+            _ = extensions.pinned
             _ = store.settings
         } onChange: { [weak self] in
             Task { @MainActor in self?.observe() }
@@ -80,25 +94,44 @@ final class SiteControlCenterView: NSView {
         build()
     }
 
+    /// The tiles' icons as the extensions set them now, badge included (chrome.action.setIcon,
+    /// setBadgeText; Arc's tiles show both).
+    private func liveIcons() -> [String: NSImage?] {
+        Dictionary(uniqueKeysWithValues: orderedExtensions.map { ($0.extensionID, liveIcon($0)) })
+    }
+
+    private func liveIcon(_ e: ExtensionStore.Entry) -> NSImage? {
+        extensions.badged(extensions.liveIcon(for: e, profile: profile, tab: tab), extensions.badge(for: e, profile: profile, tab: tab),
+                          tint: colors.secondary)
+    }
+
     private func build() {
         subviews.forEach { $0.removeFromSuperview() }
         let x = M.inset, w = M.width - 2 * M.inset
         var y: CGFloat = 9
         // The four raised action buttons.
-        for (i, (symbol, help, run)) in [("square.and.arrow.up", "Share", actions.share), ("link", "Copy URL", actions.copyURL),
+        let share = actions.share
+        for (i, (symbol, help, run)) in [("square.and.arrow.up", "Share", {}), ("link", "Copy URL", actions.copyURL),
                                          ("camera", "Capture this page", actions.capture),
                                          ("text.viewfinder", "Capture the full page", actions.captureFullPage)].enumerated() {
             let b = SiteActionButton(symbol: symbol, help: help, colors: colors, action: run)
+            if i == 0 { b.onClick = { [weak b] in if let b { share(b) } } }
             b.frame = NSRect(x: x + CGFloat(i) * (M.tile.width + M.gap), y: y, width: M.tile.width, height: M.tile.height)
             addSubview(b)
         }
         y += M.tile.height + 11
         // Extensions: a 4-column grid of tiles, then "+".
         let ext = SiteSectionView(title: "Extensions", hoverText: "Manage", colors: colors, onHeaderClick: actions.manageExtensions)
+        extensionTiles = [:]
         var tiles: [NSView] = orderedExtensions.map { e in
-            SiteExtensionTile(entry: e, pinned: extensions.isPinned(e.extensionID), colors: colors,
-                              run: { [actions] in actions.runExtension(e.extensionID) },
-                              togglePin: { ExtensionStore.shared.setPinned(e.extensionID, !ExtensionStore.shared.isPinned(e.extensionID)) })
+            let tile = SiteExtensionTile(entry: e, pinned: extensions.isPinned(e.extensionID, inProfile: profile), colors: colors,
+                                         run: { [actions] in actions.runExtension(e.extensionID) },
+                                         togglePin: { [profile] in
+                                             ExtensionStore.shared.setPinned(e.extensionID, !ExtensionStore.shared.isPinned(e.extensionID, inProfile: profile), inProfile: profile)
+                                         })
+            tile.show(icon: liveIcon(e))
+            extensionTiles[e.extensionID] = tile
+            return tile
         }
         let add = SiteTile(colors: colors, help: "Add Extension", action: actions.addExtension)
         add.setGlyph(SidebarSymbols.image("plus", size: 14, weight: .medium), tint: colors.text)
@@ -140,7 +173,7 @@ final class SiteControlCenterView: NSView {
         addSubview(divider)
         y += 1 + 12
         // Footer: the connection state, the More menu.
-        let secure = SiteSecurityPill(secure: isSecure, colors: colors)
+        let secure = SiteSecurityPill(secure: secure, colors: colors, action: actions.showCertificate)
         secure.frame.origin = NSPoint(x: x, y: y)
         addSubview(secure)
         let more = SiteMoreButton(colors: colors, actions: actions)
@@ -206,6 +239,12 @@ private class SiteHoverView: NSView {
     override func mouseUp(with event: NSEvent) {
         if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
     }
+
+    /// VoiceOver's press is a click.
+    override func accessibilityPerformPress() -> Bool {
+        onClick()
+        return true
+    }
 }
 
 /// A titled section; hovering it shows `hoverText` at the header's right end (Arc: "Manage").
@@ -263,6 +302,11 @@ private class SiteTile: SiteHoverView {
         glyph.imageScaling = .scaleProportionallyDown
         addSubview(glyph)
         if !help.isEmpty { _ = ArcTooltipAnchorView.attach(to: self, help: help) }
+        // A button to VoiceOver, like the popover's other controls.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(help)
+        glyph.setAccessibilityElement(false)
         refresh()
     }
 
@@ -294,6 +338,7 @@ private class SiteTile: SiteHoverView {
 /// SiteControlCenterExtensionPinButton, "Pin" / "Unpin").
 private final class SiteExtensionTile: SiteTile {
     private let pinned: Bool
+    private var shownIcon: NSImage??
     /// The 14 pt pin badge hangs off the tile's bottom-right corner, 37 × 21 pt in. It sits
     /// next to the tile in the grid, above it, so nothing clips it (SwiftUI's .offset).
     let badge = SiteHoverView()
@@ -302,11 +347,7 @@ private final class SiteExtensionTile: SiteTile {
     init(entry: ExtensionStore.Entry, pinned: Bool, colors: SiteControlCenterColors, run: @escaping () -> Void, togglePin: @escaping () -> Void) {
         self.pinned = pinned
         super.init(colors: colors, help: entry.name, action: run)
-        if let icon = entry.icon {
-            setGlyph(icon, tint: nil, size: 16)
-        } else {
-            setGlyph(SidebarSymbols.image("puzzlepiece.extension.fill", size: 13), tint: colors.secondary)
-        }
+        show(icon: entry.icon)
         setAccessibilityLabel(entry.name)
         badge.onClick = togglePin
         badge.onHover = { [weak self] in self?.refresh() }
@@ -315,11 +356,25 @@ private final class SiteExtensionTile: SiteTile {
         pinGlyph.frame = NSRect(x: 0, y: 0, width: 14, height: 14)
         badge.addSubview(pinGlyph)
         _ = ArcTooltipAnchorView.attach(to: badge, help: pinned ? "Unpin" : "Pin")
+        badge.setAccessibilityElement(true)
+        badge.setAccessibilityRole(.button)
         badge.setAccessibilityLabel(pinned ? "Unpin" : "Pin")
+        pinGlyph.setAccessibilityElement(false)
         refresh()
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The extension's icon as it is now, else the puzzle piece.
+    func show(icon: NSImage?) {
+        guard shownIcon.map({ $0 !== icon }) ?? true else { return }
+        shownIcon = .some(icon)
+        if let icon {
+            setGlyph(icon, tint: nil, size: 16)
+        } else {
+            setGlyph(SidebarSymbols.image("puzzlepiece.extension.fill", size: 13), tint: colors.secondary)
+        }
+    }
 
     /// The badge as one image: the circle, a 1 pt ring in the panel colour inside its edge, and
     /// the pin turned 45° clockwise.
@@ -387,6 +442,9 @@ private final class SiteActionButton: SiteHoverView {
         glyph.imageScaling = .scaleNone
         addSubview(glyph)
         _ = ArcTooltipAnchorView.attach(to: self, help: help)
+        setAccessibilityElement(true)
+        setAccessibilityLabel(help)
+        setAccessibilityRole(.button)
         refresh()
     }
 
@@ -452,9 +510,16 @@ private final class SiteSettingRow: SiteHoverView {
     override func refresh() { alphaValue = hovered ? 0.85 : 1 }
 }
 
-private final class SiteSecurityPill: NSView {
-    init(secure: Bool, colors: SiteControlCenterColors) {
+/// Pressed, it shows the page's certificate (Arc closes the control center and opens it).
+private final class SiteSecurityPill: SiteHoverView {
+    private let colors: SiteControlCenterColors
+    private let clickable: Bool
+
+    init(secure: Bool, colors: SiteControlCenterColors, action: (() -> Void)?) {
+        self.colors = colors
+        clickable = action != nil
         super.init(frame: .zero)
+        if let action { onClick = action }
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.cornerCurve = .continuous
@@ -474,9 +539,19 @@ private final class SiteSecurityPill: NSView {
         addSubview(lock)
         addSubview(label)
         _ = ArcTooltipAnchorView.attach(to: self, help: secure ? "Your connection to this site is secure" : "Your connection to this site is not secure")
+        setAccessibilityElement(true)
+        setAccessibilityLabel(secure ? "Secure" : "Not Secure")
+        setAccessibilityRole(clickable ? .button : .staticText)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func refresh() {
+        // The More button's hover: SwiftUI's .brightness(0.04).
+        let c = colors.footerFill.usingColorSpace(.sRGB) ?? colors.footerFill
+        layer?.backgroundColor = (hovered && clickable ? NSColor(srgbRed: min(1, c.redComponent + 0.04), green: min(1, c.greenComponent + 0.04),
+                                                                  blue: min(1, c.blueComponent + 0.04), alpha: c.alphaComponent) : c).cgColor
+    }
 }
 
 /// Arc's footer "…": Clear Cache, Clear Cookies, Manage Extensions, Add Extension, All Site Settings.
@@ -541,7 +616,8 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
 
     var isShown: Bool { popover?.isShown == true }
 
-    func show(relativeTo rect: NSRect, of view: NSView, url: String, dark: Bool, profile: String, store: SidebarStore, actions: SiteControlCenterActions) {
+    func show(relativeTo rect: NSRect, of view: NSView, url: String, secure: Bool, dark: Bool, profile: String, tab: UUID?,
+              store: SidebarStore, actions: SiteControlCenterActions) {
         // A transient popover closes on the mouse-down outside it; the button fires on that
         // click's mouse-up. The same click on the sliders button closes it, as in Arc,
         // however long the press took (GitHub #42): the latest mouse-down is the closing one.
@@ -558,9 +634,9 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         p.delegate = self
         p.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         var acts = actions
-        // Every action ends the popover, as in Arc (pinning keeps it open).
+        // Every action ends the popover, as in Arc (pinning keeps it open, and the share list
+        // opens over it).
         func closing(_ f: @escaping () -> Void) -> () -> Void { { [weak p] in p?.performClose(nil); f() } }
-        acts.share = closing(actions.share)
         acts.copyURL = closing(actions.copyURL)
         acts.capture = closing(actions.capture)
         acts.captureFullPage = closing(actions.captureFullPage)
@@ -570,7 +646,8 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
         acts.siteSettings = closing(actions.siteSettings)
         acts.clearCache = closing(actions.clearCache)
         acts.clearCookies = closing(actions.clearCookies)
-        let content = SiteControlCenterView(url: url, dark: dark, profile: profile, actions: acts, store: store)
+        acts.showCertificate = actions.showCertificate.map(closing)
+        let content = SiteControlCenterView(url: url, secure: secure, dark: dark, profile: profile, tab: tab, actions: acts, store: store)
         let host = NSViewController()
         host.view = content
         host.preferredContentSize = content.frame.size
@@ -582,9 +659,57 @@ final class SiteControlCenterPopover: NSObject, NSPopoverDelegate {
 
     func close() { popover?.performClose(nil) }
 
+    /// While the share list is up the popover only closes when Cra closes it: a transient one
+    /// can go when a menu opens over it.
+    func holdOpen(_ hold: Bool) { popover?.behavior = hold ? .applicationDefined : .transient }
+
     func popoverWillClose(_ notification: Notification) {
         if let e = NSApp.currentEvent, e.type == .leftMouseDown { closingClick = e.timestamp }
     }
 
     func popoverDidClose(_ notification: Notification) { popover = nil }
+}
+
+/// The Site Control Center's share list (GitHub #90). macOS finds the share extensions the
+/// first time a process asks, about 0.3 s on the main thread, so that happens once off it
+/// soon after launch. The list keeps the system's own services, as Arc's shorter one does.
+@MainActor
+final class SharePicker: NSObject, @preconcurrency NSSharingServicePickerDelegate {
+    static let shared = SharePicker()
+    private static let kept: [NSSharingService.Name] = [
+        .composeMessage, .composeEmail, .sendViaAirDrop, .init("com.apple.Notes.SharingExtension"),
+        .init("com.apple.reminders.sharingextension"),
+    ]
+    private var picker: NSSharingServicePicker?
+    private var done: (_ chose: Bool) -> Void = { _ in }
+
+    nonisolated static func warmUp() {
+        DispatchQueue.global(qos: .utility).async {
+            // Deprecated, but the only call that finds them without showing a menu.
+            _ = NSSharingService.sharingServices(forItems: [URL(string: "https://example.com")!])
+        }
+    }
+
+    /// `done` runs when the list goes, `chose` when a service was picked.
+    func show(_ url: URL, relativeTo anchor: NSView, done: @escaping (_ chose: Bool) -> Void) {
+        let picker = NSSharingServicePicker(items: [url])
+        picker.delegate = self
+        self.picker = picker
+        self.done = done
+        picker.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, sharingServicesForItems items: [Any],
+                              proposedSharingServices proposedServices: [NSSharingService]) -> [NSSharingService] {
+        // NSSharingService has no public name: match the titles of the named services.
+        let titles = Set(Self.kept.compactMap { NSSharingService(named: $0)?.title })
+        let kept = proposedServices.filter { titles.contains($0.title) }
+        return kept.isEmpty ? proposedServices : kept
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+        guard sharingServicePicker === picker else { return }
+        picker = nil
+        done(service != nil)
+    }
 }

@@ -47,13 +47,19 @@ public final class CraBrowser {
     /// "show" / "close", in the order Cra asked.
     public var devToolsRequests: [String] = []
     public func showDevTools() { hasDevTools = true; devToolsRequests.append("show") }
+    /// The frontend work asked of the next show (a panel, "inspect"); CEF clears it once done.
+    public var devToolsAction: String?
     public func closeDevTools() { hasDevTools = false; devToolsRequests.append("close") }
     public func setAudioMuted(_ muted: Bool) {}
     public private(set) var backgroundProbes = 0
     public func probeBackgroundColor() { backgroundProbes += 1 }
     public func setFocused(_ focused: Bool) {}
     public private(set) var pictureInPictureRequests = 0
-    public func requestPictureInPicture(automatic: Bool) { pictureInPictureRequests += 1 }
+    public private(set) var automaticPictureInPictureRequests = 0
+    public func requestPictureInPicture(automatic: Bool) {
+        pictureInPictureRequests += 1
+        if automatic { automaticPictureInPictureRequests += 1 }
+    }
     public func exitPictureInPicture() { isInPictureInPicture = false }
     public func togglePictureInPicturePlayback() {}
     public func skipPictureInPicture(by seconds: Double) {}
@@ -74,6 +80,9 @@ public final class CraBrowser {
         isLoading = loading
         delegate?.browser(self, didChangeLoading: loading, canGoBack: false, canGoForward: false)
     }
+    /// Addresses Cra asked to load, in order.
+    public private(set) var loads: [String] = []
+    public func loadURL(_ url: String) { loads.append(url) }
     public func navigate(to url: String) {
         currentURL = url
         delegate?.browser(self, didChangeURL: url)

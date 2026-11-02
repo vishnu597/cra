@@ -17,7 +17,8 @@ final class ExtensionStore {
         let url: URL
         /// Chromium's extension ID (from the manifest key, else the folder path).
         var extensionID: String = ""
-        /// Manifest icon for menus (16 px preferred).
+        /// The action's manifest icon (16 px preferred): its default_icon, else the extension's
+        /// icons, as Chrome's toolbar picks it.
         var icon: NSImage?
         /// action / browser_action / page_action default_popup, relative to the folder.
         var popupPath: String?
@@ -76,7 +77,7 @@ final class ExtensionStore {
     init() {
         reload()
         // Keep what was taken over from another browser, so it is only read once.
-        if !FileManager.default.fileExists(atPath: Self.pinnedFile.path), !pinnedIDs.isEmpty { savePinned() }
+        if !FileManager.default.fileExists(atPath: Self.pinnedFile.path), !pinned.shared.isEmpty { savePinned() }
     }
 
     func reload() {
@@ -121,7 +122,37 @@ final class ExtensionStore {
             for p in old.disabledProfiles.subtracting(e.disabledProfiles).sorted() { CraLog.note("extension \(e.extensionID) turned on in \(p)") }
         }
         entries = next
-        pinnedIDs.removeAll { id in !entries.contains { $0.extensionID == id } }
+        pinned.removeAll { id in !entries.contains { $0.extensionID == id } }
+        noteProxyControllers(settings: settings)
+    }
+
+    // MARK: Proxy (GitHub #107)
+
+    /// Per profile folder, the turned-on extensions that set the proxy, the one Chromium applies
+    /// first. Two of them collide quietly: the others get "controlled_by_other_extensions",
+    /// which only the extensions themselves show, so the log and diagnostics name them.
+    private(set) var proxyControllers: [String: [ExtensionProxyControl.Controller]] = [:]
+
+    private func noteProxyControllers(settings: [String: [String: Any]]) {
+        var next: [String: [ExtensionProxyControl.Controller]] = [:]
+        for (profile, s) in settings {
+            let on = Set(entries(inProfile: profile).map(\.extensionID))
+            let c = ExtensionProxyControl.controllers(settings: s, enabled: on)
+            if !c.isEmpty { next[profile] = c }
+        }
+        // By what the line says: --load-extension reinstalls (new times) on every launch.
+        for profile in Set(next.keys).union(proxyControllers.keys).sorted() {
+            let line = Self.proxyLine(next[profile] ?? [])
+            if line != Self.proxyLine(proxyControllers[profile] ?? []) { CraLog.note("proxy in \(profile): " + line) }
+        }
+        proxyControllers = next
+    }
+
+    /// "set by <id> (<config>), overriding <id>, <id>", or "not set by an extension".
+    static func proxyLine(_ controllers: [ExtensionProxyControl.Controller]) -> String {
+        guard let first = controllers.first else { return "not set by an extension" }
+        let others = controllers.dropFirst().map(\.extensionID)
+        return "set by \(first.extensionID) (\(first.config))" + (others.isEmpty ? "" : ", overriding " + others.joined(separator: ", "))
     }
 
     /// The extensions a page in this Chromium profile folder can run; running another
@@ -164,9 +195,12 @@ final class ExtensionStore {
         if title.hasPrefix("__MSG_") { title = id }
         let action = (m["action"] ?? m["browser_action"] ?? m["page_action"]) as? [String: Any]
         let options = (m["options_ui"] as? [String: Any])?["page"] as? String ?? m["options_page"] as? String
+        // A path or {size: path} (React DevTools' grey "disabled" icon until a page uses React).
+        let actionIcons = action?["default_icon"] as? [String: String] ?? (action?["default_icon"] as? String).map { ["16": $0] }
         return Entry(id: id, name: title.isEmpty ? id : title, version: str("version"), description: str("description"), url: dir,
                      extensionID: extensionID ?? chromiumID(key: m["key"] as? String, folder: dir),
-                     icon: ExtensionImporter.icon(manifest: m, folder: dir, minPixels: 16),
+                     icon: actionIcons.flatMap { ExtensionImporter.icon(manifest: ["icons": $0], folder: dir, minPixels: 16) }
+                        ?? ExtensionImporter.icon(manifest: m, folder: dir, minPixels: 16),
                      popupPath: (action?["default_popup"] as? String).flatMap { $0.isEmpty ? nil : $0 }, optionsPath: options)
     }
 
@@ -183,40 +217,42 @@ final class ExtensionStore {
 
     private static var pinnedFile: URL { AppPaths.file("pinned-extensions.json") }
 
-    /// Chromium extension IDs in toolbar order.
-    private(set) var pinnedIDs: [String] = ExtensionStore.loadPinned()
+    /// Each profile's pins, like Arc's (GitHub #107).
+    private(set) var pinned = ExtensionStore.loadPinned()
 
     /// Before Cra has a list of its own, the browser it replaces supplies one: Arc keeps its
     /// pinned extensions in Chromium's `extensions.pinned_extensions` pref, as do Dia and Chrome.
-    private static func loadPinned() -> [String] {
-        if let data = try? Data(contentsOf: pinnedFile) { return (try? JSONDecoder().decode([String].self, from: data)) ?? [] }
+    private static func loadPinned() -> PinnedExtensions {
+        if let data = try? Data(contentsOf: pinnedFile) { return (try? JSONDecoder().decode(PinnedExtensions.self, from: data)) ?? PinnedExtensions() }
         for source in [ImportSource.arc, .dia] + ImportSource.allCases.filter({ $0.id == "chrome" }) {
             let prefs = source.dataDir.appendingPathComponent("Default/Preferences")
             guard let data = try? Data(contentsOf: prefs),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let ids = (json["extensions"] as? [String: Any])?["pinned_extensions"] as? [String], !ids.isEmpty else { continue }
-            return ids
+            return PinnedExtensions(shared: ids)
         }
-        return []
+        return PinnedExtensions()
     }
 
-    func isPinned(_ id: String) -> Bool { pinnedIDs.contains(id) }
+    /// Chromium extension IDs in toolbar order, for spaces on this profile folder.
+    func pinnedIDs(inProfile profile: String) -> [String] { pinned.ids(inProfile: profile) }
 
-    func setPinned(_ id: String, _ pinned: Bool) {
-        guard pinned != isPinned(id) else { return }
-        if pinned { pinnedIDs.append(id) } else { pinnedIDs.removeAll { $0 == id } }
-        savePinned()
+    func isPinned(_ id: String, inProfile profile: String) -> Bool { pinned.isPinned(id, inProfile: profile) }
+
+    func setPinned(_ id: String, _ isPinned: Bool, inProfile profile: String) {
+        let before = pinned
+        pinned.setPinned(id, isPinned, inProfile: profile)
+        if pinned != before { savePinned() }
     }
 
-    func movePinned(_ id: String, to index: Int) {
-        guard let from = pinnedIDs.firstIndex(of: id) else { return }
-        pinnedIDs.remove(at: from)
-        pinnedIDs.insert(id, at: min(max(0, index), pinnedIDs.count))
-        savePinned()
+    func movePinned(_ id: String, to index: Int, inProfile profile: String) {
+        let before = pinned
+        pinned.move(id, to: index, inProfile: profile)
+        if pinned != before { savePinned() }
     }
 
     private func savePinned() {
-        try? JSONEncoder().encode(pinnedIDs).write(to: Self.pinnedFile, options: .atomic)
+        try? JSONEncoder().encode(pinned).write(to: Self.pinnedFile, options: .atomic)
         NotificationCenter.default.post(name: .craPinnedExtensionsChanged, object: self)
     }
 
@@ -245,8 +281,9 @@ final class ExtensionStore {
         guard let data = try? Data(contentsOf: ExtensionStore.iconStylesFile) else { return [:] }
         return (try? JSONDecoder().decode([String: IconStyle].self, from: data)) ?? [:]
     }()
-    /// One image per extension, so the toolbar sees the same object until the style changes.
-    @ObservationIgnored private var toolbarIcons: [String: NSImage] = [:]
+    /// One image per extension, so the toolbar sees the same object until the style or the
+    /// image it was made from changes.
+    @ObservationIgnored private var toolbarIcons: [String: (base: NSImage?, image: NSImage?)] = [:]
 
     func iconStyle(_ id: String) -> IconStyle { iconStyles[id] ?? IconStyle() }
 
@@ -277,12 +314,16 @@ final class ExtensionStore {
         setIconStyle(id, style)
     }
 
-    /// The pinned button's image: the extension's icon, the user's replacement, or either as a
-    /// template image (the button tints templates with the toolbar's ink).
-    func toolbarIcon(for e: Entry) -> NSImage? {
+    /// The pinned button's image: the extension's icon as it is now on `tab`, the user's
+    /// replacement, or either as a template image (the button tints templates with the toolbar's
+    /// ink). A monochrome icon follows the extension's own changes.
+    func toolbarIcon(for e: Entry, profile: String, tab: UUID?) -> NSImage? {
+        // Read before the early return, so every caller's observation sees the extension's changes.
+        let live = liveIcon(for: e, profile: profile, tab: tab)
         let style = iconStyle(e.extensionID)
-        if style == IconStyle() { return e.icon }
-        if let cached = toolbarIcons[e.extensionID] { return cached }
+        if style == IconStyle() { return live }
+        let set = live === e.icon ? nil : live
+        if let cached = toolbarIcons[e.extensionID], cached.base === set { return cached.image }
         var image: NSImage?
         if let symbol = style.symbol {
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: e.name)?
@@ -290,18 +331,120 @@ final class ExtensionStore {
             image?.isTemplate = true
         } else {
             if let file = style.imageFile {
-                image = NSImage(contentsOf: Self.customIconsDir.appendingPathComponent(file)) ?? e.icon
-            } else if style.monochrome {
+                image = NSImage(contentsOf: Self.customIconsDir.appendingPathComponent(file)) ?? live
+            } else if style.monochrome, set == nil {
                 // From the largest icon: in the 16 px one a plate's edge and the mark blur together.
                 let manifest = (try? Data(contentsOf: e.url.appendingPathComponent("manifest.json")))
                     .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 image = manifest.flatMap { ExtensionImporter.icon(manifest: $0, folder: e.url, minPixels: 128) } ?? e.icon
             } else {
-                image = e.icon
+                image = live
             }
             if style.monochrome { image = image.flatMap(Self.monochrome) }
         }
-        toolbarIcons[e.extensionID] = image
+        toolbarIcons[e.extensionID] = (set, image)
+        return image
+    }
+
+    // MARK: Live actions (GitHub #106: chrome.action.setIcon, setTitle)
+
+    /// What extensions set on their toolbar actions while running, from Chromium
+    /// (ExtensionActions forwards Extensions.actionUpdated).
+    private(set) var actions = ExtensionActionStates()
+    /// Decoded icons by their PNG bytes, so a redraw sees the same image until the icon changes.
+    @ObservationIgnored private var actionIcons: [Data: NSImage] = [:]
+
+    func applyActionUpdate(_ update: ExtensionActionUpdate, tab: UUID?) {
+        var next = actions
+        next.apply(update, tab: tab)
+        guard next != actions else { return }
+        actions = next
+    }
+
+    /// Drops the values extensions set for a tab whose page is gone (closed or asleep).
+    func forgetActionTab(_ tab: UUID) {
+        var next = actions
+        next.removeTab(tab)
+        guard next != actions else { return }
+        actions = next
+    }
+
+    /// The icon the extension shows on `tab` (any tab when nil): the one it set there, else
+    /// the one it set for every tab, else its manifest's.
+    func liveIcon(for e: Entry, profile: String, tab: UUID?) -> NSImage? {
+        guard let png = actions.state(extensionID: e.extensionID, profile: profile, tab: tab).icon else { return e.icon }
+        if let image = actionIcons[png] { return image }
+        guard let image = NSImage(data: png), image.size.width > 0 else { return e.icon }
+        // Action icons are 16 pt; Chromium sends the largest scale it has (32 px on Retina).
+        image.size = NSSize(width: 16, height: 16 * image.size.height / image.size.width)
+        if actionIcons.count > 64 { actionIcons.removeAll() }
+        actionIcons[png] = image
+        return image
+    }
+
+    /// The badge the extension shows on `tab` (chrome.action.setBadgeText), laid out as Arc does.
+    func badge(for e: Entry, profile: String, tab: UUID?) -> ExtensionBadge? {
+        let font = Self.badgeFont(size: ExtensionBadge.measuringFontSize)
+        return ExtensionBadge(state: actions.state(extensionID: e.extensionID, profile: profile, tab: tab),
+                              defaultBackground: Self.badgeDefaultBackground) { text in
+            Double((text as NSString).size(withAttributes: [.font: font]).width)
+        }
+    }
+
+    /// The badge's colour when the extension set none: Chromium's neutral container (kColorRefNeutral15
+    /// dark, 94 light). Arc's dark one measures the same (1.171); light mode not seen in Arc.
+    static var badgeDefaultBackground: ExtensionBadge.RGBA {
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return ExtensionBadge.RGBA(hex: dark ? "#282828" : "#EFEDED")!
+    }
+
+    /// The badge's bold system font at SF's optical size 24, between its text and display designs:
+    /// with it "7", "42" and "1234" take Arc's widths exactly (CoreText's own choice at 9 pt is wider,
+    /// the display design narrower; measured 2 Nov 2026).
+    static func badgeFont(size: Double) -> NSFont {
+        let opticalSize = 0x6F70737A // 'opsz'
+        let base = NSFont.systemFont(ofSize: size, weight: .bold)
+        let descriptor = base.fontDescriptor.addingAttributes([
+            NSFontDescriptor.AttributeName(rawValue: kCTFontVariationAttribute as String): [opticalSize: 24],
+        ])
+        return NSFont(descriptor: descriptor, size: size) ?? base
+    }
+
+    /// Recent badged icons, so a redraw sees the same image until icon, badge or ink change.
+    @ObservationIgnored private var badgedIcons: [(icon: NSImage, badge: ExtensionBadge, tint: NSColor, image: NSImage)] = []
+
+    /// `icon` with `badge` drawn into it the way Chromium does (IconWithBadgeImageSource): a ring
+    /// cut out of the icon, then the badge. The buttons draw the result as is, so a template icon
+    /// takes `tint` first and the badge keeps its own colours.
+    func badged(_ icon: NSImage?, _ badge: ExtensionBadge?, tint: NSColor) -> NSImage? {
+        guard let icon, let badge else { return icon }
+        if let hit = badgedIcons.first(where: { $0.icon === icon && $0.badge == badge && $0.tint == tint }) { return hit.image }
+        let side = 16.0
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { _ in
+            let fit = min(side / max(icon.size.width, 1), side / max(icon.size.height, 1))
+            let w = icon.size.width * fit, h = icon.size.height * fit
+            let box = NSRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h)
+            icon.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            if icon.isTemplate {
+                tint.setFill()
+                box.fill(using: .sourceAtop)
+            }
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSBezierPath(roundedRect: badge.cutout, xRadius: badge.cutoutCornerRadius, yRadius: badge.cutoutCornerRadius).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            badge.background.color.setFill()
+            NSBezierPath(roundedRect: badge.frame, xRadius: badge.cornerRadius, yRadius: badge.cornerRadius).fill()
+            let font = Self.badgeFont(size: ExtensionBadge.fontSize)
+            let centred = NSMutableParagraphStyle()
+            centred.alignment = .center
+            centred.lineBreakMode = .byClipping
+            let line = font.ascender - font.descender
+            (badge.text as NSString).draw(in: NSRect(x: badge.frame.minX, y: badge.frame.midY - line / 2, width: badge.frame.width, height: line),
+                                          withAttributes: [.font: font, .foregroundColor: badge.textColor.color, .paragraphStyle: centred])
+            return true
+        }
+        badgedIcons.append((icon, badge, tint, image))
+        if badgedIcons.count > 32 { badgedIcons.removeFirst() }
         return image
     }
 
@@ -391,4 +534,8 @@ final class ExtensionStore {
 
 extension Notification.Name {
     static let craPinnedExtensionsChanged = Notification.Name("craPinnedExtensionsChanged")
+}
+
+extension ExtensionBadge.RGBA {
+    var color: NSColor { NSColor(srgbRed: r, green: g, blue: b, alpha: a) }
 }

@@ -44,11 +44,13 @@ start over.
 
 `cra.log` is Cra's own log: each tab's page opening, showing, loading and closing, and three
 seconds after a tab comes on screen, what its page holds (`blank`, `visibility`, element and
-text counts, `painted` for a first contentful paint) and where Cra put it (view size,
-`window=covered` when another window hides it). `chromium.log` holds Chromium's warnings,
+text counts, `painted` for a first contentful paint, `frameRate` for the animation frames
+it got in half a second) and where Cra put it (view size, `window=covered` when another
+window hides it, `display=` the refresh rate of the display it is on). A visible page with
+`frameRate=0` was never asked to draw; frames without `painted` never reached the screen. `chromium.log` holds Chromium's warnings,
 failed page loads and crashed renderers. Each launch keeps the last one's as `*.previous.log`.
 Logs name sites by host only. Help ▸ Export Diagnostics… zips both with the GPU report,
-the on-screen pages' state, settings, extensions and the last week's crash reports, with
+the displays and their refresh rates, whether Stage Manager is on, the on-screen pages' state, settings, extensions and the last week's crash reports, with
 addresses cut to their host; `cra://debug?exportDiagnostics=<path>` does the same without
 the save panel.
 
@@ -83,6 +85,9 @@ app it builds.
   `ManualScheduler`, against the made-up Arc and Chromium profiles in `Tests/Fixtures`.
 - `scripts/test-policies.sh`: the decisions pulled out of the window controllers
   (`ToolbarComposition`, `ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
+- `scripts/test-perf.sh`: the performance recorder on a real main run loop: injected stalls,
+  hang files with a `sample` stack, the session marker, ownership, the recording switch
+  ([performance.md](performance.md)).
 - `scripts/lint.py`: Cra's own rules (testing.md), checked by `scripts/test.sh`.
 - `Tests/smoke-launch.sh [app]`: starts the app on a throwaway data folder with no pages,
   with a page opened, then with it restored, and quits it like ⌘Q after a settings write.
@@ -95,7 +100,8 @@ behave. Check those by hand, and say how in the PR.
 Scenario hooks for a command file (`cra://debug?…`): `checkStore=1` logs a fault per broken
 sidebar link, `pageJS=<js>` runs script in the focused page, `installExtension=<folder>` and
 `removeExtension=<id>`, `extensionAction=<id>`, `fullscreen=1|0`, `windowSize=1280x800`,
-`snapshot=<ViewClass[,n]>&out=<png>`, `sleepTabs=<seconds>`, `relaunch=1` and `quit=1`.
+`snapshot=<ViewClass[,n]>&out=<png>`, `sleepTabs=<seconds>`, `stall=<ms>` (blocks the main
+thread), `perfReport=<path>` (the recorder's perf.json now), `relaunch=1` and `quit=1`.
 
 ## Running a test instance
 
@@ -135,6 +141,14 @@ drive the sidebar without touching the pointer: `cra://debug?swipe=-14,22` plays
 swipe (22 trackpad samples of 14 pt) and `cra://debug?scroll=30,30,150,700` scrolls the
 scroll view at x 150, y 700 of the window (from its top left) 30 pt a frame for 30 frames.
 Measure them with `sample <pid> 6 1` and compare the main thread's busy time between builds.
+
+`cra://debug?menuAt=315,24` opens the menu a click at that window point would open (the
+developer-mode ⌄ here), and `&button=right` the context menu, a tab row's for instance.
+Posted mouse events don't reach Cra's views and the rows have no AX menu action, so this is
+the way to check a menu without the pointer. The menu shows up on screen. While it's open,
+it is an AXMenu child of the app: each item's `AXMenuItemCmdChar`, `AXMenuItemCmdModifiers`
+and `AXMenuItemMarkChar` give its shortcut and checkmark, and AXCancel closes it (a posted
+Esc doesn't). The first menu after a launch can close before AX sees it, so open it again.
 
 The sidebar's tab list and space pager are AppKit (`UI/Sidebar/List`): rows are plain
 layer-backed views rebuilt from the store when it changes, a swipe moves the pager's layers

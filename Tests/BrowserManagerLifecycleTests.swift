@@ -85,9 +85,43 @@ enum BrowserManagerLifecycleTests {
         await beforeUnloadCase()
         nowPlayingCase()
         await nowPlayingPictureInPictureCase()
+        await leaveVideoTabPictureInPictureCase()
+        await coveredWindowPictureInPictureCase()
         pageColoursCase()
+        extensionPageRetryCase()
         await sleepCase("malformed or missing replies cannot authorize sleeping", reply: nil) { _, _ in }
+        await pageProbeCase()
         print("Browser manager lifecycle: \(checks) checks passed")
+    }
+
+    /// The line cra.log gets about a page on screen (#80): how many frames the page was asked
+    /// for, and which display's refresh rate its window follows.
+    @MainActor
+    private static func pageProbeCase() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let runtime = manager.ensureRuntime(for: store.createTab(url: "https://example.test/probe").id)!
+        var line: String?
+        PageProbe.run(runtime.browser) { line = $0 }
+        expect(runtime.browser.lastParams.contains(#""awaitPromise":true"#) && runtime.browser.lastParams.contains("frameRate"),
+               "the probe waits for the page to count its frames")
+        let page = #"{"blank":false,"ready":"complete","visibility":"visible","painted":false,"frameRate":0}"#
+        let reply = try! JSONSerialization.data(withJSONObject: ["result": ["type": "string", "value": page]])
+        runtime.browser.reply(to: "Runtime.evaluate", with: String(decoding: reply, as: UTF8.self))
+        await drainMainQueue()
+        expect(line?.hasSuffix("visibility=visible viewport=? scrollHeight=? elements=? text=? painted=0 frameRate=0") == true,
+               "a visible page that was never asked to draw reads frameRate=0")
+
+        // Off every screen, as in a headless run: the window follows no display.
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 20, height: 20),
+                              styleMask: .borderless, backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView!.addSubview(runtime.browser.containerView)
+        expect(PageProbe.viewState(runtime).hasSuffix(" display=none"), "the view state names the display the page's window is on")
+        manager.closeAll()
     }
 
     @MainActor
@@ -232,17 +266,20 @@ enum BrowserManagerLifecycleTests {
         let id = store.createTab(url: "https://example.test/devtools").id
         manager.show(id, focus: false)
         let browser = manager.runtime(for: id)!.browser
-        manager.toggleDevTools()
+        manager.runDevTools(.toggle)
         manager.browser(browser, didCreateDevToolsView: NSView())
-        manager.toggleDevTools()
-        manager.toggleDevTools()
+        manager.runDevTools(.toggle)
+        manager.runDevTools(.console)
         expect(browser.devToolsRequests == ["show", "close"], "a press while DevTools close asks CEF for nothing yet")
         manager.browserDidCloseDevTools(browser)
-        expect(browser.devToolsRequests == ["show", "close", "show"], "once CEF reports them closed, the press opens them again")
+        expect(browser.devToolsRequests == ["show", "close", "show"] && browser.devToolsAction == "console",
+               "once CEF reports them closed, the press opens them again, on the Console (#88)")
         manager.browser(browser, didCreateDevToolsView: NSView())
-        manager.showDevTools()
-        expect(browser.devToolsRequests.last == "show" && manager.runtime(for: id)!.devTools.state == .open,
-               "Inspect Element on open DevTools keeps them open")
+        manager.runDevTools(.inspect)
+        expect(browser.devToolsRequests.last == "show" && manager.runtime(for: id)!.devTools.state == .open
+               && browser.devToolsAction == "inspect", "Inspect Element on open DevTools keeps them open and arms the picker")
+        manager.runDevTools(.network)
+        expect(browser.devToolsRequests.last == "close" && browser.devToolsAction == nil, "Network on open DevTools closes them")
         manager.closeAll()
     }
 
@@ -319,6 +356,76 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    /// Leaving a video tab (Arc's automatic Picture in Picture) asks the page through the protocol as
+    /// a user gesture, for an audible playing video only. The key press the page path lends the page
+    /// raced the tab going hidden, so PiP sometimes never opened (X report, 2 Nov 2026).
+    @MainActor
+    private static func leaveVideoTabPictureInPictureCase() async {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let a = store.createTab(url: "https://example.test/video").id, b = store.createTab(url: "https://example.test/other").id
+        let ra = manager.ensureRuntime(for: a)!
+        store.settings.autoPictureInPicture = true
+        manager.show(a, focus: false)
+        for (answer, fallback, label) in [("ok", 0, "a page that entered Picture in Picture"),
+                                          ("none", 1, "a page with no video of its own"),
+                                          (nil, 1, "a page whose answer was lost")] as [(String?, Int, String)] {
+            let before = ra.browser.automaticPictureInPictureRequests
+            manager.show(b, focus: false)
+            expect(ra.browser.lastParams.contains(#""userGesture":true"#), "leaving a video tab asks as a user gesture")
+            expect(ra.browser.lastParams.contains("})(true)"), "leaving a video tab takes only an audible, playing video")
+            let reply = answer.map { #"{"result":{"type":"string","value":"\#($0)"}}"# }
+            ra.browser.reply(to: "Runtime.evaluate", with: reply)
+            await drainMainQueue()
+            expect(ra.browser.automaticPictureInPictureRequests - before == fallback,
+                   "\(label) \(fallback == 1 ? "falls back to" : "does not also get") the page request")
+            manager.show(a, focus: false)
+        }
+        store.settings.autoPictureInPicture = false
+        manager.show(b, focus: false)
+        expect(!ra.browser.replies.contains { $0.method == "Runtime.evaluate" }, "with the setting off, leaving the tab asks nothing")
+        manager.closeAll()
+    }
+
+    /// A window out of sight and not key (another app or desktop in front) leaves its video tab
+    /// like a tab switch, as Arc's presentPipForOccludedWindow does, and the video comes back when
+    /// the window is key again (X report, 1 Nov 2026). Silent pages aren't asked, and a Picture in
+    /// Picture the user opened stays.
+    @MainActor
+    private static func coveredWindowPictureInPictureCase() async {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let a = store.createTab(url: "https://example.test/video").id
+        let ra = manager.ensureRuntime(for: a)!
+        store.settings.autoPictureInPicture = true
+        manager.show(a, focus: false)
+
+        manager.windowVisibilityChanged(covered: true)
+        expect(!ra.browser.replies.contains { $0.method == "Runtime.evaluate" }, "a covered window doesn't ask a silent page")
+        manager.windowVisibilityChanged(covered: false)
+
+        ra.browser.isAudible = true
+        manager.windowVisibilityChanged(covered: true)
+        expect(ra.browser.lastParams.contains(#""userGesture":true"#) && ra.browser.lastParams.contains("})(true)"),
+               "a covered window asks its playing page for automatic Picture in Picture")
+        ra.browser.reply(to: "Runtime.evaluate", with: #"{"result":{"type":"string","value":"ok"}}"#)
+        await drainMainQueue()
+        ra.browser.isInPictureInPicture = true
+        manager.browser(ra.browser, didChangePictureInPicture: true)
+        expect(ra.browser.isInPictureInPicture, "the tab is still the one in front, but out of sight: the video stays out")
+        manager.windowVisibilityChanged(covered: false)
+        expect(!ra.browser.isInPictureInPicture, "the window back in sight brings the video home")
+        manager.browser(ra.browser, didChangePictureInPicture: false)
+
+        ra.browser.isInPictureInPicture = true
+        manager.browser(ra.browser, didChangePictureInPicture: true)
+        manager.windowVisibilityChanged(covered: true)
+        expect(!ra.browser.replies.contains { $0.method == "Runtime.evaluate" }, "a page already in Picture in Picture isn't asked again")
+        manager.windowVisibilityChanged(covered: false)
+        expect(ra.browser.isInPictureInPicture, "Picture in Picture the user opened stays when the window shows again")
+        manager.closeAll()
+    }
+
     /// A woken page's toolbar starts in the colour its page last reported (Arc, #46), and a tab
     /// coming on screen asks its page for its background again unless the page is still loading.
     @MainActor
@@ -341,6 +448,47 @@ enum BrowserManagerLifecycleTests {
         expect(woken.browser.backgroundProbes == 1, "a loaded page coming on screen is asked for its background")
         manager.show(a, focus: false)
         expect(woken.browser.backgroundProbes == 1, "one already on screen is not asked again")
+        manager.closeAll()
+    }
+
+    /// A restored tab asked for an extension's page before --load-extension loaded it: Chromium
+    /// blocked it (ERR_BLOCKED_BY_CLIENT), and the page is loaded again while the extension comes up.
+    @MainActor
+    private static func extensionPageRetryCase() {
+        let clock = ManualScheduler()
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView(), clock: clock)
+        let ext = "abcdefghijklmnopabcdefghijklmnop", url = "chrome-extension://\(ext)/options.html"
+        ExtensionStore.shared.entries = [.init(extensionID: ext)]
+        let rt = manager.ensureRuntime(for: store.createTab(url: url).id)!
+        manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
+        clock.advance(by: 0.2)
+        expect(rt.browser.loads.isEmpty, "the page is not loaded again before the first wait ends")
+        clock.advance(by: 0.1)
+        expect(rt.browser.loads == [url], "the blocked page is loaded again once")
+        for _ in 1..<ExtensionPageRetry.attempts {
+            manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
+            clock.advance(by: 4)
+        }
+        expect(rt.browser.loads.count == ExtensionPageRetry.attempts, "every attempt loads it again")
+        manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
+        clock.advance(by: 60)
+        expect(rt.browser.loads.count == ExtensionPageRetry.attempts, "after the last attempt the error page stays")
+        manager.browser(rt.browser, didFinishLoadingURL: url, title: "Options", statusCode: 200)
+        manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
+        clock.advance(by: 0.25)
+        expect(rt.browser.loads.count == ExtensionPageRetry.attempts + 1, "a page that loaded starts counting again")
+
+        let other = manager.ensureRuntime(for: store.createTab(url: url).id)!
+        manager.browser(other.browser, didFailLoadingURL: url, errorCode: -20)
+        other.browser.navigate(to: "https://example.test/")
+        clock.advance(by: 1)
+        expect(other.browser.loads.isEmpty, "a tab that went elsewhere meanwhile stays there")
+        ExtensionStore.shared.entries = []
+        other.browser.navigate(to: url)
+        manager.browser(other.browser, didFailLoadingURL: url, errorCode: -20)
+        clock.advance(by: 60)
+        expect(other.browser.loads.isEmpty, "an extension that is off in the tab's profile is not retried")
         manager.closeAll()
     }
 

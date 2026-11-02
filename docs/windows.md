@@ -27,9 +27,17 @@ none of `scripts/cef-patches`).
   Linux job holds CraCore to the same 85 % line coverage as the macOS CI.
 - The sidebar's model (`SidebarStore`: spaces, tabs, folders, splits, the archive) is in
   CraCore, so the Windows sidebar edits the same `sidebar.json` the Mac app does.
-- Windows-only code stays in `Windows/` and `.github/workflows/windows.yml`.
+- Windows-only code stays in `Windows/` and `.github/workflows/windows.yml`
+  (`upstream-drift.yml` is the fork's own and is left out when the port is folded back).
 - The Windows app reads and writes the same data-folder formats (`sidebar.json` and the
   others), under `%LOCALAPPDATA%\Cra`.
+
+## Keeping up with upstream
+
+The port is meant to fold back into VictorKildahl/cra, so the fork's main merges upstream's
+main before each new piece of work, and `.github/workflows/upstream-drift.yml` reports every
+Monday how far behind it is (and fails when upstream no longer merges cleanly). Mac code
+changes only where a decision moves into CraCore, and then as upstream would write it.
 
 ## Chromium
 

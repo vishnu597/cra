@@ -26,6 +26,7 @@
 #include "include/cef_keyboard_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_navigation_entry.h"
 #include "include/cef_parser.h"
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_context.h"
@@ -67,7 +68,8 @@ static BOOL g_alreadyRunning = NO;
 static NSHashTable<CraBrowser*>* g_allBrowsers = nil;
 /// Closed tabs whose page stays alive until its downloads end (see -[CraBrowser close]).
 static NSMutableSet<CraBrowser*>* g_parkedBrowsers = nil;
-static void (^g_strayPageHandler)(NSString*) = nil;
+static void (^g_strayPageHandler)(NSString*, NSString*) = nil;
+static void (^g_processEventHandler)(NSString*, NSString*, NSString*) = nil;
 
 static NSString* NSStringFromCef(const CefString& s) {
     std::string utf8 = s.ToString();
@@ -150,6 +152,9 @@ enum CraMenuCommand {
 @implementation CraDownloadInfo
 @end
 
+@implementation CraSSLStatus
+@end
+
 // MARK: - CraBrowser private interface
 
 class CraClient;
@@ -182,6 +187,7 @@ static CraClient* AsCraClient(CefClient* c) {
 - (void)adoptBrowser:(CefRefPtr<CefBrowser>)browser;
 - (void)devToolsBrowserCreated:(CefRefPtr<CefBrowser>)browser;
 - (void)devToolsBrowserClosed;
+- (void)runDevToolsAction;
 - (void)browserClosed;
 - (void)downloadUpdated:(CraDownloadInfo*)download;
 - (CefRefPtr<CefBrowser>)cefBrowser;
@@ -262,8 +268,13 @@ public:
             browser->GetHost()->CloseBrowser(true);
             return true;
         }
-        void (^handler)(NSString*) = g_strayPageHandler;
-        dispatch_async(dispatch_get_main_queue(), ^{ handler(url); });
+        // The profile whose extension asked: its pages belong in a space on that profile (#107).
+        CefRefPtr<CefRequestContext> context = browser->GetHost()->GetRequestContext();
+        NSString* cache = context ? NSStringFromCef(context->GetCachePath()) : @"";
+        // The global context's path is the root folder: that is Default.
+        NSString* profile = !cache.length ? nil : [cache.lastPathComponent hasPrefix:@"Profile "] ? cache.lastPathComponent : @"Default";
+        void (^handler)(NSString*, NSString*) = g_strayPageHandler;
+        dispatch_async(dispatch_get_main_queue(), ^{ handler(url, profile); });
         browser->GetHost()->CloseBrowser(true);
         return true;
     }
@@ -442,6 +453,45 @@ static void ObserveExtensionSettings(CefRefPtr<CefRequestContext> context) {
     }
 }
 
+// Secure DNS lives in Local State, the global preference manager, not in a profile (#110).
+// Picking a provider changes mode and templates one after the other: one call for both.
+static void (^g_secureDNSHandler)(void) = nil;
+static bool g_secureDNSChangePending = false;
+static std::vector<CefRefPtr<CefRegistration>> g_secureDNSObservers;
+
+static void NotifySecureDNS() {
+    if (!g_secureDNSHandler || g_secureDNSChangePending || g_quitting) return;
+    g_secureDNSChangePending = true;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_secureDNSChangePending = false;
+        if (g_secureDNSHandler && !g_quitting) g_secureDNSHandler();
+    });
+}
+
+class SecureDNSObserver : public CefPreferenceObserver {
+public:
+    void OnPreferenceChanged(const CefString& name) override { NotifySecureDNS(); }
+private:
+    IMPLEMENT_REFCOUNTING(SecureDNSObserver);
+};
+
+static void ObserveSecureDNS() {
+    CefRefPtr<CefPreferenceManager> local = CefPreferenceManager::GetGlobalPreferenceManager();
+    if (!local) return;
+    CefRefPtr<SecureDNSObserver> observer = new SecureDNSObserver();
+    for (const char* name : {"dns_over_https.mode", "dns_over_https.templates"}) {
+        if (CefRefPtr<CefRegistration> r = local->AddPreferenceObserver(name, observer)) g_secureDNSObservers.push_back(r);
+    }
+}
+
+static NSString* SecureDNSPreference(const char* name) {
+    if (!g_contextInitialized || g_quitting) return nil;
+    CefRefPtr<CefPreferenceManager> local = CefPreferenceManager::GetGlobalPreferenceManager();
+    CefRefPtr<CefValue> value = local ? local->GetPreference(name) : nullptr;
+    if (!value || value->GetType() != VTYPE_STRING) return nil;
+    return NSStringFromCef(value->GetString());
+}
+
 /// Profiles other than the global Default one get the same preferences once they load,
 /// then create the browsers that waited for them.
 class ProfileContextHandler : public CefRequestContextHandler {
@@ -470,7 +520,8 @@ static CefRefPtr<CefRequestContext> IncognitoContext() {
 }
 
 /// A space's own profile: cookies, logins, storage and cache in a folder next to
-/// Default (it must sit under root_cache_path). nil is the global Default profile.
+/// Default (it must sit under root_cache_path). nil is the global Default profile
+/// (--profile-directory=Default keeps it there).
 static CefRefPtr<CefRequestContext> ProfileContext(NSString* path) {
     if (!path.length) return nullptr;
     std::string key = path.UTF8String;
@@ -517,6 +568,11 @@ public:
         command_line->AppendSwitch("disable-session-crashed-bubble");
         command_line->AppendSwitch("hide-crash-restore-bubble");
         command_line->AppendSwitch("no-first-run");
+        // The global request context, which Default spaces, fetches and extension settings use
+        // (ProfileContext(nil)), is the profile Chrome starts with. Without a profile directory
+        // that is Local State's profile.last_used, which a focused page in another space's
+        // profile sets, so after a relaunch Default pages loaded in that profile (#81).
+        command_line->AppendSwitchWithValue("profile-directory", "Default");
         // Unpacked Chrome extensions (Chrome-style browsers only): one folder per extension.
         if (process_type.empty()) {
             // Use the same resolved data root as AppPaths/ExtensionStore, never an
@@ -593,7 +649,9 @@ public:
         CEF_REQUIRE_UI_THREAD();
         ApplyProfilePreferences(CefRequestContext::GetGlobalContext());
         ObserveExtensionSettings(CefRequestContext::GetGlobalContext());
+        ObserveSecureDNS();
         g_contextInitialized = true;
+        NotifySecureDNS();
         NSArray<CraBrowser*>* pending = [g_pendingCreation copy];
         [g_pendingCreation removeAllObjects];
         for (CraBrowser* b in pending) {
@@ -727,6 +785,10 @@ static const char kCraDevToolsHooks[] =
     "if(++n>60){clearInterval(timer);timer=null;var f=make();f.style.position='fixed';f.style.top='1px';f.style.right='4px';f.style.zIndex='2147483647';document.body.appendChild(f);}},150);}"
     "function removeClose(){if(timer){clearInterval(timer);timer=null;}var b=find(document,'#cra-close');if(b)b.remove();}"
     "h.closeWindow=function(){console.log('__cra_devtools_close');};"
+    // Chrome asks the frontend for a panel or the element picker once it reports loadCompleted
+    // (DevToolsWindow::DoAction); -runDevToolsAction queues on __craRun until then.
+    "var lc=h.loadCompleted;h.loadCompleted=function(){var r=lc&&lc.apply(h,arguments);h.__craLoaded=1;"
+    "var q=h.__craRun||[];h.__craRun=[];q.forEach(function(f){f();});return r;};"
     "if(!/[?&]can_dock=/.test(location.search)){installClose();return;}"
     "var sent=false;"
     "h.setInspectedPageBounds=function(b){sent=true;try{console.log('__cra_devtools_bounds:'+JSON.stringify({x:b.x,y:b.y,width:b.width,height:b.height}));}catch(e){}};"
@@ -780,6 +842,7 @@ public:
         if (!frame->IsMain()) return;
         CraDevToolsLog(@"OnLoadEnd %s", frame->GetURL().ToString().c_str());
         if (host_) Prepare(browser, frame);
+        else if (CraBrowser* o = owner_; o && IsFrontend(frame->GetURL().ToString())) [o runDevToolsAction];
     }
 
     static bool IsFrontend(const std::string& url) {
@@ -808,6 +871,7 @@ public:
         // The undockable load that MakeDockable replaced still reports its end.
         if (reloaded_ && url.find("can_dock=") == std::string::npos) return;
         frame->ExecuteJavaScript(kCraDevToolsHooks, frame->GetURL(), 0);
+        if (CraBrowser* o = owner_) [o runDevToolsAction];
     }
 
     bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString& message,
@@ -1161,6 +1225,10 @@ public:
         LOG(WARNING) << "Cra: loading " << LogHost(browser, failedUrl) << " failed: " << errorText.ToString() << " ("
                      << (int)errorCode << ")";
         if ((int)errorCode == -3 /* ERR_ABORTED */) return;
+        ReportProcessEvent(browser, @"loadError", [NSString stringWithFormat:@"%d", (int)errorCode], failedUrl);
+        CraBrowser* o = owner_;
+        if (o && [o.delegate respondsToSelector:@selector(browser:didFailLoadingURL:errorCode:)])
+            [o.delegate browser:o didFailLoadingURL:NSStringFromCef(failedUrl) errorCode:(NSInteger)errorCode];
         // Chrome-style pages get Chrome's own error page: Reload retries the site and it
         // reloads by itself when the network returns. Ours, a data: URL loaded on top,
         // made Reload reload the error and added a history entry.
@@ -1312,12 +1380,40 @@ public:
         const char* what = status >= 0 && status < TS_NUM_VALUES ? kStatus[status] : "unknown";
         LOG(ERROR) << "Cra: renderer for " << LogHost(browser) << " ended: " << what << " (code " << error_code
                    << ", " << error_string.ToString() << ")";
+        ReportProcessEvent(browser, @"terminated", @(what));
     }
 
     bool OnRenderProcessUnresponsive(CefRefPtr<CefBrowser> browser,
                                      CefRefPtr<CefUnresponsiveProcessCallback> callback) override {
         LOG(ERROR) << "Cra: renderer for " << LogHost(browser) << " is unresponsive";
+        ReportProcessEvent(browser, @"unresponsive", @"");
         return false;  // Chrome's "Page Unresponsive" dialog
+    }
+
+    void OnRenderProcessResponsive(CefRefPtr<CefBrowser> browser) override {
+        ReportProcessEvent(browser, @"responsive", @"");
+    }
+
+    /// To the performance recorder: the host only, and none for incognito or Cra's own pages.
+    void ReportProcessEvent(CefRefPtr<CefBrowser> browser, NSString* kind, NSString* detail, const CefString& url = CefString()) {
+        void (^handler)(NSString*, NSString*, NSString*) = g_processEventHandler;
+        if (!handler) return;
+        CraBrowser* o = owner_;
+        NSString* site = nil;
+        if (o && !o.isIncognito) {
+            CefString u = url;
+            if (u.empty()) {
+                CefRefPtr<CefFrame> frame = browser->GetMainFrame();
+                if (frame) u = frame->GetURL();
+            }
+            CefURLParts parts;
+            if (!u.empty() && CefParseURL(u, parts)) {
+                std::string scheme = CefString(&parts.scheme).ToString();
+                std::string host = CefString(&parts.host).ToString();
+                if ((scheme == "http" || scheme == "https") && !host.empty()) site = @(host.c_str());
+            }
+        }
+        handler(kind, detail, site);
     }
 
     /// The site for chromium.log, which Help ▸ Export Diagnostics sends: never an incognito one
@@ -1516,6 +1612,16 @@ public:
                                 CefRefPtr<CefPermissionPromptCallback> callback) override {
         CraBrowser* o = owner_;
         if (!o || !o.delegate) return false;
+        // A page's <usermedia> or <permission> element (Meet's "Use microphone and camera")
+        // asks again for the requests just allowed, from inside Continue, when macOS has not
+        // yet given Cra the camera or microphone: Chrome's own prompt shows a macOS step
+        // there. Those requests are decided, so a second answer hits a CHECK in Chromium
+        // (#111). Close the step like Chrome's close button; Chrome's media code asks macOS
+        // itself when the page opens the device. CEF runs this Continue after we return.
+        if (answering_prompt_) {
+            callback->Continue(CEF_PERMISSION_RESULT_DISMISS);
+            return true;
+        }
         NSUInteger kinds = 0;
         if (requested_permissions & (CEF_PERMISSION_TYPE_CAMERA_STREAM | CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM)) kinds |= 1;
         if (requested_permissions & CEF_PERMISSION_TYPE_MIC_STREAM) kinds |= 2;
@@ -1525,12 +1631,16 @@ public:
         CefRefPtr<CefPermissionPromptCallback> cb = callback;
         [o.delegate browser:o requestsPermissionForOrigin:NSStringFromCef(requesting_origin) kinds:kinds
                  completion:^(BOOL allowed) {
+            answering_prompt_ = true;
             cb->Continue(allowed ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+            answering_prompt_ = false;
         }];
         return true;
     }
 
 private:
+    // True while a prompt's answer runs (UI thread only).
+    static inline bool answering_prompt_ = false;
     __weak CraBrowser* owner_;
     CefRefPtr<FaviconState> favicon_ = new FaviconState();
     CefRefPtr<CefResourceRequestHandler> blocker_ = new CraContentBlockingHandler();
@@ -1832,12 +1942,17 @@ class CraDevToolsObserver : public CefDevToolsMessageObserver {
     if (!_browser) return;
     if (self.hostWindow) {
         // Chrome-style: Chrome docks DevTools inside the page window itself.
+        BOOL open = _browser->GetHost()->HasDevTools();
         _browser->GetHost()->ShowDevTools(CefWindowInfo(), nullptr, CefBrowserSettings(), CefPoint((int)point.x, (int)point.y));
+        // Open DevTools take the action now; new ones when DevToolsClient prepares the frontend.
+        if (open && _devToolsBrowser && !_devToolsBrowser->IsLoading()) [self runDevToolsAction];
         return;
     }
     if (_browser->GetHost()->HasDevTools()) {
         _browser->GetHost()->ShowDevTools(CefWindowInfo(), nullptr, CefBrowserSettings(),
                                           CefPoint((int)point.x, (int)point.y));
+        // A frontend still loading takes the action when DevToolsClient prepares it.
+        if (_devToolsBrowser && !_devToolsBrowser->IsLoading()) [self runDevToolsAction];
         return;
     }
     NSView* host = [self.delegate devToolsHostViewForBrowser:self];
@@ -1866,6 +1981,25 @@ class CraDevToolsObserver : public CefDevToolsMessageObserver {
 
 - (void)showDevTools { [self showDevToolsInspectingPoint:NSZeroPoint]; }
 - (void)closeDevTools { if (_browser) _browser->GetHost()->CloseDevTools(); }
+// The frontend's own API, which Chrome's DevToolsWindow::DoAction calls through DevToolsAPI.
+- (void)runDevToolsAction {
+    NSString* action = _devToolsAction;
+    if (!action || !_devToolsBrowser) return;
+    _devToolsAction = nil;
+    NSString* call;
+    if ([action isEqualToString:@"inspect"]) call = @"enterInspectElementMode()";
+    else if ([@[@"console", @"network", @"elements"] containsObject:action]) call = [NSString stringWithFormat:@"showPanel('%@')", action];
+    else return;
+    CraDevToolsLog(@"frontend %@", call);
+    // Hooked frontends run it on loadCompleted (or at once once loaded); one loaded before the
+    // hooks went in never reports it, so the call goes out after 3 s regardless.
+    NSString* js = [NSString stringWithFormat:@"(function(){var h=window.InspectorFrontendHost,done=false;"
+                    "function run(){if(done)return;done=true;var a=window.InspectorFrontendAPI;if(a)a.%@;}"
+                    "if(!h||h.__craLoaded){run();return;}(h.__craRun=h.__craRun||[]).push(run);setTimeout(run,3000);})();", call];
+    CefRefPtr<CefFrame> f = _devToolsBrowser->GetMainFrame();
+    if (f) f->ExecuteJavaScript(CefStringFromNS(js), f->GetURL(), 0);
+}
+
 - (void)devToolsBrowserCreated:(CefRefPtr<CefBrowser>)browser { _devToolsBrowser = browser; }
 - (void)devToolsBrowserClosed { _devToolsBrowser = nullptr; }
 - (void)executeJavaScript:(NSString*)script inDevTools:(BOOL)inDevTools {
@@ -1873,6 +2007,32 @@ class CraDevToolsObserver : public CefDevToolsMessageObserver {
     if (!_devToolsBrowser) return;
     CefRefPtr<CefFrame> f = _devToolsBrowser->GetMainFrame();
     if (f) f->ExecuteJavaScript(CefStringFromNS(script), f->GetURL(), 0);
+}
+
+- (CraSSLStatus*)sslStatus {
+    if (!_browser) return nil;
+    CefRefPtr<CefNavigationEntry> entry = _browser->GetHost()->GetVisibleNavigationEntry();
+    CefRefPtr<CefSSLStatus> ssl = entry ? entry->GetSSLStatus() : nullptr;
+    if (!ssl) return nil;
+    CraSSLStatus* status = [CraSSLStatus new];
+    status.secureConnection = ssl->IsSecureConnection();
+    status.certStatus = (NSUInteger)ssl->GetCertStatus();
+    status.contentStatus = (NSUInteger)ssl->GetContentStatus();
+    NSMutableArray<NSData*>* certificates = [NSMutableArray array];
+    auto add = [&](CefRefPtr<CefBinaryValue> der) {
+        if (!der || !der->GetSize()) return;
+        NSMutableData* data = [NSMutableData dataWithLength:der->GetSize()];
+        der->GetData(data.mutableBytes, data.length, 0);
+        [certificates addObject:data];
+    };
+    if (CefRefPtr<CefX509Certificate> cert = ssl->GetX509Certificate()) {
+        add(cert->GetDEREncoded());
+        CefX509Certificate::IssuerChainBinaryList chain;
+        cert->GetDEREncodedIssuerChain(chain);
+        for (auto& der : chain) add(der);
+    }
+    status.certificates = certificates;
+    return status;
 }
 
 - (double)zoomLevel { return _browser ? _browser->GetHost()->GetZoomLevel() : 0; }
@@ -2289,7 +2449,8 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 
 + (BOOL)anotherInstanceWasNotified { return g_alreadyRunning; }
 + (void)setRelaunchHandler:(void (^)(NSArray<NSString*>*))handler { g_relaunchHandler = [handler copy]; }
-+ (void)setStrayPageHandler:(void (^)(NSString*))handler { g_strayPageHandler = [handler copy]; }
++ (void)setStrayPageHandler:(void (^)(NSString*, NSString*))handler { g_strayPageHandler = [handler copy]; }
++ (void)setProcessEventHandler:(void (^)(NSString*, NSString*, NSString*))handler { g_processEventHandler = [handler copy]; }
 + (BOOL)isExtensionWindow:(NSWindow*)window { return window && [g_extensionWindows containsObject:window]; }
 + (BOOL)isPageWindow:(NSWindow*)window {
     for (CraBrowser* b in g_allBrowsers) if (window && b.hostWindow == window) return YES;
@@ -2303,6 +2464,7 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     g_incognitoContext = nullptr;
     g_profileContexts.clear();
     g_extensionSettingsObservers.clear();
+    g_secureDNSObservers.clear();
     g_waitingForProfile = nil;
     CefShutdown();
 }
@@ -2341,6 +2503,12 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 }
 + (void)setExtensionSettingsChangeHandler:(void (^)(void))handler {
     g_extensionSettingsHandler = [handler copy];
+}
++ (NSString*)secureDNSMode { return SecureDNSPreference("dns_over_https.mode"); }
++ (NSString*)secureDNSTemplates { return SecureDNSPreference("dns_over_https.templates"); }
++ (void)setSecureDNSChangeHandler:(void (^)(void))handler {
+    g_secureDNSHandler = [handler copy];
+    if (g_contextInitialized) NotifySecureDNS();
 }
 + (void)sendBrowserDevToolsMethod:(NSString*)method params:(NSString*)params
                        completion:(void (^)(NSString* _Nullable, NSString* _Nullable))completion {

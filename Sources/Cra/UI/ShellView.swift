@@ -15,6 +15,12 @@ final class ShellView: NSView {
     /// them (docs, 25 Oct 2026). Falls back to `vibrancy` when the layer class is missing.
     let backdropHost = NSView()
     private var backdropLayer: CALayer?
+    /// In fullscreen there is nothing behind the window to capture (the backdrop read black),
+    /// so NSVisualEffectView, and with it Arc's sidebar, swaps its capture for the desktop
+    /// tint (CAChameleonLayer). We do the same (GitHub #83).
+    private var desktopTintLayer: CALayer?
+    var windowFullscreen = false { didSet { if windowFullscreen != oldValue { refreshLift() } } }
+    private var loggedBackdrop: String?
     private let dimLayer = CALayer()
     private let liftLayer = CAGradientLayer()
     /// Set by the window controller: light theme that wants the blur path.
@@ -56,7 +62,7 @@ final class ShellView: NSView {
     var onPaneResizeBegan: (() -> Void)?
     /// Builds a pane's toolbar (the window controller owns the environment).
     var makeToolbar: ((UUID?) -> NSView)?
-    /// Where the status bubble, toasts and find bar live (the content container, or an
+    /// Where the status bubble and find bar live (the content container, or an
     /// overlay panel's content view when pages are separate windows).
     private(set) var overlayParent: NSView
     /// Set while the sidebar/card frames are being animated; layout() then leaves them alone.
@@ -66,7 +72,6 @@ final class ShellView: NSView {
     /// Arc's faint card over the gradient while no tab is selected.
     let placeholderHost = NSView()
     let statusHost: NSView
-    let toastHost: NSView
     let findHost: NSView
 
     /// Stand-in pane id for the no-tab state (toolbar on the gradient, no card).
@@ -136,12 +141,22 @@ final class ShellView: NSView {
             vibrancyLift.isHidden = true
             backdropHost.isHidden = false
             CATransaction.begin(); CATransaction.setDisableActions(true)
+            let tint = windowFullscreen && desktopTintLayer != nil
+            backdropLayer?.isHidden = tint
+            desktopTintLayer?.isHidden = !tint
             // Solid: Arc's material is grey 66 passing 52 % of the backdrop, flat 212 while inactive.
             dimLayer.opacity = Float(solidBackdrop ? (windowActive ? 0.30 : 1) : windowActive ? t.blurDim : t.blurDimInactive)
             let top = solidBackdrop ? (windowActive ? 0.26 : 0.83) : windowActive ? t.liftActive : t.liftInactive
             let bottom = solidBackdrop ? top : windowActive ? t.liftActiveBottom : t.liftInactive
             liftLayer.colors = [NSColor(white: 1, alpha: top).cgColor, NSColor(white: 1, alpha: bottom).cgColor]
             CATransaction.commit()
+            // One line per change, so a report of a sharp or off-colour sidebar can be matched
+            // to the window's state in cra.log.
+            let state = "\(tint ? "desktop tint" : "blur"), \(windowActive ? "active" : "inactive")"
+            if state != loggedBackdrop {
+                loggedBackdrop = state
+                CraLog.note("sidebar backdrop: " + state)
+            }
         } else {
             backdropHost.isHidden = true
             vibrancyLift.isHidden = false
@@ -153,14 +168,12 @@ final class ShellView: NSView {
     }
     var statusVisible = false
     var findVisible = false
-    var toastCount = 0
     private var trackingArea: NSTrackingArea?
 
-    init(frame: NSRect, background: NSView, sidebar: NSView, toolbar: NSView, status: NSView, toasts: NSView, find: NSView) {
+    init(frame: NSRect, background: NSView, sidebar: NSView, toolbar: NSView, status: NSView, find: NSView) {
         backgroundHost = background
         sidebarHost = sidebar
         statusHost = status
-        toastHost = toasts
         findHost = find
         overlayParent = contentContainer
         super.init(frame: frame)
@@ -186,8 +199,18 @@ final class ShellView: NSView {
             b.filters = [blur]
             b.setValue(true, forKey: "windowServerAware")
             b.setValue("NSCGSWindowBehindWindowCaptureBackdropGroup", forKey: "groupName")
+            // While the window server rebuilds the capture (activation, a Space switch) the
+            // layer showed the stale, unblurred backdrop: the window behind, sharp (GitHub
+            // #83). NSVisualEffectView's own layer allows a substitute colour for that time.
+            if b.responds(to: NSSelectorFromString("setAllowsSubstituteColor:")) { b.setValue(true, forKey: "allowsSubstituteColor") }
             backdropHost.layer?.addSublayer(b)
             backdropLayer = b
+            if let tintClass = NSClassFromString("CAChameleonLayer") as? CALayer.Type {
+                let t = tintClass.init()
+                t.isHidden = true
+                backdropHost.layer?.addSublayer(t)
+                desktopTintLayer = t
+            }
         }
         dimLayer.backgroundColor = NSColor.black.cgColor
         backdropHost.layer?.addSublayer(dimLayer)
@@ -221,7 +244,7 @@ final class ShellView: NSView {
             self.layoutSubtreeIfNeeded()
         }
         contentContainer.addSubview(placeholderHost)
-        for h in [statusHost, toastHost, findHost] as [NSView] {
+        for h in [statusHost, findHost] as [NSView] {
             h.isHidden = true
             contentContainer.addSubview(h)
         }
@@ -509,6 +532,7 @@ final class ShellView: NSView {
         backdropHost.frame = bounds
         CATransaction.begin(); CATransaction.setDisableActions(true)
         backdropLayer?.frame = backdropHost.bounds
+        desktopTintLayer?.frame = backdropHost.bounds
         dimLayer.frame = backdropHost.bounds
         liftLayer.frame = backdropHost.bounds
         CATransaction.commit()
@@ -594,17 +618,12 @@ final class ShellView: NSView {
         if showDev, selfDock, let pr = frontendPageRect { webInContainer = contentContainer.convert(pr, from: nil) }
         let wb = overlayParent === contentContainer ? webInContainer : NSRect(origin: .zero, size: webInContainer.size)
         if overlayParent === contentContainer {
-            for h in [statusHost, toastHost, findHost] where contentContainer.subviews.last !== h {
+            for h in [statusHost, findHost] where contentContainer.subviews.last !== h {
                 contentContainer.addSubview(h, positioned: .above, relativeTo: nil)
             }
         }
         statusHost.isHidden = !statusVisible
         statusHost.frame = NSRect(x: wb.minX, y: wb.minY, width: min(540, wb.width), height: 34)
-        if toastHost.superview === overlayParent {
-            let size = Self.toastStackSize(count: toastCount)
-            toastHost.isHidden = toastCount == 0
-            toastHost.frame = NSRect(x: wb.maxX - size.width, y: wb.minY, width: size.width, height: size.height)
-        }
         if findHost.superview === overlayParent {
             let size = CraMetrics.findBarSize, inset = CraMetrics.findBarInset
             findHost.isHidden = !findVisible
@@ -613,25 +632,18 @@ final class ShellView: NSView {
         if !animatingPanes, paneCards.allSatisfy({ $0.frozenWebBounds == nil }) { onPaneFrames?(paneWebFrames(layout)) }
     }
 
-    /// The download toast stack, bottom trailing over the focused page.
-    static func toastStackSize(count: Int) -> NSSize {
-        NSSize(width: 330, height: CGFloat(count) * 76 + 20)
-    }
-
     /// Chrome-style hosting: the status bubble moves into a click-through panel above the
-    /// page windows; the find bar and the toasts, which take clicks, each into their own
-    /// panel just their size, which the window controller places.
-    func moveOverlays(to view: NSView, findBar: NSPanel, toasts: NSPanel) {
+    /// page windows; the find bar, which takes clicks, into its own panel just its size, which
+    /// the window controller places.
+    func moveOverlays(to view: NSView, findBar: NSPanel) {
         overlayParent = view
         statusHost.removeFromSuperview()
         view.addSubview(statusHost)
-        for (host, panel) in [(findHost, findBar), (toastHost, toasts)] {
-            host.removeFromSuperview()
-            host.isHidden = false
-            host.autoresizingMask = [.width, .height]
-            host.frame = panel.contentView!.bounds
-            panel.contentView!.addSubview(host)
-        }
+        findHost.removeFromSuperview()
+        findHost.isHidden = false
+        findHost.autoresizingMask = [.width, .height]
+        findHost.frame = findBar.contentView!.bounds
+        findBar.contentView!.addSubview(findHost)
         needsLayout = true
     }
 

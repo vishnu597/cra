@@ -60,7 +60,8 @@ final class SidebarView: NSView {
         }
         let paletteChanged = lastSpaceID == nil || space.theme != store.space(lastSpaceID ?? space.id)?.theme || space.id != lastSpaceID
         if space.id != lastSpaceID {
-            if lastSpaceID != nil { ui.clearPicks() }
+            // A drag that hovered another space's icon carries the picks there; its end clears them.
+            if lastSpaceID != nil, ui.draggingID == nil { ui.clearPicks() }
             lastSpaceID = space.id
         }
         if paletteChanged || palette.isDark != space.theme.palette.isDark {
@@ -338,10 +339,16 @@ final class SidebarTopBarView: NSView {
             let host = URL(string: url)?.host ?? ""
             let text = tab == nil ? "Search or Enter URL…" : (host.isEmpty ? SuggestionEngine.humanURL(url) : host.replacingOccurrences(of: "www.", with: ""))
             let ext = ExtensionStore.shared
-            let entries = ext.entries(inProfile: tab.map { store.profileDirectoryName(item: $0.id) }
-                                      ?? store.profileDirectoryName(space: store.focusedSpaceID(window: ui.windowID)))
-            let pinned = ext.pinnedIDs.compactMap { id in entries.first { $0.extensionID == id }.map { (id, $0.name, ext.toolbarIcon(for: $0)) } }
-            pill.show(text: text, url: url, hasTab: tab != nil, status: ui.toolbarStatus, colors: colors, active: active,
+            let profile = tab.map { store.profileDirectoryName(item: $0.id) }
+                ?? store.profileDirectoryName(space: store.focusedSpaceID(window: ui.windowID))
+            let entries = ext.entries(inProfile: profile)
+            let pinned = ext.pinnedIDs(inProfile: profile).compactMap { id in
+                entries.first { $0.extensionID == id }.map {
+                    (id, $0.name, ext.badged(ext.toolbarIcon(for: $0, profile: profile, tab: tab?.id),
+                                             ext.badge(for: $0, profile: profile, tab: tab?.id), tint: colors.textSecondary))
+                }
+            }
+            pill.show(text: text, url: url, hasTab: tab != nil, colors: colors, active: active,
                       pinned: pinned, hasExtensions: !entries.isEmpty)
         }
         needsLayout = true
@@ -430,11 +437,13 @@ private final class DevMenuChevron: NSView {
         let m = NSMenu()
         m.autoenablesItems = false
         let a = actions
-        MenuItems.add(m, "Refresh the Page") { a.performAction("reload") }
-        MenuItems.add(m, "Force Refresh the Page") { a.performAction("hardReload") }
-        m.addItem(.separator())
-        MenuItems.add(m, "View Source") { a.performAction("viewSource") }
-        MenuItems.add(m, "Developer Tools") { a.performAction("devTools") }
+        // Arc's menu (Reload ✓ ⌘R, Refresh (Ignore Cache) ⇧⌘R | Clear Cookies and Refresh) in the
+        // registry's words, with Clear Cache beside Clear Cookies and Cra's developer items under
+        // them (#89).
+        for group in [["reload", "hardReload"], ["clearCookies", "clearCache"], ["viewSource", "devTools"]] {
+            if m.numberOfItems > 0 { m.addItem(.separator()) }
+            for id in group { MenuItems.add(m, action: id, on: id == "reload" ? true : nil) { a.performAction(id) } }
+        }
         m.popUp(positioning: nil, at: NSPoint(x: 0, y: -4), in: self)
     }
 }
@@ -444,7 +453,6 @@ final class SidebarURLPill: NSView {
     var actions: SidebarActions?
     var showAccessories = false { didSet { if showAccessories != oldValue { refreshAccessories(animated: true) } } }
     private let label = NSTextField.sidebarLabel(size: 13)
-    private let statusIcon = NSImageView()
     private let tip: ArcTooltipAnchorView
     private var accessories: [NSView] = []
     private var hovering = false { didSet { if hovering != oldValue { refreshFill() } } }
@@ -459,8 +467,6 @@ final class SidebarURLPill: NSView {
         layer?.cornerRadius = 10
         layer?.cornerCurve = .continuous
         label.lineBreakMode = .byTruncatingMiddle
-        statusIcon.imageScaling = .scaleNone
-        addSubview(statusIcon)
         addSubview(label)
         tip.followsCursor = true
         tip.autoresizingMask = [.width, .height]
@@ -472,22 +478,13 @@ final class SidebarURLPill: NSView {
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
 
-    func show(text: String, url: String, hasTab: Bool, status: ToolbarStatus?, colors: SidebarColors, active: Bool,
+    func show(text: String, url: String, hasTab: Bool, colors: SidebarColors, active: Bool,
               pinned: [(String, String, NSImage?)], hasExtensions: Bool) {
         self.colors = colors
         self.hasTab = hasTab
         tip.text = url
-        if let status {
-            statusIcon.isHidden = false
-            statusIcon.image = SidebarSymbols.image(status.symbol, size: 10, weight: .semibold)
-            statusIcon.contentTintColor = colors.textSecondary
-            label.stringValue = status.text
-            label.textColor = colors.textSecondary
-        } else {
-            statusIcon.isHidden = true
-            label.stringValue = text
-            label.textColor = hasTab ? colors.textPrimary : colors.textTertiary
-        }
+        label.stringValue = text
+        label.textColor = hasTab ? colors.textPrimary : colors.textTertiary
         model = (pinned, hasExtensions, active)
         refreshAccessories(animated: false)
         refreshFill()
@@ -503,9 +500,10 @@ final class SidebarURLPill: NSView {
         accessories.forEach { $0.removeFromSuperview() }
         accessories = []
         guard showAccessories, hasTab, let m = model, let actions else { needsLayout = true; return }
-        for (id, name, icon) in m.pinned {
+        for (id, _, icon) in m.pinned {
             let b = ToolbarGlyphButton()
-            b.configure(symbol: nil, image: icon, help: name, enabled: true, width: 28, iconSize: 16, tint: colors.textSecondary)
+            // Arc's pinned extension buttons have no tooltip (#106).
+            b.configure(symbol: nil, image: icon, help: "", enabled: true, width: 28, iconSize: 16, tint: colors.textSecondary)
             b.action = { actions.runExtension(id) }
             b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
             accessories.append(b)
@@ -541,11 +539,7 @@ final class SidebarURLPill: NSView {
             v.frame = NSRect(x: right, y: (h - 28) / 2, width: 28, height: 28)
             right -= 1
         }
-        var x: CGFloat = 12
-        if !statusIcon.isHidden {
-            statusIcon.frame = NSRect(x: x, y: 0, width: 12, height: h)
-            x += 12 + 6
-        }
+        let x: CGFloat = 12
         let lh = label.intrinsicContentSize.height
         label.frame = NSRect(x: x - SidebarText.inset, y: (h - lh) / 2, width: max(0, right - x) + 2 * SidebarText.inset, height: lh)
         tip.frame = NSRect(x: 0, y: 0, width: right, height: h)
@@ -801,12 +795,12 @@ final class SpaceDockView: NSView {
         let store = self.store, ui = self.ui, actions = self.actions
         let m = NSMenu()
         m.autoenablesItems = false
-        MenuItems.add(m, "Edit Space…") { actions.editSpace(space) }
+        MenuItems.add(m, action: "editSpace") { actions.editSpace(space) }
         m.addItem(.separator())
         MenuItems.add(m, "Move Left") { if let i = store.spaceOrder.firstIndex(of: space.id) { store.moveSpace(space.id, to: max(0, i - 1)) } }
         MenuItems.add(m, "Move Right") { if let i = store.spaceOrder.firstIndex(of: space.id) { store.moveSpace(space.id, to: i + 1) } }
         m.addItem(.separator())
-        MenuItems.add(m, "Delete Space…") {
+        MenuItems.add(m, action: "deleteSpace") {
             store.focusSpace(space.id, window: ui.windowID)
             actions.performAction("deleteSpace")
         }
@@ -927,7 +921,9 @@ final class SpaceCellView: NSView, ArcTooltipTarget {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         targeted = false
         guard let id = draggedID(sender) else { return false }
-        store.moveTab(id, toSpace: spaceID)
+        // A picked tab takes the other picks along, as a drop in the list does.
+        store.moveTabs(ui.group(for: id, in: store), toSpace: spaceID)
+        if store.focusedSpaceID(window: ui.windowID) != spaceID { ui.clearPicks() }
         return true
     }
 

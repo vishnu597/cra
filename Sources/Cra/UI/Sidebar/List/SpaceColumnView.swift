@@ -86,6 +86,9 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
     /// An Icon-tab glyph in the emoji's place.
     private let symbol = NSImageView()
     private let chevron = NSImageView()
+    /// Holds the chevron at a fixed 20 pt frame, so it turns about its own centre while layout
+    /// moves the box.
+    private let chevronBox = NSView()
     private lazy var more = SidebarGlyphButton(symbol: "ellipsis", size: 24, height: 24, iconSize: 13, weight: .semibold, help: "", colors: colors) { [weak self] in
         self?.showMenu(NSApp.currentEvent)
     }
@@ -113,10 +116,12 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
         chevron.image = SidebarSymbols.image("chevron.down", size: 12.5, weight: .bold)
         chevron.imageScaling = .scaleNone
         chevron.wantsLayer = true
+        chevron.frame = NSRect(x: 0, y: 0, width: 20, height: 20)
+        chevronBox.addSubview(chevron)
         done.stringValue = "Done"
         done.isHidden = true
         symbol.imageScaling = .scaleNone
-        for v in [emoji, symbol, title, chevron, more, done] { addSubview(v) }
+        for v in [emoji, symbol, title, chevronBox, more, done] { addSubview(v) }
         sync()
     }
 
@@ -144,7 +149,7 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
                 self.sync()
             }
         }
-        if collapsed != wasCollapsed { turnChevron(from: wasCollapsed) }
+        if collapsed != wasCollapsed { turnChevron() }
         refresh()
         if hide != isHidden {
             isHidden = hide
@@ -173,18 +178,18 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
         needsLayout = true
     }
 
-    /// Arc points the chevron down while the pinned tabs show and right while they are collapsed.
-    private func angle(collapsed: Bool) -> CGFloat { collapsed ? -.pi / 2 : 0 }
-
-    /// Arc turns it a quarter over about 0.12 s (a 60 fps capture, 1 Nov).
-    private func turnChevron(from wasCollapsed: Bool) {
-        guard window != nil, let layer = chevron.layer else { return }
-        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
-        turn.fromValue = angle(collapsed: wasCollapsed)
-        turn.toValue = angle(collapsed: collapsed)
-        turn.duration = 0.12
-        turn.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        layer.add(turn, forKey: "turn")
+    /// Arc points the chevron down while the pinned tabs show and right while they are collapsed,
+    /// and turns it a quarter over about 0.12 s (a 60 fps capture, 1 Nov). The turn is AppKit's own
+    /// rotation: one set on the layer was reset by AppKit's layer geometry, so a space that opened
+    /// collapsed showed the chevron pointing down.
+    private func turnChevron() {
+        let degrees: CGFloat = collapsed ? 90 : 0
+        guard window != nil else { chevron.frameCenterRotation = degrees; return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            chevron.animator().frameCenterRotation = degrees
+        }
     }
 
     /// Arc 1.171, 2x captures (1 Nov): a 14.5 pt emoji centred in the icon's 26 pt box 5 pt in (its
@@ -200,10 +205,7 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
         symbol.frame = iconRect
         // Turned right, Arc's chevron sits a little higher than chevron.down turned about its centre.
         let (cx, cy): (CGFloat, CGFloat) = collapsed ? (18.5, h / 2 - 0.25) : (18.25, h / 2 + 0.5)
-        chevron.frame = NSRect(x: cx - 10, y: cy - 10, width: 20, height: 20)
-        chevron.layer?.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        chevron.layer?.position = CGPoint(x: chevron.frame.midX, y: chevron.frame.midY)
-        chevron.layer?.setAffineTransform(CGAffineTransform(rotationAngle: angle(collapsed: collapsed)))
+        chevronBox.frame = NSRect(x: cx - 10, y: cy - 10, width: 20, height: 20)
         more.frame = NSRect(x: w - 18.5 - 12, y: (h - 24) / 2 + 0.5, width: 24, height: 24)
         let dw = ceil(done.attributedStringValue.size().width) + 2 * SidebarText.inset
         let dh = done.intrinsicContentSize.height
@@ -339,7 +341,7 @@ enum SpaceMenu {
         profiles.addItem(.separator())
         MenuItems.add(profiles, "New Profile…") { actions.newProfile(id) }
         m.addItem(.separator())
-        MenuItems.add(m, "New Folder") {
+        MenuItems.add(m, action: "newFolder") {
             ui.renamingID = store.createFolder(named: "New Folder", in: space.pinnedContainerID, index: 0).id
         }
         let live = MenuItems.submenu(m, "Live Folders")
@@ -358,13 +360,13 @@ enum SpaceMenu {
             MenuItems.add(export, s.title, enabled: s.id != id) { store.exportSpace(id, intoFolderIn: s.id) }
         }
         m.addItem(.separator())
-        MenuItems.add(m, "Manage Spaces…") { actions.manageSpaces() }
+        MenuItems.add(m, action: "manageSpaces") { actions.manageSpaces() }
         // Arc offers this only while there is one space; Show Space Header brings it back.
         if store.orderedSpaces.count == 1 {
             MenuItems.add(m, "Hide Space Header") { store.settings.showSpaceHeaderOnSingleSpace = false }
         }
         m.addItem(.separator())
-        MenuItems.add(m, "Delete Space") { actions.deleteSpace(space) }
+        MenuItems.add(m, action: "deleteSpace", title: "Delete Space") { actions.deleteSpace(space) }
         return m
     }
 }
@@ -388,6 +390,16 @@ enum MenuItems {
         item.image = image
         if let on { item.state = on ? .on : .off }
         menu.addItem(item)
+        return item
+    }
+
+    /// A row for a KeyBindings command: its name, unless the menu words it its own way (Arc's
+    /// "Pin Tab" for pinTab), and its shortcut on the right, as in the menu bar (#89).
+    @discardableResult
+    static func add(_ menu: NSMenu, action id: String, title: String? = nil, enabled: Bool = true, on: Bool? = nil,
+                    _ run: @escaping () -> Void) -> NSMenuItem {
+        let item = add(menu, title ?? KeyBindingRegistry.shared.action(id)?.name ?? id, enabled: enabled, on: on, run)
+        item.showShortcut(of: id)
         return item
     }
 
@@ -873,23 +885,25 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
         let id = itemID
         if item.isSplit, let m = model {
             return SidebarMenus.split(id, panes: m.cells.map { ($0.id, $0.title) }, open: m.selected, store: store, ui: ui, actions: actions) {
-                MenuItems.add($0, "Remove from Favorites") { store.removeFromFavorites(id) }
+                MenuItems.add($0, action: "favoriteTab", title: "Remove from Favorites") { store.removeFromFavorites(id) }
                 $0.addItem(.separator())
             }
         }
         let tileColor = item.tab?.tileColor
         let m = NSMenu()
         m.autoenablesItems = false
-        MenuItems.add(m, "Remove from Favorites") { store.removeFromFavorites(id) }
-        MenuItems.add(m, "Rename…") { ui.renamingID = id }
+        MenuItems.add(m, action: "favoriteTab", title: "Remove from Favorites") { store.removeFromFavorites(id) }
+        MenuItems.add(m, action: "renameTab", title: "Rename…") { ui.renamingID = id }
         if let t = item.tab, t.liveItemURL == nil {
             SidebarMenus.pinnedURLItems(m, id, navigatedAway: t.url != t.savedURL, store: store, actions: actions)
         }
-        MenuItems.add(m, "Copy Link") {
+        MenuItems.add(m, action: "copyURL", title: "Copy Link") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(item.tab?.url ?? "", forType: .string)
         }
-        if let t = item.tab, t.url != t.savedURL { MenuItems.add(m, "Back to Pinned Page") { actions.resetPinnedTab(id) } }
+        if let t = item.tab, t.url != t.savedURL {
+            MenuItems.add(m, action: "resetTab", title: "Back to Pinned Page") { actions.resetPinnedTab(id) }
+        }
         m.addItem(.separator())
         MenuItems.add(m, "Change Icon…") { [weak self] in self?.pickIcon() }
         if let key = item.tab?.customIconKey {
@@ -915,7 +929,7 @@ final class FavoriteTileView: NSView, ArcTooltipTarget, NSDraggingSource {
             store.setTileColor(tileColor, for: grid.spaceFavoriteIDs())
         }
         m.addItem(.separator())
-        MenuItems.add(m, "Close") { actions.closeTab(id) }
+        MenuItems.add(m, action: "closeTab", title: "Close") { actions.closeTab(id) }
         MenuItems.add(m, "Archive") { store.archiveTab(id, reason: .manual) }
         return m
     }

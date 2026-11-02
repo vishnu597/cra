@@ -24,6 +24,18 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 @property (nonatomic) CraDownloadState state;
 @end
 
+/// The connection of the page on screen (Chromium's SSL status of the visible navigation entry).
+@interface CraSSLStatus : NSObject
+/// The page came over a connection with a certificate (https, whatever the certificate's errors).
+@property (nonatomic) BOOL secureConnection;
+/// net::CertStatus bits: the certificate's errors and notes.
+@property (nonatomic) NSUInteger certStatus;
+/// net::SSLStatus::ContentStatus bits: http content the page showed or ran.
+@property (nonatomic) NSUInteger contentStatus;
+/// The server's certificate, then its issuers, DER encoded; empty without a certificate.
+@property (nonatomic, copy) NSArray<NSData *> *certificates;
+@end
+
 @protocol CraBrowserDelegate <NSObject>
 - (void)browser:(CraBrowser *)browser didChangeTitle:(NSString *)title;
 - (void)browser:(CraBrowser *)browser didChangeURL:(NSString *)url;
@@ -84,6 +96,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 - (void)browser:(CraBrowser *)browser didChangeMediaCapture:(BOOL)capturing;
 /// The page started or stopped playing sound (see `isAudible`).
 - (void)browser:(CraBrowser *)browser didChangeAudible:(BOOL)audible;
+/// The page's main-frame load failed with a net error (ERR_ABORTED, a navigation cut off,
+/// is left out): `url` is the address that failed.
+- (void)browser:(CraBrowser *)browser didFailLoadingURL:(NSString *)url errorCode:(NSInteger)errorCode;
 /// An extension asked to bring this page's tab to the front (chrome.tabs.update with
 /// active: true; scripts/cef-patches/extension-tab-activate.patch).
 - (void)browserRequestsActivation:(CraBrowser *)browser;
@@ -139,6 +154,10 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 - (void)setFocused:(BOOL)focused;
 - (void)showDevToolsInspectingPoint:(NSPoint)point;
 - (void)showDevTools;
+/// What the next -showDevTools asks of the frontend, as Chrome's DevToolsToggleAction does: a
+/// panel to select ("console", "network", "elements"), or "inspect" for the element picker. Done
+/// once the frontend is up (at once when DevTools are already open), then cleared.
+@property (nonatomic, copy, nullable) NSString *devToolsAction;
 - (void)closeDevTools;
 - (double)zoomLevel;
 - (void)setZoomLevel:(double)level;
@@ -183,6 +202,8 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// `params` is a JSON object string; the completion gets the result JSON or an error.
 - (void)sendDevToolsMethod:(NSString *)method params:(NSString *)params
                 completion:(void (^)(NSString * _Nullable result, NSString * _Nullable error))completion;
+/// The page on screen's connection; nil before anything has committed.
+- (nullable CraSSLStatus *)sslStatus;
 - (void)notifyMoveOrResizeStarted;
 /// Asynchronous. -browserDidClose: fires when Chromium is done.
 - (void)close;
@@ -212,6 +233,14 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// http:// navigations are upgraded, and a site without HTTPS shows Chrome's warning
 /// page before it loads. Profiles that load later get it too. Off until enabled.
 + (void)setHttpsOnlyModeEnabled:(BOOL)enabled;
+/// Chromium's secure DNS setting (chrome://settings/security), app-wide in Local State:
+/// `dns_over_https.mode` and `dns_over_https.templates` as Chromium holds them now. nil
+/// before Chromium is ready and once quitting starts.
++ (nullable NSString *)secureDNSMode;
++ (nullable NSString *)secureDNSTemplates;
+/// Called on the main queue once Chromium is ready (at once if it already is) and after the
+/// secure DNS setting changes.
++ (void)setSecureDNSChangeHandler:(nullable void (^)(void))handler;
 /// Replaces the blocked list (bare domains; a domain also covers its subdomains).
 + (void)setBlockedDomains:(NSArray<NSString *> *)domains;
 /// Reads and installs a list file off the main thread: one domain per line or
@@ -243,9 +272,15 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 + (void)setRelaunchHandler:(void (^)(NSArray<NSString *> *urls))handler;
 /// Pages Chromium opens on its own (an extension's chrome.tabs.create or
 /// windows.create, welcome pages after an extension loads). The handler gets
-/// the URL to open as a Cra tab; Chrome's own window for it is closed.
+/// the URL to open as a Cra tab and the Chromium profile folder it came from
+/// ("Default", "Profile <id>"; nil off the record); Chrome's own window for it is closed.
 /// Popup-type windows (windows.create({type: "popup"})) stay Chrome's windows.
-+ (void)setStrayPageHandler:(void (^)(NSString *url))handler;
++ (void)setStrayPageHandler:(void (^)(NSString *url, NSString * _Nullable profile))handler;
+/// Renderer trouble and failed loads, for Cra's performance recorder (GitHub #91): `kind` is
+/// terminated, unresponsive, responsive or loadError; `detail` how it ended or the net error
+/// code; `site` the host (nil for incognito, Cra's own pages or a closed tab). Never a URL.
+/// On the main thread. Chrome's "Page Unresponsive" dialog still shows.
++ (void)setProcessEventHandler:(void (^)(NSString *kind, NSString *detail, NSString *_Nullable site))handler;
 /// YES for a popup window an extension opened (kept by the stray page handling).
 + (BOOL)isExtensionWindow:(NSWindow *)window;
 /// YES for the Chrome-style window hosting one of Cra's own browsers.
