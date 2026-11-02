@@ -24,6 +24,9 @@ typedef struct CraBrowserCallbacks {
     CraBrowserStringCallback address_changed;
 } CraBrowserCallbacks;
 
+/// The whole of a Chromium subprocess (CraHelper.exe): runs it and returns its exit code.
+int cra_cef_execute_process(void);
+
 /// Starts Chromium. `helper_path` is CraHelper.exe, `cache_root` the folder profiles live in
 /// (both UTF-8). Returns 0 when Chromium did not start.
 int cra_cef_initialize(const char *helper_path, const char *cache_root);

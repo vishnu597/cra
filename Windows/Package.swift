@@ -57,12 +57,10 @@ let package = Package(
         // Every Chromium subprocess (renderer, GPU, utility) runs this executable.
         .executableTarget(
             name: "CraHelperWin",
+            dependencies: ["CraCEFWin"],
             path: "Sources/CraHelperWin",
-            cxxSettings: [.unsafeFlags(cefCXXFlags)],
             linkerSettings: [
-                .unsafeFlags(cefLinkerFlags + ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]),
-                .linkedLibrary("libcef_dll_wrapper"),
-                .linkedLibrary("libcef"),
+                .unsafeFlags(["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"]),
             ]
         ),
         .executableTarget(

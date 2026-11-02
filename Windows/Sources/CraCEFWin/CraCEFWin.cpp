@@ -104,6 +104,11 @@ struct CraBrowser {
     CefRefPtr<CraClient> client;
 };
 
+extern "C" int cra_cef_execute_process(void) {
+    CefMainArgs main_args(GetModuleHandleW(nullptr));
+    return CefExecuteProcess(main_args, nullptr, nullptr);
+}
+
 extern "C" int cra_cef_initialize(const char *helper_path, const char *cache_root) {
     CefMainArgs main_args(GetModuleHandleW(nullptr));
     CefSettings settings;
