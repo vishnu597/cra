@@ -86,5 +86,8 @@ redraws through `DispatcherQueue.tryEnqueue`.
 Phase 1 in progress. Done: the full page bridge, and the sidebar on the shared SidebarStore:
 spaces (switch, create, delete), favorites, pinned tabs and folders, splits shown as one row,
 Today tabs, archive and reopen (Ctrl+Shift+T), unread and theme colours, Arc's tab and space
-shortcuts with Ctrl in place of Cmd. Next: the command bar, then downloads and find in page.
+shortcuts with Ctrl in place of Cmd, and the command bar (Ctrl+T, Ctrl+L, the sidebar's address
+and + New Tab): CraCore's SuggestionEngine in a borderless window owned by the browser window, so
+it floats over the page, with inline completion, Tab scopes and Ctrl+Return. Next: favicons in
+the bar and the sidebar, then downloads and find in page.
 The parity checklist and phases are in the porting plan.

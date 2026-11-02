@@ -19,7 +19,9 @@ final class BrowserWindow {
     private(set) var window: HostWindow!
     private var sidebar: SidebarView!
     private let sidebarPanel = Grid()
-    private let address = TextBox()
+    /// The open tab's address; a click opens the command bar on it (Arc's URL bar in the sidebar).
+    private let address = TextBlock()
+    private var addressButton: Button!
     private let status = TextBlock()
     private let permissionPanel = StackPanel()
     private let permissionText = TextBlock()
@@ -31,8 +33,13 @@ final class BrowserWindow {
     private var pages: [UUID: WebPage] = [:]
     private weak var shownPage: WebPage?
     private var shownTabID: UUID?
-    /// The address box is taking a new tab's address (Ctrl+T, + New Tab).
-    private var newTabPending = false
+    /// Ctrl+T, Ctrl+L: ranked by CraCore's SuggestionEngine, drawn in a window of its own over the page.
+    private var engine: SuggestionEngine!
+    private var commandBar: CommandBarView!
+    private var commandWindow: CommandBarWindow?
+    private var commandBarHeight = CommandBarView.height(forRows: 0)
+    /// The bar closed because another window came to the front: that window keeps the keyboard.
+    private var commandBarDeactivated = false
     private var refreshQueued = false
     /// The window is waiting for Chromium to close its pages; then it closes for good.
     private var closing = false
@@ -48,11 +55,17 @@ final class BrowserWindow {
     init(store: SidebarStore, dispatcher: WinAppSDK.DispatcherQueue) throws {
         self.store = store
         self.dispatcher = dispatcher
+        engine = SuggestionEngine(store: store, commands: { WinCommands.all }, load: WinSuggestLoader.load)
+        commandBar = CommandBarView(engine: engine, store: store)
         sidebar = SidebarView(store: store, actions: self)
         window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
         window.title = "Cra"
         hwnd = window.hwnd
-        window.onLayout = { [weak self] frame in self?.shownPage?.frame = frame }
+        window.onLayout = { [weak self] frame in
+            self?.shownPage?.frame = frame
+            self?.placeCommandBar()
+        }
+        makeCommandBar()
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
         window.shouldClose = { [weak self] in
             guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
@@ -78,6 +91,7 @@ final class BrowserWindow {
             sidebar.build()
             sidebarPanel.background = sidebar.fill
             syncPages()
+            showAddress(store.selectedTab?.tab?.url ?? "")
         } onChange: { [weak self] in
             // Called inside the change, on the main thread: draw once it is done.
             onMain { self?.queueRefresh() }
@@ -123,22 +137,23 @@ final class BrowserWindow {
                 page.frame = contentFrame()
                 page.isVisible = true
                 page.setFocused(true)
-            } else if !newTabPending {
+            } else {
                 // Nothing to show (an empty space): keys would stay with the hidden page.
-                focusAddress()
+                focusSidebar()
             }
         }
         shownTabID = id
-        guard changed, !newTabPending else { return }
-        address.text = page.map { _ in store.item(id ?? UUID())?.tab?.url ?? "" } ?? ""
+        guard changed else { return }
+        showAddress(page.map { _ in store.item(id ?? UUID())?.tab?.url ?? "" } ?? "")
         // An empty tab (a new pane) waits for an address.
-        if id != nil && page == nil { focusAddress() }
+        if id != nil && page == nil { openCommandBar(.editURL) }
     }
 
     /// Closes every page, then the window once Chromium is done with them (or after 3 s).
     private func beginClosing() {
         guard !closing else { return }
         closing = true
+        commandBar.close()
         let open = Array(pages.values)
         pages.removeAll()
         shownPage = nil
@@ -174,27 +189,13 @@ final class BrowserWindow {
         toolbar.children.append(UI.button("\u{2192}") { [weak self] in self?.shownPage?.goForward() })
         toolbar.children.append(UI.button("\u{27F3}") { [weak self] in self?.shownPage?.reload() })
 
-        address.placeholderText = "Search or enter address"
-        address.margin = Thickness(left: 0, top: 8, right: 0, bottom: 8)
-        address.keyDown.addHandler { [weak self] _, args in
-            guard let self, let args else { return }
-            if args.key == .enter {
-                self.go(to: self.address.text)
-                args.handled = true
-            } else if args.key == .escape {
-                self.cancelNewTab()
-                args.handled = true
-            }
-        }
-        address.lostFocus.addHandler { [weak self] _, _ in
-            // Checked once focus has settled: focus moving into the XAML island (from a page, or
-            // an invoke without a click) takes it from the box and gives it back.
-            _ = try? self?.dispatcher.tryEnqueue { [weak self] in
-                guard let self, self.newTabPending, self.address.text.isEmpty,
-                      self.address.focusState == .unfocused else { return }
-                self.cancelNewTab()
-            }
-        }
+        address.fontSize = 13
+        address.textTrimming = .characterEllipsis
+        address.text = "Search or enter address"
+        addressButton = UI.button(address) { [weak self] in self?.openCommandBar(.editURL) }
+        addressButton.horizontalAlignment = .stretch
+        addressButton.horizontalContentAlignment = .left
+        addressButton.margin = Thickness(left: 0, top: 8, right: 0, bottom: 8)
 
         permissionPanel.spacing = 4
         permissionPanel.visibility = .collapsed
@@ -216,7 +217,7 @@ final class BrowserWindow {
         status.fontSize = 12
         status.margin = Thickness(left: 0, top: 6, right: 0, bottom: 0)
 
-        let parts: [FrameworkElement] = [toolbar, address, sidebar.root, permissionPanel, status]
+        let parts: [FrameworkElement] = [toolbar, addressButton, sidebar.root, permissionPanel, status]
         for (i, part) in parts.enumerated() {
             sidebarPanel.children.append(part)
             try? Grid.setRow(part, Int32(i))
@@ -239,36 +240,163 @@ final class BrowserWindow {
         window?.contentFrame ?? PixelRect(x: Int32(Self.sidebarWidth), y: 0, width: 800, height: 600)
     }
 
-    // MARK: Address box
+    // MARK: Address and command bar
 
-    /// What the user typed, as CraCore turns it into a page: an address, or a search.
-    private func go(to typed: String) {
-        let text = typed.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return }
-        let url = TypedURL.looksLikeURL(text) ? TypedURL.fromInput(text) : store.settings.searchEngine.searchURL(text)
-        if newTabPending || store.selectedTab == nil {
-            newTabPending = false
-            store.createTab(url: url)
-        } else if let id = store.selectedTabID, let page = pages[id] {
+    private func showAddress(_ url: String) {
+        address.text = url.isEmpty ? "Search or enter address" : SuggestionEngine.humanURL(url)
+        address.foreground = url.isEmpty ? sidebar.secondaryTextColor : sidebar.textColor
+    }
+
+    /// Keys to the sidebar's XAML, so its shortcuts work with no page to take them.
+    private func focusSidebar() {
+        window.focusXAML()
+        _ = try? addressButton.focus(.programmatic)
+    }
+
+    private func makeCommandBar() {
+        commandBar.onCommit = { [weak self] row, typed, mode in self?.handleCommit(row, typed: typed, mode: mode) }
+        commandBar.onOpenInBackground = { [weak self] row, typed in self?.openInBackground(row, typed: typed) ?? false }
+        commandBar.onResize = { [weak self] height in
+            self?.commandBarHeight = height
+            self?.placeCommandBar()
+        }
+        commandBar.onClose = { [weak self] in
+            guard let self else { return }
+            self.commandWindow?.hide()
+            // Back to the page, unless another window took the front.
+            if !self.commandBarDeactivated { self.shownPage?.setFocused(true) }
+        }
+        do {
+            commandWindow = try CommandBarWindow(owner: window, content: commandBar.root)
+            commandWindow?.onDeactivate = { [weak self] in
+                guard let self, self.commandBar.isOpen else { return }
+                self.commandBarDeactivated = true
+                self.commandBar.close()
+            }
+        } catch {
+            print("The command bar's window could not be made: \(error)")
+        }
+    }
+
+    /// Ctrl+T (`newTab`) or Ctrl+L (`editURL`): the bar over the page, as MainWindowController opens it.
+    /// After the event that asks for it: its window taking the front inside a click handler (a
+    /// press-mode button) or a page's key callback would take the rest of that input with it.
+    func openCommandBar(_ mode: CommandBarMode) {
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.presentCommandBar(mode) }
+    }
+
+    private func presentCommandBar(_ mode: CommandBarMode) {
+        guard !closing, let commandWindow else { return }
+        // An empty pane gets Arc's "Search or Enter URL…" bar; the result fills the pane.
+        let fillingEmptyPane = store.selectedTab?.isEmptyTab == true
+        let prefill = mode == .editURL && !fillingEmptyPane ? store.selectedTab?.tab?.url : nil
+        let effective: CommandBarMode = mode == .editURL && (store.selectedTab == nil || fillingEmptyPane) ? .newTab : mode
+        commandBarDeactivated = false
+        commandBar.open(mode: effective, prefill: prefill, theme: store.focusedSpace.theme)
+        placeCommandBar()
+        commandWindow.show { [weak self] in self?.commandBar.focusField() }
+    }
+
+    /// Centred on the window, the field where a full bar would put it, so rows coming and going
+    /// don't move what you type into (MainWindowController.positionCommandPanel).
+    private func placeCommandBar() {
+        guard let commandWindow, commandBar.isOpen, let window else { return }
+        let scale = window.scale
+        let position = window.appWindow.position, size = window.appWindow.size
+        let width = min(CommandBarView.width, Double(size.width) / scale - 80) * scale
+        let fullHeight = CommandBarView.height(forRows: SuggestionEngine.maxRows) * scale
+        let top = Double(position.y) + Double(size.height) / 2 - fullHeight / 2 - 40 * scale
+        let left = Double(position.x) + (Double(size.width) - width) / 2
+        commandWindow.place(origin: PointInt32(x: Int32(left.rounded()), y: Int32(top.rounded())),
+                            size: SizeInt32(width: Int32(width.rounded()), height: Int32((commandBarHeight * scale).rounded())))
+    }
+
+    /// What Return in the bar does (MainWindowController.handleCommit).
+    private func handleCommit(_ s: Suggestion?, typed: String, mode: CommandBarMode) {
+        let query = commandBar.query
+        func open(_ url: String) {
+            store.recordQuerySelection(query: query, url: url)
+            let fillsEmptyPane = store.selectedTab?.isEmptyTab == true
+            if mode == .editURL || fillsEmptyPane, store.selectedTabID != nil {
+                loadInSelectedTab(url)
+            } else {
+                store.createTab(url: url)
+            }
+        }
+        guard let s else {
+            if typed.isEmpty { return }
+            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed))
+            return
+        }
+        switch s.kind {
+        case .switchToTab(let id):
+            store.recordQuerySelection(query: query, url: s.url ?? "")
+            store.selectTab(id)
+        case .archived(let id):
+            _ = store.restoreArchived(id)
+        case .navigate:
+            open(typed == query ? (s.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed))
+        case .search:
+            open(s.url ?? store.settings.searchEngine.searchURL(typed))
+        case .history, .topDomain:
+            open(s.url ?? "")
+        case .command(let id):
+            perform(id)
+        case .switchSpace(let id):
+            store.focusSpace(id)
+        case .moveToSpace(let id):
+            if let t = store.selectedTabID { _ = store.moveTabAndFollow(t, toSpace: id) }
+        case .moveToFolder(let id):
+            if let t = store.selectedTabID { store.moveItem(t, to: id, index: nil) }
+        }
+    }
+
+    /// Ctrl+Return in the bar (Arc's ⌘Return): the row's page in a new background tab, the bar
+    /// staying open; an open tab's row opens its address again rather than switching.
+    private func openInBackground(_ s: Suggestion?, typed: String) -> Bool {
+        let query = commandBar.query
+        let url: String?
+        switch s?.kind {
+        case nil:
+            url = typed.isEmpty ? nil : SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed)
+        case .navigate?:
+            url = typed == query ? (s?.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed)
+        case .search?:
+            url = s?.url ?? store.settings.searchEngine.searchURL(typed)
+        case .switchToTab?, .archived?, .history?, .topDomain?:
+            url = s?.url
+        default:
+            url = nil
+        }
+        guard let url, !url.isEmpty else { return false }
+        store.recordQuerySelection(query: query, url: url)
+        let tab = store.createTab(url: url, select: false)
+        store.markUnread(tab.id, false)  // Arc saves these read, unlike a link opened in the background
+        return true
+    }
+
+    private func loadInSelectedTab(_ url: String) {
+        guard let id = store.selectedTabID else { return }
+        if let page = pages[id] {
             page.loadURL(url)
             page.setFocused(true)
-        } else if let id = store.selectedTabID {
+        } else {
             // An empty tab: its first page.
             store.updateTab(id, url: url)
         }
     }
 
-    private func focusAddress() {
-        window.focusXAML()
-        _ = try? address.focus(.programmatic)
-        try? address.selectAll()
-    }
-
-    private func cancelNewTab() {
-        guard newTabPending else { return }
-        newTabPending = false
-        address.text = store.selectedTab?.tab?.url ?? ""
-        shownPage?.setFocused(true)
+    /// A command row (WinCommands).
+    private func perform(_ id: String) {
+        switch id {
+        case "newTab": beginNewTab()
+        case "reopenClosedTab": reopenClosedTab()
+        case "closeTab": closeCurrentTab()
+        case "reload": reload(ignoringCache: false)
+        case "hardReload": reload(ignoringCache: true)
+        case "pinTab": if let t = store.selectedTabID { store.togglePinned(t) }
+        default: break
+        }
     }
 
     // MARK: Commands
@@ -316,7 +444,7 @@ final class BrowserWindow {
             case letter("T") where key.shift: reopenClosedTab()
             case letter("T"): beginNewTab()
             case letter("W"): closeCurrentTab()
-            case letter("L"): focusAddress()
+            case letter("L"): openCommandBar(.editURL)
             case letter("R"): reload(ignoringCache: key.shift)
             case letter("D"): if let id = store.selectedTabID { store.togglePinned(id) }
             case vkTab: cycleTab(key.shift ? -1 : 1)
@@ -395,10 +523,9 @@ extension BrowserWindow: SidebarActions {
         }
     }
 
+    /// "+ New Tab", Ctrl+T: the command bar, making a new tab.
     func beginNewTab() {
-        newTabPending = true
-        address.text = ""
-        focusAddress()
+        openCommandBar(.newTab)
     }
 }
 
@@ -412,7 +539,7 @@ extension BrowserWindow: WebPageDelegate {
     func page(_ page: WebPage, didChangeURL url: String) {
         guard let id = tabID(of: page) else { return }
         store.updateTab(id, url: url)
-        if page === shownPage && !newTabPending { address.text = url }
+        if page === shownPage { showAddress(url) }
     }
 
     func page(_ page: WebPage, didFinishLoadingURL url: String, statusCode: Int) {

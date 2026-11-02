@@ -8,7 +8,7 @@ import WinUI
 protocol SidebarActions: AnyObject {
     /// ✕ on a row: Today tabs are archived, pinned tabs and favorites unload (MainWindowController.closeTab).
     func closeTab(_ id: UUID)
-    /// "+ New Tab": the address box, ready for a new tab.
+    /// "+ New Tab": the command bar, making a new tab.
     func beginNewTab()
 }
 
@@ -68,6 +68,7 @@ final class SidebarView {
 
     var fill: Brush { palette.fill }
     var textColor: Brush { palette.text }
+    var secondaryTextColor: Brush { palette.secondaryText }
 
     // MARK: Favorites
 
