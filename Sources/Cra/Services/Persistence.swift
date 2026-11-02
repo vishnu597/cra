@@ -42,69 +42,7 @@ enum AppPaths {
     static func file(_ name: String) -> URL { supportDir.appendingPathComponent(name) }
 }
 
-/// Where every JSONStore encodes and writes, one file at a time and in call order. Off the
-/// main thread, which is also Chromium's UI thread: encoding a 2000-entry archive.json
-/// took ~30 ms there, two to four dropped frames after every tab switch.
-private let persistenceQueue = DispatchQueue(label: "dk.kildahl.cra.persistence", qos: .utility)
-
-/// One JSON file, loaded once, saved with a short debounce. Writes are atomic
-/// and the previous version is kept as `<name>.bak`, which is what Arc does
-/// with its timestamped Storable*.json copies, minus the pile-up.
-final class JSONStore<T: Codable> {
-    let url: URL
-    private var pending: DispatchWorkItem?
-    private let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.outputFormatting = [.prettyPrinted, .sortedKeys]
-        e.dateEncodingStrategy = .iso8601
-        return e
-    }()
-    private let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }()
-
-    init(_ name: String) { url = AppPaths.file(name) }
-
-    func load(or fallback: () -> T) -> T {
-        guard let data = try? Data(contentsOf: url) else { return fallback() }
-        do { return try decoder.decode(T.self, from: data) } catch {
-            // Corrupt file: keep it aside for forensics and start fresh.
-            CraLog.fault("\(url.lastPathComponent) unreadable, set aside as .corrupt: \(error)")
-            try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("corrupt"))
-            return fallback()
-        }
-    }
-
-    func save(_ value: T, delay: TimeInterval = 0.4) {
-        pending?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.write(value) }
-        pending = item
-        persistenceQueue.asyncAfter(deadline: .now() + delay, execute: item)
-    }
-
-    /// Writes before returning (quit, launch-time bookkeeping), after any write in flight.
-    func saveNow(_ value: T) {
-        pending?.cancel()
-        pending = nil
-        persistenceQueue.sync { write(value) }
-    }
-
-    private func write(_ value: T) {
-        let data: Data
-        do { data = try encoder.encode(value) } catch {
-            CraLog.fault("\(url.lastPathComponent) not saved, encoding failed: \(error)")
-            return
-        }
-        let fm = FileManager.default
-        let bak = url.appendingPathExtension("bak")
-        if fm.fileExists(atPath: url.path) {
-            try? fm.removeItem(at: bak)
-            try? fm.copyItem(at: url, to: bak)
-        }
-        do { try data.write(to: url, options: .atomic) } catch {
-            CraLog.fault("\(url.lastPathComponent) not saved: \(error.localizedDescription)")
-        }
-    }
+extension JSONStore {
+    /// `name` in Cra's data folder.
+    convenience init(_ name: String) { self.init(name, in: AppPaths.supportDir) }
 }

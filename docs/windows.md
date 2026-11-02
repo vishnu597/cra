@@ -23,7 +23,10 @@ none of `scripts/cef-patches`).
 - Shared decisions go in CraCore with a test, as CLAUDE.md says for the macOS app, so both
   shells get them. Don't copy logic from `Sources/Cra` into `Windows/`; move it to CraCore.
 - CraCore keeps building off Apple platforms: Apple-only frameworks go behind
-  `#if canImport(...)`. The Windows workflow runs its tests on Windows and Linux.
+  `#if canImport(...)`. The Windows workflow runs its tests on Windows and Linux, and the
+  Linux job holds CraCore to the same 85 % line coverage as the macOS CI.
+- The sidebar's model (`SidebarStore`: spaces, tabs, folders, splits, the archive) is in
+  CraCore, so the Windows sidebar edits the same `sidebar.json` the Mac app does.
 - Windows-only code stays in `Windows/` and `.github/workflows/windows.yml`.
 - The Windows app reads and writes the same data-folder formats (`sidebar.json` and the
   others), under `%LOCALAPPDATA%\Cra`.

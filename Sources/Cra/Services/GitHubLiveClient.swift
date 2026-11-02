@@ -215,11 +215,7 @@ enum GitHubLiveClient {
 
     // MARK: Helpers
 
-    static func pullPath(_ link: String) -> (owner: String, repo: String, number: Int)? {
-        guard let m = matches(#"(?:^|github\.com)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)"#, in: link).first, m.count > 3,
-              let n = Int(m[3]) else { return nil }
-        return (m[1], m[2], n)
-    }
+    static func pullPath(_ link: String) -> (owner: String, repo: String, number: Int)? { GitHubLink.pullPath(link) }
 
     private static func repository(_ v: Any?) -> (owner: String, repo: String)? {
         if let s = v as? String {

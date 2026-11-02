@@ -31,7 +31,7 @@ through `Sources/Cra/App/CraCoreExports.swift`.
 3. **A decoder reads only its own file.** A one-time migration that needs anything else
    (another app's preferences, the disk) takes it as an argument and runs where the file is
    loaded. Example: `AppSettings.migrateToolbarDefault(arcShowsToolbar:)`, called by
-   `SidebarStore`.
+   `SidebarStore` with Arc's setting, which the app passes in (`SidebarStore+App.swift`).
 4. **Data-folder formats don't change by accident.**
    `Packages/CraCore/Tests/CraCoreTests/Fixtures/Model` holds current and older
    `sidebar.json`, `settings.json`, `windows.json`, `keybindings.json` and the others. Each
@@ -47,8 +47,6 @@ touches it anyway, not as a side errand.
 
 - `Services/SuggestionEngine.swift`: the command bar's ranking. It holds `SidebarStore`,
   `KeyBindingRegistry` and `SearchSuggestions`.
-- `Services/SidebarStore.swift` and `SidebarIntegrity.swift`: tree edits and repair, on
-  `JSONStore` files, the app's clock and `ArcImporter`. Tested by `scripts/test-store.sh`.
 - `App/KeyBindings.swift`: `KeyAction`, `MenuSection` and the default bindings, in a file that
   imports AppKit for `Shortcut`'s event matching.
 - `Services/Import/`: the parsers for other browsers' files. Tested on `Tests/Fixtures` by

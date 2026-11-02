@@ -12,6 +12,8 @@ final class AppComposition {
     private var periodic: [ScheduledWork] = []
 
     init(clock: Scheduler? = nil, flags: FeatureFlags = .current) {
+        // CraCore's file faults (an unreadable settings.json) go to cra.log with the app's own.
+        CoreLog.fault = { CraLog.fault($0) }
         self.clock = clock ?? LiveScheduler.shared
         self.flags = flags
         store = SidebarStore(clock: self.clock)
