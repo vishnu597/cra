@@ -1,9 +1,13 @@
 name: CI
 
+# A change only to the Windows port (Windows/, its workflow and notes) cannot affect the Mac app,
+# so it does not wait for a macOS runner. Packages/CraCore is not listed: the Mac app builds on it.
 on:
   push:
     branches: [main]
+    paths-ignore: ["Windows/**", ".github/workflows/windows.yml", "docs/windows.md"]
   pull_request:
+    paths-ignore: ["Windows/**", ".github/workflows/windows.yml", "docs/windows.md"]
 
 concurrency:
   group: ci-${{ github.ref }}
