@@ -61,6 +61,7 @@ public final class CraApp: SwiftApplication {
     private func startChromium() -> Bool {
         let exe = CommandLine.arguments[0]
         let helper = URL(fileURLWithPath: exe).deletingLastPathComponent().appendingPathComponent("CraHelper.exe").path
+        CrashRecovery.prepare(cache: WinPaths.chromiumCache)
         let cache = WinPaths.chromiumCache.path
         let log = WinPaths.log.path
         return helper.withCString { h in
