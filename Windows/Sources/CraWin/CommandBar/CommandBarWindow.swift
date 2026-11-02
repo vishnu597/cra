@@ -91,7 +91,7 @@ final class CommandBarWindow {
     }
 }
 
-enum CommandBarWindowError: Error {
+enum CommandBarWindowError: Swift.Error {
     case noPresenter
     case noWindow
 }
