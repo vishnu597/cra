@@ -2,6 +2,7 @@ import Foundation
 import UWP
 import WinAppSDK
 import WinSDK
+import WindowsFoundation
 import WinUI
 
 /// The command bar's own window: borderless, owned by the browser window so it floats over the
