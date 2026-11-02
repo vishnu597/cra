@@ -50,8 +50,22 @@ Two things the build takes care of and must keep doing:
 - `Windows/Resources/app.manifest` (Windows 10 support, per-monitor DPI) is embedded in both
   executables. Without it Chromium's GPU process crashes and pages stay black.
 
+## Main thread
+
+CEF and WinUI both call Swift on the main thread, but their callbacks are plain C functions
+and `@Sendable` closures, which Swift doesn't know are on the main actor.
+`Windows/Sources/CraWin/App/MainThread.swift` has `onMain`, which asserts the main actor
+(`MainActor.assumeIsolated`) and runs its body there. XAML event handlers written inside a
+`@MainActor` type inherit its isolation and need nothing.
+
+WinUI's message loop doesn't run a Foundation RunLoop, so `Timer` and `RunLoop.main` don't
+fire. `WinScheduler` is CraCore's `Scheduler` on DispatcherQueue timers, and the window
+redraws through `DispatcherQueue.tryEnqueue`.
+
 ## Status
 
-Phase 1 in progress: the full page bridge, with a plain list of tabs in the sidebar while the
-real sidebar (spaces, pinned and Today tabs, favorites) is ported. The parity checklist and
-phases are in the porting plan.
+Phase 1 in progress. Done: the full page bridge, and the sidebar on the shared SidebarStore:
+spaces (switch, create, delete), favorites, pinned tabs and folders, splits shown as one row,
+Today tabs, archive and reopen (Ctrl+Shift+T), unread and theme colours, Arc's tab and space
+shortcuts with Ctrl in place of Cmd. Next: the command bar, then downloads and find in page.
+The parity checklist and phases are in the porting plan.
