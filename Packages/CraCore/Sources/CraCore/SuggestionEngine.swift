@@ -52,6 +52,36 @@ public struct SuggestionResult {
     public init(query: String = "") { self.query = query }
 }
 
+extension Suggestion {
+    /// What the bar's field shows while this row is arrowed to (Chrome and Arc fill the field with
+    /// the row): the address for pages, the text for searches, the name for commands.
+    public func fieldText(typed query: String) -> String {
+        if id == "typed" { return query }
+        switch kind {
+        case .search, .command, .switchSpace, .moveToSpace, .moveToFolder:
+            return title
+        case .switchToTab, .archived, .history, .navigate, .topDomain:
+            guard let url else { return title }
+            var t = url
+            for p in ["https://www.", "http://www.", "https://", "http://"] where t.hasPrefix(p) { t = String(t.dropFirst(p.count)); break }
+            if t.hasSuffix("/") { t.removeLast() }
+            return t
+        }
+    }
+}
+
+extension SuggestionResult {
+    /// What Return on row `index` commits: the row and the text it goes to. Return on the typed
+    /// row with an inline completion goes to the completion. nil when there is nowhere to go: the
+    /// tabs scope with no tab matching never searches the web.
+    public func commit(at index: Int, typed query: String, scope: CommandBarScope?) -> (row: Suggestion?, typed: String)? {
+        let selected = items.indices.contains(index) ? items[index] : nil
+        if scope == .tabs, selected == nil { return nil }
+        if index == 0, let c = inlineCompletion, selected?.id == "typed" { return (selected, c) }
+        return (selected, query)
+    }
+}
+
 /// What makes ⌘T feel like Arc: open tabs, archived tabs, history, the
 /// typed URL or search, popular domains and commands, ranked with
 /// recency/frequency/learned signals (Arc: CommandBarRanking*).

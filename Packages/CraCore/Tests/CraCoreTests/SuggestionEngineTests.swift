@@ -222,6 +222,30 @@ struct SuggestionEngineTests {
         #expect(SearchSuggestions.acceptLanguage(["da-DK", "en-US", "en"]) == "da-DK,en-US;q=0.8,en;q=0.6")
     }
 
+    // MARK: Field and Return
+
+    @Test func whatTheFieldShowsAndWhatReturnOpens() throws {
+        let f = StoreFixture()
+        let e = engine(f, commands: [CommandBarCommand(id: "settings", name: "Settings")])
+        f.store.recordVisit(url: "https://www.example.com/page/", title: "Example page")
+        let r = e.suggestions(for: "exa", mode: .newTab, currentTabID: nil)
+        let typed = try #require(r.items.first { $0.id == "typed" })
+        #expect(typed.fieldText(typed: "exa") == "exa", "the typed row shows what was typed")
+        let page = try #require(r.items.first { $0.id == "hist:https://www.example.com/page/" })
+        #expect(page.fieldText(typed: "exa") == "example.com/page", "a page shows its address")
+        let command = try #require(e.suggestions(for: "sett", mode: .newTab, currentTabID: nil).items.first { $0.id == "cmd:settings" })
+        #expect(command.fieldText(typed: "sett") == "Settings", "a command its name")
+
+        let completing = e.suggestions(for: "wikip", mode: .newTab, currentTabID: nil)
+        let typedIndex = try #require(completing.items.firstIndex { $0.id == "typed" })
+        #expect(completing.commit(at: 0, typed: "wikip", scope: nil)?.typed == "wikip", "the completing row goes to its own page")
+        var onTop = completing
+        onTop.items.swapAt(0, typedIndex)
+        #expect(onTop.commit(at: 0, typed: "wikip", scope: nil)?.typed == "wikipedia.org", "the typed row on top goes to the completion")
+        #expect(completing.commit(at: 9, typed: "wikip", scope: nil).map { $0.row == nil && $0.typed == "wikip" } == true)
+        #expect(SuggestionResult().commit(at: 0, typed: "x", scope: .tabs) == nil, "the tabs scope with nothing to switch to")
+    }
+
     // MARK: Scoring and text
 
     @Test func textScores() {
