@@ -52,6 +52,8 @@ let package = Package(
                 .linkedLibrary("libcef_dll_wrapper"),
                 .linkedLibrary("libcef"),
                 .linkedLibrary("user32"),
+                .linkedLibrary("shell32"),  // SHGetKnownFolderPath (the Downloads folder)
+                .linkedLibrary("ole32"),  // CoTaskMemFree
             ]
         ),
         // Every Chromium subprocess (renderer, GPU, utility) runs this executable.
