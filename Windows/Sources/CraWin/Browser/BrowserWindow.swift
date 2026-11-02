@@ -8,9 +8,6 @@ import WindowsFoundation
 import WinSDK
 import WinUI
 
-// WinSDK has a UUID too (the Windows SDK's GUID).
-private typealias UUID = Foundation.UUID
-
 /// One browser window on the shared SidebarStore: the toolbar, address box and sidebar on
 /// the left, the open tab's page on the right. The Windows counterpart of MainWindowController
 /// and BrowserManager, smaller for now: one window, a page made when its tab is first shown and
