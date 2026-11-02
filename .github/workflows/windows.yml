@@ -42,6 +42,7 @@ jobs:
   app-windows:
     name: Build Cra for Windows
     runs-on: windows-2022
+    timeout-minutes: 60
     steps:
       - uses: compnerd/gha-setup-swift@v0.5.1
         with:
@@ -56,8 +57,24 @@ jobs:
           path: Windows/vendor/cef
           key: cef-windows64-${{ hashFiles('scripts/fetch-cef.sh') }}
 
-      - name: Build
+      - name: Fetch CEF and the Swift/WinRT projections
         shell: pwsh
+        timeout-minutes: 20
+        run: Windows/scripts/fetch-deps.ps1
+
+      - name: Resolve Swift packages
+        timeout-minutes: 10
+        run: swift package --package-path Windows resolve
+
+      # The WinUI projections are large generated modules; build them on their own first so a
+      # slow or hung compile shows which module it is.
+      - name: Build the WinUI projections
+        timeout-minutes: 30
+        run: swift build --package-path Windows -c release --target WinUI -v
+
+      - name: Build and assemble Cra
+        shell: pwsh
+        timeout-minutes: 20
         run: Windows/scripts/build.ps1
 
       - uses: actions/upload-artifact@v4
