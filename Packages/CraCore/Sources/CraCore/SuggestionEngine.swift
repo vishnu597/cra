@@ -527,7 +527,7 @@ public final class SuggestionEngine {
         #if canImport(Darwin)
         relativeFormatter.localizedString(for: date, relativeTo: now)
         #else
-        shortRelative(now.timeIntervalSince(date))
+        RelativeTime.english(date.timeIntervalSince(now), style: .short)
         #endif
     }
 
@@ -538,20 +538,6 @@ public final class SuggestionEngine {
         return f
     }()
     #endif
-
-    /// What RelativeDateTimeFormatter's short style writes in English, where Foundation has no
-    /// such formatter (Windows, Linux): the largest whole unit, "3 days ago", "in 5 min.".
-    public static func shortRelative(_ seconds: TimeInterval) -> String {
-        let units: [(TimeInterval, String, String)] = [
-            (365 * 86400, "yr.", "yr."), (30 * 86400, "mo.", "mo."), (7 * 86400, "wk.", "wk."),
-            (86400, "day", "days"), (3600, "hr.", "hr."), (60, "min.", "min."), (1, "sec.", "sec."),
-        ]
-        let a = abs(seconds)
-        let (size, one, many) = units.first { a >= $0.0 } ?? units[units.count - 1]
-        let n = Int(a / size)
-        let text = "\(n) \(n == 1 ? one : many)"
-        return seconds < 0 ? "in \(text)" : "\(text) ago"
-    }
 }
 
 /// A command the bar can run (a menu item): Arc's command bar lists what the menus do.

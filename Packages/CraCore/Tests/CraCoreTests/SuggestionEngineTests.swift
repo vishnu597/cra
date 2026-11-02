@@ -269,12 +269,6 @@ struct SuggestionEngineTests {
         let long = SuggestionEngine.humanURL("https://a.test/" + String(repeating: "x", count: 100))
         #expect(long.count == 68 && long.hasSuffix("…"))
 
-        #expect(SuggestionEngine.shortRelative(0) == "0 sec. ago")
-        #expect(SuggestionEngine.shortRelative(30) == "30 sec. ago")
-        #expect(SuggestionEngine.shortRelative(2 * 3600) == "2 hr. ago")
-        #expect(SuggestionEngine.shortRelative(86400) == "1 day ago" && SuggestionEngine.shortRelative(3 * 86400) == "3 days ago")
-        #expect(SuggestionEngine.shortRelative(14 * 86400) == "2 wk." + " ago" && SuggestionEngine.shortRelative(400 * 86400) == "1 yr. ago")
-        #expect(SuggestionEngine.shortRelative(-300) == "in 5 min.")
         let now = Date()
         #expect(SuggestionEngine.relative(now.addingTimeInterval(-7200), now: now).contains("2"))
     }
