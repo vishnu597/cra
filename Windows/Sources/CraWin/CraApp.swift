@@ -24,10 +24,10 @@ public final class CraApp: SwiftApplication {
         }
     }
 
-    override public func onShutdown(exitCode: Int32) {
-        onMain { store?.saveAll() }
-        cra_cef_shutdown()
-    }
+    /// Chromium's windows bypass WinUI's input routing (MessageLoop).
+    override public class var runLoop: SwiftApplication.RunLoop { MessageLoop.run }
+
+    override public func onShutdown(exitCode: Int32) {}
 
     override public func onLaunched(_ args: WinUI.LaunchActivatedEventArgs) {
         guard startChromium() else {
@@ -40,6 +40,11 @@ public final class CraApp: SwiftApplication {
         guard let dispatcher = try? WinAppSDK.DispatcherQueue.getForCurrentThread() else {
             print("No dispatcher queue on the UI thread")
             return
+        }
+        // Saved and shut down while XAML is still up.
+        MessageLoop.willQuit = { [weak self] in
+            onMain { self?.store?.saveAll() }
+            cra_cef_shutdown()
         }
         onMain {
             CoreLog.fault = { print("Cra fault: \($0)") }

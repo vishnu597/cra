@@ -774,7 +774,12 @@ extern "C" void cra_browser_set_visible(CraBrowser *b, int visible) {
 }
 
 extern "C" void cra_browser_set_focused(CraBrowser *b, int focused) {
-    if (b && b->browser) b->browser->GetHost()->SetFocus(focused != 0);
+    if (!b || !b->browser) return;
+    // CEF's SetFocus doesn't move Win32 focus off XAML's input site, so keys would stay there.
+    if (focused) {
+        if (HWND hwnd = b->browser->GetHost()->GetWindowHandle()) SetFocus(hwnd);
+    }
+    b->browser->GetHost()->SetFocus(focused != 0);
 }
 
 extern "C" void cra_browser_load_url(CraBrowser *b, const char *url) {

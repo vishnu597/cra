@@ -34,6 +34,10 @@ final class BrowserWindow {
     /// The address box is taking a new tab's address (Ctrl+T, + New Tab).
     private var newTabPending = false
     private var refreshQueued = false
+    /// The window is waiting for Chromium to close its pages; then it closes for good.
+    private var closing = false
+    private var readyToClose = false
+    private var closeTimer: DispatcherQueueTimer?
     /// Permission requests waiting for the user, oldest first.
     private var permissionQueue: [(origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
 
@@ -51,7 +55,12 @@ final class BrowserWindow {
         // WinUI's window id is its HWND.
         hwnd = UInt(window.appWindow.id.value)
         content.sizeChanged.addHandler { [weak self] _, _ in self?.layoutPage() }
-        window.closed.addHandler { [weak self] _, _ in self?.closeAllPages() }
+        // Chromium closes its pages before their parent window goes (CEF's DoClose order).
+        window.appWindow.closing.addHandler { [weak self] _, args in
+            guard let self, let args, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return }
+            args.cancel = true
+            self.beginClosing()
+        }
         if store.selectedTab == nil && store.visibleTabs(in: store.focusedSpaceID).isEmpty {
             store.createTab(url: Self.startPage)
         }
@@ -64,6 +73,7 @@ final class BrowserWindow {
     /// anything they read (the store is Observable).
     private func refresh() {
         refreshQueued = false
+        guard !closing else { return }
         withObservationTracking {
             sidebar.build()
             sidebarPanel.background = sidebar.fill
@@ -122,10 +132,28 @@ final class BrowserWindow {
         if id != nil && page == nil { focusAddress() }
     }
 
-    private func closeAllPages() {
-        for page in pages.values { page.close() }
+    /// Closes every page, then the window once Chromium is done with them (or after 3 s).
+    private func beginClosing() {
+        guard !closing else { return }
+        closing = true
+        let open = Array(pages.values)
         pages.removeAll()
         shownPage = nil
+        for page in open { page.close() }
+        closeTimer = try? dispatcher.createTimer()
+        closeTimer?.interval = TimeSpan(duration: 3 * 10_000_000)
+        closeTimer?.isRepeating = false
+        closeTimer?.tick.addHandler { [weak self] _, _ in self?.finishClosing() }
+        try? closeTimer?.start()
+        if cra_cef_live_browser_count() == 0 { finishClosing() }
+    }
+
+    private func finishClosing() {
+        guard !readyToClose else { return }
+        readyToClose = true
+        try? closeTimer?.stop()
+        closeTimer = nil
+        try? window.close()
     }
 
     private func tabID(of page: WebPage) -> UUID? { page.userInfo as? UUID }
@@ -443,6 +471,10 @@ extension BrowserWindow: WebPageDelegate {
     }
 
     func pageDidClose(_ page: WebPage) {
+        if closing {
+            if cra_cef_live_browser_count() == 0 { finishClosing() }
+            return
+        }
         guard let id = tabID(of: page), pages[id] === page else { return }
         pages[id] = nil
         // window.close(): the page's tab goes as a closed tab would.
