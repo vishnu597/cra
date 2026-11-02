@@ -41,10 +41,11 @@ public final class CraApp: SwiftApplication {
             print("No dispatcher queue on the UI thread")
             return
         }
-        // Saved and shut down while XAML is still up.
+        // Saved and shut down while XAML is still up; then the process ends (MessageLoop.finish).
         MessageLoop.willQuit = { [weak self] in
             onMain { self?.store?.saveAll() }
             cra_cef_shutdown()
+            MessageLoop.finish()
         }
         onMain {
             CoreLog.fault = { print("Cra fault: \($0)") }

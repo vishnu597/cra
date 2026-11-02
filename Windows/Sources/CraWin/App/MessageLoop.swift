@@ -41,6 +41,16 @@ enum MessageLoop {
         }
     }
 
+    /// Ends the process once everything is saved and Chromium has shut down. What is left is
+    /// swift-winui's teardown after its loop returns, which releases the XAML manager and the
+    /// dispatcher queue without shutting them down, and every close then ended in a WinRT
+    /// fail-fast (0xE0464645 in WindowsFoundation.dll, seen on a PC). Nothing is lost by
+    /// skipping it.
+    static func finish() -> Never {
+        TerminateProcess(GetCurrentProcess(), 0)
+        fatalError("TerminateProcess returned")
+    }
+
     /// Chromium's windows all have classes named Chrome_… (Chrome_WidgetWin_1,
     /// Chrome_RenderWidgetHostHWND, and the popups of <select> and the like).
     private static func isChromium(_ hwnd: HWND?) -> Bool {

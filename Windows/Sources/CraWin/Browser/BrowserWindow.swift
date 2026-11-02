@@ -123,6 +123,9 @@ final class BrowserWindow {
                 page.frame = contentFrame()
                 page.isVisible = true
                 page.setFocused(true)
+            } else if !newTabPending {
+                // Nothing to show (an empty space): keys would stay with the hidden page.
+                focusAddress()
             }
         }
         shownTabID = id
@@ -184,8 +187,13 @@ final class BrowserWindow {
             }
         }
         address.lostFocus.addHandler { [weak self] _, _ in
-            guard let self, self.newTabPending, self.address.text.isEmpty else { return }
-            self.cancelNewTab()
+            // Checked once focus has settled: focus moving into the XAML island (from a page, or
+            // an invoke without a click) takes it from the box and gives it back.
+            _ = try? self?.dispatcher.tryEnqueue { [weak self] in
+                guard let self, self.newTabPending, self.address.text.isEmpty,
+                      self.address.focusState == .unfocused else { return }
+                self.cancelNewTab()
+            }
         }
 
         permissionPanel.spacing = 4
