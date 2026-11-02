@@ -105,3 +105,15 @@ public struct LivePullRequest: Codable, Equatable, Identifiable {
     public var url: String { "https://github.com/\(owner)/\(repo)/pull/\(number)" }
     public var repository: String { "\(owner)/\(repo)" }
 }
+
+/// GitHub links as live folders read them.
+public enum GitHubLink {
+    /// The pull request a link (or a bare "/owner/repo/pull/n" path) points at.
+    public static func pullPath(_ link: String) -> (owner: String, repo: String, number: Int)? {
+        let ns = NSString(string: link)
+        guard let re = try? NSRegularExpression(pattern: #"(?:^|github\.com)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)"#),
+              let m = re.firstMatch(in: link, range: NSRange(location: 0, length: ns.length)), m.numberOfRanges > 3,
+              let n = Int(ns.substring(with: m.range(at: 3))) else { return nil }
+        return (ns.substring(with: m.range(at: 1)), ns.substring(with: m.range(at: 2)), n)
+    }
+}

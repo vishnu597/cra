@@ -37,7 +37,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build and test CraCore
-        run: swift test --package-path Packages/CraCore
+        run: swift test --package-path Packages/CraCore --enable-code-coverage
+
+      # The macOS CI holds CraCore to 85 % of its lines (scripts/coverage.py, docs/testing.md).
+      # The same bar here, so a change to CraCore from Windows work is held to it as well.
+      - name: CraCore coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          json=$(swift test --package-path Packages/CraCore --show-codecov-path)
+          bin="$(swift build --package-path Packages/CraCore --show-bin-path)/CraCorePackageTests.xctest"
+          llvm-cov report "$bin" -instr-profile "$(dirname "$json")/default.profdata" \
+            -ignore-filename-regex '/(Tests|\.build)/' | tee coverage.txt
+          awk '$1 == "TOTAL" { lines = $8; missed = $9 }
+               END { pct = 100 * (lines - missed) / lines
+                     printf "CraCore: %.1f %% of %d lines (minimum 85 %%)\n", pct, lines
+                     if (pct < 85) exit 1 }' coverage.txt | tee -a "$GITHUB_STEP_SUMMARY"
 
   app-windows:
     name: Build Cra for Windows
