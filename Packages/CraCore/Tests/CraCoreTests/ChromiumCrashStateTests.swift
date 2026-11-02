@@ -2,9 +2,9 @@ import CraCore
 import Foundation
 import Testing
 
-struct ChromiumProfileTests {
+struct ChromiumCrashStateTests {
     let cache: URL = {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ChromiumProfileTests-\(UUID().uuidString)")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ChromiumCrashStateTests-\(UUID().uuidString)")
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
@@ -26,11 +26,11 @@ struct ChromiumProfileTests {
         for name in ["Default", "Profile 1A2B", "System Profile", "Guest Profile", "Crashpad"] {
             _ = profile(name, preferences: nil)
         }
-        #expect(ChromiumProfile.folders(in: cache).map(\.lastPathComponent) == ["Default", "Profile 1A2B"])
+        #expect(ChromiumCrashState.folders(in: cache).map(\.lastPathComponent) == ["Default", "Profile 1A2B"])
     }
 
     @Test func aMissingCacheHasNoProfiles() {
-        #expect(ChromiumProfile.folders(in: cache.appendingPathComponent("none")).isEmpty)
+        #expect(ChromiumCrashState.folders(in: cache.appendingPathComponent("none")).isEmpty)
     }
 
     /// After a crash Chromium would reopen the saved session in a stock window.
@@ -39,7 +39,7 @@ struct ChromiumProfileTests {
             "profile": ["exit_type": "Crashed", "exited_cleanly": false, "name": "Cra"],
             "browser": ["window_placement": ["left": 10]],
         ])
-        ChromiumProfile.markExitedCleanly(dir)
+        ChromiumCrashState.markExitedCleanly(dir)
         let prefs = preferences(dir)
         let state = prefs["profile"] as? [String: Any]
         #expect(state?["exit_type"] as? String == "Normal")
@@ -53,24 +53,24 @@ struct ChromiumProfileTests {
         let dir = profile("Default", preferences: ["profile": ["exit_type": "Normal", "exited_cleanly": true]])
         let file = dir.appendingPathComponent("Preferences")
         try Data("{\"profile\": {\"exit_type\": \"Normal\", \"exited_cleanly\": true}}".utf8).write(to: file)
-        ChromiumProfile.markExitedCleanly(dir)
+        ChromiumCrashState.markExitedCleanly(dir)
         #expect(try String(contentsOf: file, encoding: .utf8) == "{\"profile\": {\"exit_type\": \"Normal\", \"exited_cleanly\": true}}")
     }
 
     @Test func missingOrUnreadablePreferencesAreLeftAlone() throws {
         let bare = profile("Default", preferences: nil)
-        ChromiumProfile.markExitedCleanly(bare)
+        ChromiumCrashState.markExitedCleanly(bare)
         #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("Preferences").path))
         #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("Sessions").path))
 
         let broken = profile("Profile 1", preferences: nil)
         let file = broken.appendingPathComponent("Preferences")
         try Data("not json".utf8).write(to: file)
-        ChromiumProfile.markExitedCleanly(broken)
+        ChromiumCrashState.markExitedCleanly(broken)
         #expect(try String(contentsOf: file, encoding: .utf8) == "not json")
 
         let noProfile = profile("Profile 2", preferences: ["browser": [:] as [String: Any]])
-        ChromiumProfile.markExitedCleanly(noProfile)
+        ChromiumCrashState.markExitedCleanly(noProfile)
         #expect(preferences(noProfile)["profile"] == nil)
     }
 }

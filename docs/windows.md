@@ -41,7 +41,7 @@ thread. No locks, no hops between threads.
 
 Chromium's own crash recovery is off: after a run that didn't quit cleanly it would reopen
 the last session in a stock Chromium window, so `CrashRecovery` clears it from the profiles
-before Chromium starts (`ChromiumProfile` in CraCore, as the Mac bridge does).
+before Chromium starts (`ChromiumCrashState` in CraCore, as the Mac bridge does).
 
 The window is not a WinUI `Window`. A Window's XAML bridge covers its whole client area, and
 while it covers a page no real click or wheel reaches the page, whatever the z-order.

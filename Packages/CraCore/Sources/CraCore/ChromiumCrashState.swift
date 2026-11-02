@@ -7,7 +7,7 @@ import Foundation
 /// (the profile's Sessions folder) into a stock Chromium window as soon as the first page is
 /// made. Cra restores its own tabs, so before Chromium starts the saved session is dropped and
 /// the profile marked clean. (The Mac bridge does the same in CraCEF.mm.)
-public enum ChromiumProfile {
+public enum ChromiumCrashState {
     /// Default plus the spaces' own profiles ("Profile <id>").
     public static func folders(in cache: URL) -> [URL] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: cache.path)) ?? []
