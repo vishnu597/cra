@@ -1,13 +1,13 @@
 import Foundation
 
-enum CommandBarMode: Equatable {
+public enum CommandBarMode: Equatable {
     /// ⌘T: commit creates a new tab in the current space.
     case newTab
     /// ⌘L: commit navigates the current tab.
     case editURL
 }
 
-enum SuggestionKind: Equatable {
+public enum SuggestionKind: Equatable {
     case switchToTab(UUID)
     case archived(UUID)
     case history
@@ -20,55 +20,62 @@ enum SuggestionKind: Equatable {
     case moveToFolder(UUID)
 }
 
-struct Suggestion: Identifiable, Equatable {
-    let id: String
-    let kind: SuggestionKind
-    let title: String
-    let subtitle: String
-    let url: String?
-    let faviconKey: String?
-    let symbol: String?
-    let trailing: String?
-    var score: Double
-    var spaceID: UUID? = nil
+public struct Suggestion: Identifiable, Equatable {
+    public let id: String
+    public let kind: SuggestionKind
+    public let title: String
+    public let subtitle: String
+    public let url: String?
+    public let faviconKey: String?
+    /// An SF Symbols name; the Windows app maps it to a glyph of its own.
+    public let symbol: String?
+    public let trailing: String?
+    public var score: Double
+    public var spaceID: UUID? = nil
     /// Matched only as scattered letters ("pota" in "grænselandsPOrTAl"): listed after the
     /// search engine's suggestions, which Arc shows instead of such matches.
-    var loose = false
-    var tabID: UUID? {
+    public var loose = false
+    public var tabID: UUID? {
         if case .switchToTab(let id) = kind { return id }
         return nil
     }
 }
 
-struct SuggestionResult {
-    var items: [Suggestion] = []
+public struct SuggestionResult {
+    public var items: [Suggestion] = []
     /// Host (or more) to complete the typed text to, e.g. "github.com".
-    var inlineCompletion: String?
+    public var inlineCompletion: String?
     /// What Tab scopes the bar to ("Search YouTube  Tab", "Search Tabs  Tab").
-    var scope: CommandBarScope?
-    var query: String = ""
+    public var scope: CommandBarScope?
+    public var query: String = ""
+
+    public init(query: String = "") { self.query = query }
 }
 
 /// What makes ⌘T feel like Arc: open tabs, archived tabs, history, the
 /// typed URL or search, popular domains and commands, ranked with
 /// recency/frequency/learned signals (Arc: CommandBarRanking*).
 @MainActor
-final class SuggestionEngine {
-    unowned let store: SidebarStore
-    unowned let bindings: KeyBindingRegistry
-    private let remote = SearchSuggestions()
+public final class SuggestionEngine {
+    public unowned let store: SidebarStore
+    /// The commands the bar offers, in menu order: the app's key bindings (KeyBindingRegistry on
+    /// the Mac), with each shortcut written the platform's way.
+    private let commands: @MainActor () -> [CommandBarCommand]
+    private let remote: SearchSuggestions
     /// Arc's command bar always lists five rows; search suggestions make up what the
     /// tabs, history and commands don't fill, so the bar keeps its height while you type.
-    static let maxRows = 5
+    public static let maxRows = 5
 
-    init(store: SidebarStore, bindings: KeyBindingRegistry) {
+    /// `load` fetches a search engine's suggest URL, nil for no answer: the app owns the network.
+    public init(store: SidebarStore, commands: @escaping @MainActor () -> [CommandBarCommand], load: @escaping SearchSuggestions.Loader) {
         self.store = store
-        self.bindings = bindings
+        self.commands = commands
+        remote = SearchSuggestions(load: load)
     }
 
     // MARK: Entry
 
-    func suggestions(for rawQuery: String, mode: CommandBarMode, currentTabID: UUID?) -> SuggestionResult {
+    public func suggestions(for rawQuery: String, mode: CommandBarMode, currentTabID: UUID?) -> SuggestionResult {
         let query = rawQuery.trimmingCharacters(in: .whitespaces)
         let q = query.lowercased()
         var result = SuggestionResult(query: query)
@@ -127,7 +134,7 @@ final class SuggestionEngine {
     }
 
     /// The bar scoped to a site (after Tab): one row, the typed text searched there.
-    func suggestions(for rawQuery: String, in site: SiteSearch) -> SuggestionResult {
+    public func suggestions(for rawQuery: String, in site: SiteSearch) -> SuggestionResult {
         let query = rawQuery.trimmingCharacters(in: .whitespaces)
         var result = SuggestionResult(query: query)
         guard !query.isEmpty else { return result }
@@ -138,7 +145,7 @@ final class SuggestionEngine {
 
     /// The bar scoped to a space's open tabs ("%" Tab): its favorites, pinned and today tabs but
     /// the one in front, and nothing from history, the archive or the network.
-    func suggestions(for rawQuery: String, inTabsOf spaceID: UUID, currentTabID: UUID?) -> SuggestionResult {
+    public func suggestions(for rawQuery: String, inTabsOf spaceID: UUID, currentTabID: UUID?) -> SuggestionResult {
         let query = rawQuery.trimmingCharacters(in: .whitespaces)
         let q = query.lowercased()
         var result = SuggestionResult(query: query)
@@ -198,13 +205,13 @@ final class SuggestionEngine {
     }
 
     /// The command bar opened or closed: what it searches may have changed since.
-    func resetIndex() {
+    public func resetIndex() {
         index = nil
         remote.reset()
     }
 
     /// Asks the search engine about `rawQuery`; `done` runs when its answer is in, to list again.
-    func fetchSearchSuggestions(for rawQuery: String, done: @escaping @MainActor () -> Void) {
+    public func fetchSearchSuggestions(for rawQuery: String, done: @escaping @MainActor () -> Void) {
         let query = rawQuery.trimmingCharacters(in: .whitespaces)
         guard store.settings.searchSuggestions, !query.isEmpty, !query.contains("://") else { return }
         remote.fetch(query, engine: store.settings.searchEngine, done: done)
@@ -230,9 +237,9 @@ final class SuggestionEngine {
 
     // MARK: Typed text
 
-    static func looksLikeURL(_ s: String) -> Bool { TypedURL.looksLikeURL(s) }
+    public static func looksLikeURL(_ s: String) -> Bool { TypedURL.looksLikeURL(s) }
 
-    static func urlFromInput(_ s: String) -> String { TypedURL.fromInput(s) }
+    public static func urlFromInput(_ s: String) -> String { TypedURL.fromInput(s) }
 
     private func typedRow(query: String) -> Suggestion {
         if Self.looksLikeURL(query) {
@@ -259,7 +266,7 @@ final class SuggestionEngine {
             if let custom = tab.title?.lowercased(), custom.hasPrefix(q) { score += 40 }
             if score < 30 { continue }
             score += recencyBoost(t.timeLastActiveAt)
-            let switches = store.ranking.recentlySwitchedToTabs[tab.id]?.filter { $0 > Date().addingTimeInterval(-7 * 86400) }.count ?? 0
+            let switches = store.ranking.recentlySwitchedToTabs[tab.id]?.filter { $0 > store.clock.now.addingTimeInterval(-7 * 86400) }.count ?? 0
             score += Double(min(switches, 10)) * 3
             let sid = store.spaceID(ofItem: tab.id)
             let spaceName = sid.flatMap { store.space($0)?.title } ?? ""
@@ -284,7 +291,7 @@ final class SuggestionEngine {
             score += recencyBoost(entry.archivedAt) * 0.5
             let spaceName = entry.sourceSpaceID.flatMap { store.space($0)?.title } ?? ""
             out.append(Suggestion(id: "arch:\(entry.id)", kind: .archived(entry.id), title: entry.item.displayTitle,
-                                  subtitle: ["Archived \(Self.relative(entry.archivedAt))", spaceName, Self.humanURL(t.url)].filter { !$0.isEmpty }.joined(separator: " · "),
+                                  subtitle: ["Archived \(Self.relative(entry.archivedAt, now: store.clock.now))", spaceName, Self.humanURL(t.url)].filter { !$0.isEmpty }.joined(separator: " · "),
                                   url: t.url, faviconKey: t.faviconKey, symbol: nil, trailing: "Restore", score: score,
                                   loose: text < Self.looseBelow))
         }
@@ -330,12 +337,12 @@ final class SuggestionEngine {
             if n.contains(q) { return 50 }
             return 0
         }
-        for a in bindings.actions where a.inCommandBar {
+        for a in commands() {
             var s = nameScore(a.name, triggers: a.triggers)
             guard s > 0 else { continue }
             s += Double(min(store.ranking.commandUsage[a.id] ?? 0, 10)) * 2
             out.append(Suggestion(id: "cmd:\(a.id)", kind: .command(a.id), title: a.name, subtitle: "Command",
-                                  url: nil, faviconKey: nil, symbol: a.symbol ?? "command", trailing: a.primary?.display, score: s))
+                                  url: nil, faviconKey: nil, symbol: a.symbol ?? "command", trailing: a.shortcut, score: s))
         }
         for space in incognito ? [] : store.orderedSpaces {
             let s = nameScore("Switch to \(space.title)", triggers: [space.title.lowercased()])
@@ -377,7 +384,7 @@ final class SuggestionEngine {
         for entry in store.archive.prefix(incognito ? 0 : 2) {
             guard let t = entry.item.tab else { continue }
             out.append(Suggestion(id: "arch:\(entry.id)", kind: .archived(entry.id), title: entry.item.displayTitle,
-                                  subtitle: "Archived \(Self.relative(entry.archivedAt))", url: t.url, faviconKey: t.faviconKey,
+                                  subtitle: "Archived \(Self.relative(entry.archivedAt, now: store.clock.now))", url: t.url, faviconKey: t.faviconKey,
                                   symbol: nil, trailing: "Restore", score: 0))
         }
         return out
@@ -386,7 +393,7 @@ final class SuggestionEngine {
     // MARK: Scoring
 
     /// 0...100 from how well the query matches a title and a URL.
-    func textScore(_ q: String, title: String, url: String) -> Double {
+    public func textScore(_ q: String, title: String, url: String) -> Double {
         Self.score(q, Searchable(title: title, url: url))
     }
 
@@ -433,7 +440,7 @@ final class SuggestionEngine {
 
     private func recencyBoost(_ date: Date?) -> Double {
         guard let date else { return 0 }
-        let age = Date().timeIntervalSince(date)
+        let age = store.clock.now.timeIntervalSince(date)
         if age < 600 { return 30 }
         if age < 3600 { return 22 }
         if age < 86400 { return 14 }
@@ -477,7 +484,7 @@ final class SuggestionEngine {
 
     // MARK: Formatting
 
-    nonisolated static func humanURL(_ url: String) -> String {
+    public nonisolated static func humanURL(_ url: String) -> String {
         var s = url
         for p in ["https://www.", "http://www.", "https://", "http://"] where s.hasPrefix(p) { s = String(s.dropFirst(p.count)); break }
         if s.hasSuffix("/") { s.removeLast() }
@@ -485,26 +492,67 @@ final class SuggestionEngine {
         return s
     }
 
+    /// "2 hr. ago", for an archived tab's row.
+    public static func relative(_ date: Date, now: Date) -> String {
+        #if canImport(Darwin)
+        relativeFormatter.localizedString(for: date, relativeTo: now)
+        #else
+        shortRelative(now.timeIntervalSince(date))
+        #endif
+    }
+
+    #if canImport(Darwin)
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f
     }()
+    #endif
 
-    static func relative(_ date: Date) -> String {
-        relativeFormatter.localizedString(for: date, relativeTo: Date())
+    /// What RelativeDateTimeFormatter's short style writes in English, where Foundation has no
+    /// such formatter (Windows, Linux): the largest whole unit, "3 days ago", "in 5 min.".
+    public static func shortRelative(_ seconds: TimeInterval) -> String {
+        let units: [(TimeInterval, String, String)] = [
+            (365 * 86400, "yr.", "yr."), (30 * 86400, "mo.", "mo."), (7 * 86400, "wk.", "wk."),
+            (86400, "day", "days"), (3600, "hr.", "hr."), (60, "min.", "min."), (1, "sec.", "sec."),
+        ]
+        let a = abs(seconds)
+        let (size, one, many) = units.first { a >= $0.0 } ?? units[units.count - 1]
+        let n = Int(a / size)
+        let text = "\(n) \(n == 1 ? one : many)"
+        return seconds < 0 ? "in \(text)" : "\(text) ago"
+    }
+}
+
+/// A command the bar can run (a menu item): Arc's command bar lists what the menus do.
+public struct CommandBarCommand: Equatable {
+    public let id: String
+    public let name: String
+    /// Other words that find it ("prefs" for Settings).
+    public let triggers: [String]
+    /// An SF Symbols name; nil draws the generic command glyph.
+    public let symbol: String?
+    /// Its shortcut as the platform writes it ("⌘T", "Ctrl+T"), shown at the row's end.
+    public let shortcut: String?
+
+    public init(id: String, name: String, triggers: [String] = [], symbol: String? = nil, shortcut: String? = nil) {
+        self.id = id
+        self.name = name
+        self.triggers = triggers
+        self.symbol = symbol
+        self.shortcut = shortcut
     }
 }
 
 /// What Tab scopes the bar to, a pill before the field until Backspace on the empty field or
 /// Escape (Arc's ScopedSearchType).
-enum CommandBarScope: Equatable {
+public enum CommandBarScope: Equatable {
     /// Arc's Site Search: "youtube" Tab searches YouTube.
     case site(SiteSearch)
     /// The open tabs of the window's space (#49).
     case tabs
 
-    var name: String {
+    public var name: String {
         switch self {
         case .site(let site): return site.name
         case .tabs: return TabSearchScope.name
@@ -514,14 +562,14 @@ enum CommandBarScope: Equatable {
 
 /// Arc's Site Search: the sites it seeds into Chromium's keyword table (active, not
 /// auto-added), with the pill colour each one gets in the bar.
-struct SiteSearch: Equatable {
-    let name: String
+public struct SiteSearch: Equatable {
+    public let name: String
     /// Chromium's keyword: what the typed text has to start.
-    let host: String
-    let url: String
-    let color: String
+    public let host: String
+    public let url: String
+    public let color: String
 
-    func searchURL(_ query: String) -> String {
+    public func searchURL(_ query: String) -> String {
         let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)?
             .replacingOccurrences(of: "&", with: "%26") ?? query
         return url.replacingOccurrences(of: "%s", with: q)
@@ -529,7 +577,7 @@ struct SiteSearch: Equatable {
 
     /// "twit" offers X (twitter.com) though it completes to twitch.tv; the completed host
     /// wins when it is a site search itself.
-    static func match(_ q: String, completion: String?) -> SiteSearch? {
+    public static func match(_ q: String, completion: String?) -> SiteSearch? {
         var t = q
         if t.hasPrefix("www.") { t.removeFirst(4) }
         guard !t.isEmpty, !t.contains(" "), !t.contains("/") else { return nil }
@@ -538,7 +586,7 @@ struct SiteSearch: Equatable {
     }
 
     /// Arc 1.170's list, in its order; colours measured off its pills.
-    static let all: [SiteSearch] = [
+    public static let all: [SiteSearch] = [
         SiteSearch(name: "Google Drive", host: "drive.google.com", url: "https://drive.google.com/drive/search?q=%s", color: "#0F9D58"),
         SiteSearch(name: "Gmail", host: "mail.google.com", url: "https://mail.google.com/mail/u/0/#search/%s", color: "#D44638"),
         SiteSearch(name: "Google Maps", host: "maps.google.com", url: "https://www.google.com/maps/search/%s", color: "#FBBC05"),
@@ -561,8 +609,8 @@ struct SiteSearch: Equatable {
     ]
 }
 
-enum PopularDomains {
-    static let list: [String] = [
+public enum PopularDomains {
+    public static let list: [String] = [
         "google.com", "youtube.com", "github.com", "gmail.com", "mail.google.com", "docs.google.com", "drive.google.com",
         "calendar.google.com", "maps.google.com", "chatgpt.com", "claude.ai", "x.com", "twitter.com", "reddit.com",
         "wikipedia.org", "en.wikipedia.org", "amazon.com", "apple.com", "developer.apple.com", "netflix.com", "linkedin.com",

@@ -45,8 +45,6 @@ through `Sources/Cra/App/CraCoreExports.swift`.
 This logic is pure enough for CraCore but still lives in the app. Move a piece when a change
 touches it anyway, not as a side errand.
 
-- `Services/SuggestionEngine.swift`: the command bar's ranking. It holds `SidebarStore`,
-  `KeyBindingRegistry` and `SearchSuggestions`.
 - `App/KeyBindings.swift`: `KeyAction`, `MenuSection` and the default bindings, in a file that
   imports AppKit for `Shortcut`'s event matching.
 - `Services/Import/`: the parsers for other browsers' files. Tested on `Tests/Fixtures` by

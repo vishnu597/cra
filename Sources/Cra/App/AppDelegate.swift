@@ -9,7 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var store: SidebarStore { composition.store }
     let bindings = KeyBindingRegistry.shared
     let favicons = FaviconCache()
-    lazy var engine = SuggestionEngine(store: store, bindings: bindings)
+    lazy var engine = SuggestionEngine(store: store, commands: { [unowned self] in self.bindings.commandBarCommands },
+                                       load: SearchSuggestLoader.load)
 
     /// Browser windows, one per WindowSession. Closing the last one only hides it.
     private(set) var mainWindows: [MainWindowController] = []
