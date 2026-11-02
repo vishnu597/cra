@@ -152,6 +152,12 @@ public final class CraApp: SwiftApplication {
         if cra_cef_live_browser_count() == 0 { finishClosing() }
     }
 
+    /// After the current callback: the last page reports it is closed from inside CEF's
+    /// OnBeforeClose, and destroying its parent window there crashed libcef.
+    private func finishClosingSoon() {
+        _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { [weak self] in self?.finishClosing() }
+    }
+
     private var closeTimer: WinAppSDK.DispatcherQueueTimer?
     private var readyToClose = false
 
@@ -252,6 +258,9 @@ public final class CraApp: SwiftApplication {
 
     private func button(_ title: String, _ action: @escaping () -> Void) -> Button {
         let b = Button()
+        // On press: a click from a page moves Win32 focus into the XAML island, and the release
+        // that would finish a release-mode click was lost.
+        b.clickMode = .press
         let label = TextBlock()
         label.text = title
         b.content = label
@@ -275,6 +284,7 @@ public final class CraApp: SwiftApplication {
             label.text = (page === selected ? "\u{25CF} " : "") + (title.isEmpty ? "New Tab" : title)
             label.textTrimming = .characterEllipsis
             let pick = Button()
+            pick.clickMode = .press
             pick.content = label
             pick.horizontalAlignment = .stretch
             pick.horizontalContentAlignment = .left
@@ -432,7 +442,7 @@ extension CraApp: WebPageDelegate {
 
     func pageDidClose(_ page: WebPage) {
         if closing {
-            if cra_cef_live_browser_count() == 0 { finishClosing() }
+            if cra_cef_live_browser_count() == 0 { finishClosingSoon() }
             return
         }
         // A page that closed itself (window.close()); tabs Cra closed are already gone.
