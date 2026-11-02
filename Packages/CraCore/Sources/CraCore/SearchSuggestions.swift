@@ -32,7 +32,7 @@ public final class SearchSuggestions {
     public init(load: @escaping Loader) { self.load = load }
 
     /// What the request's Accept-Language says: the user's languages, best first.
-    public static func acceptLanguage(_ languages: [String] = Locale.preferredLanguages) -> String {
+    public nonisolated static func acceptLanguage(_ languages: [String] = Locale.preferredLanguages) -> String {
         languages.prefix(4).enumerated().map { i, l in i == 0 ? l : "\(l);q=\(String(format: "%.1f", 1 - Double(i) * 0.2))" }
             .joined(separator: ",")
     }
