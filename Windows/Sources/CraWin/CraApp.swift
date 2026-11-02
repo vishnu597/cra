@@ -7,13 +7,13 @@ import WindowsFoundation
 import WinSDK
 import WinUI
 
-/// The Windows shell while the real sidebar is ported: one WinUI window with a sidebar column
+/// The Windows shell while the real sidebar is ported: one window with a XAML sidebar column
 /// (navigation buttons, address field, a plain list of tabs) and the selected tab's page beside
 /// it. Exercises the whole CEF bridge (WebPage): tabs, popups, downloads, permissions and the
 /// keys Chromium hands back.
 @main
 public final class CraApp: SwiftApplication {
-    private var window: Window!
+    private var window: HostWindow!
     /// The window's HWND: every page is a child window of it.
     private var hwnd: UInt = 0
     private var tabs: [WebPage] = []
@@ -25,7 +25,6 @@ public final class CraApp: SwiftApplication {
 
     // XAML objects can only be made once the app is launched, on its UI thread (making them in
     // init fails with RPC_E_WRONG_THREAD).
-    private var content: Border!
     private var address: TextBox!
     private var tabList: StackPanel!
     private var status: TextBlock!
@@ -57,26 +56,27 @@ public final class CraApp: SwiftApplication {
         // Chromium shuts down while XAML is still up.
         MessageLoop.willQuit = { cra_cef_shutdown() }
 
-        content = Border()
         address = TextBox()
         tabList = StackPanel()
         status = TextBlock()
         permissionPanel = StackPanel()
         permissionText = TextBlock()
-        window = Window()
-        window.title = "Cra"
-        window.content = makeLayout()
-        try? window.activate()
-
-        // WinUI's window id is its HWND.
-        hwnd = UInt(window.appWindow.id.value)
-        content.sizeChanged.addHandler { [weak self] _, _ in self?.layoutPages() }
-        // Chromium closes its pages before their parent window goes (CEF's DoClose order).
-        window.appWindow.closing.addHandler { [weak self] _, args in
-            guard let self, let args, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return }
-            args.cancel = true
-            self.closeAllPages()
+        guard let window = try? HostWindow(content: makeLayout(), sidebarWidth: 260) else {
+            print("The window could not be made")
+            return
         }
+        self.window = window
+        window.title = "Cra"
+        hwnd = window.hwnd
+        window.onLayout = { [weak self] frame in self?.selected?.frame = frame }
+        // Chromium closes its pages before their parent window goes (CEF's DoClose order).
+        window.shouldClose = { [weak self] in
+            guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
+            self.closeAllPages()
+            return false
+        }
+        // The last window: quit (no WinUI Window, so WinUI doesn't).
+        window.onClose = { PostQuitMessage(0) }
         openTab(Self.startPage, background: false)
     }
 
@@ -160,7 +160,7 @@ public final class CraApp: SwiftApplication {
         readyToClose = true
         try? closeTimer?.stop()
         closeTimer = nil
-        try? window.close()
+        window.close()
     }
 
     private func selectTab(offset: Int) {
@@ -182,6 +182,7 @@ public final class CraApp: SwiftApplication {
     }
 
     private func focusAddress() {
+        window.focusXAML()
         _ = try? address.focus(.programmatic)
         try? address.selectAll()
     }
@@ -194,14 +195,6 @@ public final class CraApp: SwiftApplication {
     // MARK: Layout
 
     private func makeLayout() -> UIElement {
-        let grid = Grid()
-        let sidebarColumn = ColumnDefinition()
-        sidebarColumn.width = GridLength(value: 260, gridUnitType: .pixel)
-        let pageColumn = ColumnDefinition()
-        pageColumn.width = GridLength(value: 1, gridUnitType: .star)
-        grid.columnDefinitions.append(sidebarColumn)
-        grid.columnDefinitions.append(pageColumn)
-
         let sidebar = Grid()
         sidebar.padding = Thickness(left: 10, top: 10, right: 10, bottom: 10)
         for height in [GridLength(value: 0, gridUnitType: .auto), GridLength(value: 0, gridUnitType: .auto),
@@ -253,11 +246,8 @@ public final class CraApp: SwiftApplication {
             try? Grid.setRow(row, Int32(i))
         }
 
-        grid.children.append(sidebar)
-        grid.children.append(content)
-        try? Grid.setColumn(sidebar, 0)
-        try? Grid.setColumn(content, 1)
-        return grid
+        sidebar.background = SolidColorBrush(UWP.Color(a: 255, r: 32, g: 32, b: 32))
+        return sidebar
     }
 
     private func button(_ title: String, _ action: @escaping () -> Void) -> Button {
@@ -329,18 +319,9 @@ public final class CraApp: SwiftApplication {
         }
     }
 
-    /// The content column in physical pixels, relative to the window's client area.
+    /// The page area in physical pixels, relative to the window's client area.
     private func contentFrame() -> PixelRect {
-        guard let content else { return PixelRect(x: 260, y: 0, width: 800, height: 600) }
-        let scale = content.xamlRoot?.rasterizationScale ?? 1
-        let origin = (try? content.transformToVisual(nil)?.transformPoint(Point(x: 0, y: 0))) ?? Point(x: 260, y: 0)
-        return PixelRect(x: Int32((Double(origin.x) * scale).rounded()), y: Int32((Double(origin.y) * scale).rounded()),
-                         width: Int32((content.actualWidth * scale).rounded()),
-                         height: Int32((content.actualHeight * scale).rounded()))
-    }
-
-    private func layoutPages() {
-        selected?.frame = contentFrame()
+        window?.contentFrame ?? PixelRect(x: 260, y: 0, width: 800, height: 600)
     }
 
     // MARK: Permissions
