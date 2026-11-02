@@ -46,8 +46,11 @@ Chromium's own crash recovery is off: after a run that didn't quit cleanly it wo
 the last session in a stock Chromium window, so `CrashRecovery` clears it from the profiles
 before Chromium starts (`ChromiumProfile` in CraCore, as the Mac bridge does).
 
-WinUI's `ContentPreTranslateMessage` takes the real mouse and keyboard input of every window
-under a WinUI window for XAML, so the app's `MessageLoop` hands Chromium's windows their
+The window is not a WinUI `Window`. A Window's XAML bridge covers its whole client area, and
+while it covers a page no real click or wheel reaches the page, whatever the z-order.
+`HostWindow` is an AppWindow with a `DesktopWindowXamlSource` whose bridge it keeps to the
+sidebar column; the pages sit beside it. WinUI's `ContentPreTranslateMessage` also takes key
+messages meant for Chromium's windows, so the app's `MessageLoop` hands those windows their
 messages without it.
 
 Two things the build takes care of and must keep doing:
