@@ -22,8 +22,15 @@ Copy-Item (Join-Path $runtime '*.dll') $out
 $cef = Join-Path $root 'vendor\cef'
 Copy-Item (Join-Path $cef 'Release\*') $out -Recurse -Exclude '*.lib'
 Copy-Item (Join-Path $cef 'Resources\*') $out -Recurse
+# Everything shipped is x64: an ARM64 DLL (the Windows App SDK bootstrap once was) fails to
+# load and crashes Cra.exe before it opens a window.
+foreach ($file in Get-ChildItem $out -Recurse -Include *.exe, *.dll) {
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3c) + 4)
+    if ($machine -ne 0x8664) { throw "$($file.FullName) is not x64 (machine 0x$('{0:X4}' -f $machine))" }
+}
 # Every DLL the executables load must now be in $out: start each with only System32 on PATH.
-# 0xC0000135 (STATUS_DLL_NOT_FOUND) means one is missing. Cra.exe opens a window, so it is
+# 0xC0000135 (STATUS_DLL_NOT_FOUND) means one is missing; a crash code fails the build too. Cra.exe opens a window, so it is
 # stopped after a few seconds if it is still running.
 $cleanPath = Join-Path $env:SystemRoot 'System32'
 $savedPath = $env:Path
@@ -33,6 +40,10 @@ try {
         $p = Start-Process (Join-Path $out $exe) -WorkingDirectory $out -PassThru
         if (-not $p.WaitForExit(5000)) { $p.Kill(); continue }
         if ($p.ExitCode -eq -1073741515) { throw "$exe could not load a DLL it needs (STATUS_DLL_NOT_FOUND)" }
+        # A Swift trap (illegal instruction), access violation or fail-fast is a crash too.
+        if ($p.ExitCode -in -1073741795, -1073741819, -1073740791) {
+            throw "$exe crashed on start (exit code 0x$('{0:X8}' -f $p.ExitCode))"
+        }
     }
 } finally {
     $env:Path = $savedPath

@@ -76,4 +76,30 @@ foreach ($repo in $winrt.Keys) {
         if ($LASTEXITCODE) { throw "Could not check out $repo" }
     }
 }
+# swift-windowsappsdk at that commit ships an ARM64 Microsoft.WindowsAppRuntime.Bootstrap.dll,
+# which an x64 Cra.exe cannot load (it traps before opening a window). Replace it with the x64
+# one from the Windows App SDK NuGet package of the same version.
+$wasdkVersion = '1.7.250909003'
+$bootstrap = Join-Path $winrtDir 'swift-windowsappsdk\Sources\CWinAppSDK\nuget\bin\Microsoft.WindowsAppRuntime.Bootstrap.dll'
+function Get-PEMachine([string]$path) {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+    [BitConverter]::ToUInt16($bytes, $pe + 4)
+}
+if ((Get-PEMachine $bootstrap) -ne 0x8664) {
+    Write-Host "$(Get-Date -Format T) Replacing the ARM64 bootstrap DLL with the x64 one from Windows App SDK $wasdkVersion"
+    $nuget = Join-Path $vendor 'wasdk-download'
+    Remove-Item -Recurse -Force $nuget -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $nuget | Out-Null
+    curl.exe -fL --retry 3 --no-progress-meter -o (Join-Path $nuget 'wasdk.zip') "https://www.nuget.org/api/v2/package/Microsoft.WindowsAppSDK/$wasdkVersion"
+    if ($LASTEXITCODE) { throw 'Windows App SDK download failed' }
+    Expand-Archive (Join-Path $nuget 'wasdk.zip') (Join-Path $nuget 'pkg')
+    $x64 = Get-ChildItem (Join-Path $nuget 'pkg\runtimes') -Recurse -Filter 'Microsoft.WindowsAppRuntime.Bootstrap.dll' |
+        Where-Object { $_.Directory.Parent.Name -match '^win(10)?-x64$' } | Select-Object -First 1
+    if (-not $x64) { throw 'No x64 Microsoft.WindowsAppRuntime.Bootstrap.dll in the Windows App SDK package' }
+    Copy-Item $x64.FullName $bootstrap -Force
+    Remove-Item -Recurse -Force $nuget
+    if ((Get-PEMachine $bootstrap) -ne 0x8664) { throw 'Bootstrap DLL is still not x64' }
+}
+
 Write-Host 'Windows dependencies ready: Windows/vendor'
