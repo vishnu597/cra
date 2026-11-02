@@ -21,8 +21,13 @@ if (-not (Test-Path (Join-Path $cef 'Release\libcef.dll'))) {
     New-Item -ItemType Directory -Force $download | Out-Null
     curl.exe -fL --retry 3 -o (Join-Path $download 'cef.tar.bz2') $url
     if ($LASTEXITCODE) { throw "CEF download failed: $url" }
-    tar -xjf (Join-Path $download 'cef.tar.bz2') -C $download
-    if ($LASTEXITCODE) { throw 'CEF extract failed' }
+    # Windows' own bsdtar, by relative path: a GNU tar earlier on PATH (Git's) reads the
+    # "D:" in an absolute path as a remote host and waits on it forever.
+    Push-Location $download
+    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xjf cef.tar.bz2
+    $tarExit = $LASTEXITCODE
+    Pop-Location
+    if ($tarExit) { throw 'CEF extract failed' }
     Move-Item (Join-Path $download $name) $cef
     Remove-Item -Recurse -Force $download
 }
