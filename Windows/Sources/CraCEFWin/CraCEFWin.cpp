@@ -7,10 +7,23 @@
 #include <mutex>
 #include <string>
 
+// libcef_dll_wrapper is built with MSVC, where CEF's TRIVIAL_ABI is empty. This file is built
+// with clang, where the same headers would mark CefRefPtr [[clang::trivial_abi]] and pass it in
+// a register instead of by address: CefExecuteProcess then read its CefApp argument from address
+// 0. Empty it here, before any other CEF header, so both sides pass CefRefPtr the same way.
+#include "include/base/cef_compiler_specific.h"
+#undef TRIVIAL_ABI
+#define TRIVIAL_ABI
+
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/wrapper/cef_helpers.h"
+
+#if __has_builtin(__is_trivially_relocatable)
+static_assert(!__is_trivially_relocatable(CefRefPtr<CefApp>),
+              "CefRefPtr must be passed by address, as the MSVC-built wrapper expects");
+#endif
 
 namespace {
 

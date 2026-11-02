@@ -51,7 +51,7 @@ function Show-CrashStack([string]$exe, [string]$symbols) {
         'g',
         'q')
     $log = Join-Path $env:TEMP 'cra-crash.log'
-    $d = Start-Process $cdb -ArgumentList @('-g', '-G', '-lines', '-y', "`"$symbols`"", '-cf', "`"$script`"", "`"$exe`"") `
+    $d = Start-Process $cdb -ArgumentList @('-G', '-lines', '-y', "`"$symbols`"", '-cf', "`"$script`"", "`"$exe`"") `
         -WorkingDirectory (Split-Path $exe) -RedirectStandardOutput $log -NoNewWindow -PassThru
     if (-not $d.WaitForExit(120000)) { $d.Kill(); Write-Host 'cdb timed out' }
     Get-Content $log | Write-Host

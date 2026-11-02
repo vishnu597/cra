@@ -14,9 +14,11 @@ public final class CraApp: SwiftApplication {
     private var window: Window!
     /// The CraBrowser from CraCEFWin (an opaque C pointer in Swift).
     private var page: OpaquePointer?
-    private let content = Border()
-    private let address = TextBox()
-    private let pageTitle = TextBlock()
+    // XAML objects can only be made once the app is launched, on its UI thread (making them in
+    // init fails with RPC_E_WRONG_THREAD).
+    private var content: Border!
+    private var address: TextBox!
+    private var pageTitle: TextBlock!
     private var dispatcher: WinAppSDK.DispatcherQueue?
 
     public required init() {
@@ -38,6 +40,9 @@ public final class CraApp: SwiftApplication {
             return
         }
 
+        content = Border()
+        address = TextBox()
+        pageTitle = TextBlock()
         window = Window()
         window.title = "Cra"
         window.content = makeLayout()
