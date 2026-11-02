@@ -13,8 +13,11 @@ file holds the layer rules.
 | App | `Sources/Cra` | CraCore, AppKit, SwiftUI, CraCEF |
 | Bridge | `Sources/CraCEF` | CEF (Objective-C++, seen by Swift through `include/`) |
 | Helper | `Sources/CraHelper` | CEF (the Chromium subprocess) |
+| Windows app | `Windows/Sources/CraWin` | CraCore, WinUI and WinAppSDK (Swift/WinRT), CraCEFWin |
+| Windows bridge | `Windows/Sources/CraCEFWin` | CEF (C++, seen by Swift through a C header in `include/`) |
+| Windows helper | `Windows/Sources/CraHelperWin` | CEF (the Chromium subprocess) |
 
-CraCore never imports AppKit, Cocoa, SwiftUI, UIKit or CraCEF. `scripts/lint.py`
+CraCore never imports AppKit, Cocoa, SwiftUI, UIKit or CraCEF, and it builds on Windows and Linux too (`.github/workflows/windows.yml`): Apple-only frameworks go behind `#if canImport`. `scripts/lint.py`
 (`core-platform-import`) fails the build when it does. CraCore is a package of its own, so
 `swift test --package-path Packages/CraCore` runs without `vendor/cef`. Every app file sees it
 through `Sources/Cra/App/CraCoreExports.swift`.
