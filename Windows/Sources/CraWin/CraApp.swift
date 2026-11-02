@@ -54,7 +54,11 @@ public final class CraApp: SwiftApplication {
             periodic = [clock.every(30 * 60) { store.runAutoArchive() }]
             self.clock = clock
             self.store = store
-            browser = BrowserWindow(store: store, dispatcher: dispatcher)
+            do {
+                browser = try BrowserWindow(store: store, dispatcher: dispatcher)
+            } catch {
+                print("The window could not be made: \(error)")
+            }
         }
     }
 

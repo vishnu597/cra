@@ -15,10 +15,10 @@ import WinUI
 @MainActor
 final class BrowserWindow {
     let store: SidebarStore
-    let window = Window()
+    /// XAML in the sidebar column only, so the page gets real clicks (HostWindow).
+    private(set) var window: HostWindow!
     private var sidebar: SidebarView!
     private let sidebarPanel = Grid()
-    private let content = Border()
     private let address = TextBox()
     private let status = TextBlock()
     private let permissionPanel = StackPanel()
@@ -45,22 +45,22 @@ final class BrowserWindow {
     /// What a new window opens when the sidebar has nothing to show.
     static let startPage = "https://crabrowser.app"
 
-    init(store: SidebarStore, dispatcher: WinAppSDK.DispatcherQueue) {
+    init(store: SidebarStore, dispatcher: WinAppSDK.DispatcherQueue) throws {
         self.store = store
         self.dispatcher = dispatcher
         sidebar = SidebarView(store: store, actions: self)
+        window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
         window.title = "Cra"
-        window.content = makeLayout()
-        try? window.activate()
-        // WinUI's window id is its HWND.
-        hwnd = UInt(window.appWindow.id.value)
-        content.sizeChanged.addHandler { [weak self] _, _ in self?.layoutPage() }
+        hwnd = window.hwnd
+        window.onLayout = { [weak self] frame in self?.shownPage?.frame = frame }
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
-        window.appWindow.closing.addHandler { [weak self] _, args in
-            guard let self, let args, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return }
-            args.cancel = true
+        window.shouldClose = { [weak self] in
+            guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
             self.beginClosing()
+            return false
         }
+        // One window for now: closing it quits (there's no WinUI Window to make WinUI quit).
+        window.onClose = { PostQuitMessage(0) }
         if store.selectedTab == nil && store.visibleTabs(in: store.focusedSpaceID).isEmpty {
             store.createTab(url: Self.startPage)
         }
@@ -153,7 +153,7 @@ final class BrowserWindow {
         readyToClose = true
         try? closeTimer?.stop()
         closeTimer = nil
-        try? window.close()
+        window.close()
     }
 
     private func tabID(of page: WebPage) -> UUID? { page.userInfo as? UUID }
@@ -161,10 +161,6 @@ final class BrowserWindow {
     // MARK: Layout
 
     private func makeLayout() -> UIElement {
-        let grid = Grid()
-        grid.columnDefinitions.append(UI.column(UI.pixels(Self.sidebarWidth)))
-        grid.columnDefinitions.append(UI.column(UI.star))
-
         sidebarPanel.padding = Thickness(left: 10, top: 10, right: 10, bottom: 10)
         for height in [UI.auto, UI.auto, UI.star, UI.auto, UI.auto] { sidebarPanel.rowDefinitions.append(UI.row(height)) }
 
@@ -218,33 +214,21 @@ final class BrowserWindow {
             try? Grid.setRow(part, Int32(i))
         }
 
-        grid.children.append(sidebarPanel)
-        grid.children.append(content)
-        try? Grid.setColumn(sidebarPanel, 0)
-        try? Grid.setColumn(content, 1)
         // Shortcuts while the sidebar has the keyboard; the page reports its own (handleKey).
-        grid.keyDown.addHandler { [weak self] _, args in
+        sidebarPanel.keyDown.addHandler { [weak self] _, args in
             guard let self, let args, !args.handled else { return }
             let key = KeyPress(keyCode: Int32(truncatingIfNeeded: args.key.rawValue), control: Self.isDown(0x11),
                                shift: Self.isDown(0x10), alt: Self.isDown(0x12))
             if self.handleShortcut(key) { args.handled = true }
         }
-        return grid
+        return sidebarPanel
     }
 
     private static func isDown(_ virtualKey: Int32) -> Bool { GetKeyState(virtualKey) < 0 }
 
-    /// The content column in physical pixels, relative to the window's client area.
+    /// The page area in physical pixels, relative to the window's client area.
     private func contentFrame() -> PixelRect {
-        let scale = content.xamlRoot?.rasterizationScale ?? 1
-        let origin = (try? content.transformToVisual(nil)?.transformPoint(Point(x: 0, y: 0))) ?? Point(x: Float(Self.sidebarWidth), y: 0)
-        return PixelRect(x: Int32((Double(origin.x) * scale).rounded()), y: Int32((Double(origin.y) * scale).rounded()),
-                         width: Int32((content.actualWidth * scale).rounded()),
-                         height: Int32((content.actualHeight * scale).rounded()))
-    }
-
-    private func layoutPage() {
-        shownPage?.frame = contentFrame()
+        window?.contentFrame ?? PixelRect(x: Int32(Self.sidebarWidth), y: 0, width: 800, height: 600)
     }
 
     // MARK: Address box
@@ -267,6 +251,7 @@ final class BrowserWindow {
     }
 
     private func focusAddress() {
+        window.focusXAML()
         _ = try? address.focus(.programmatic)
         try? address.selectAll()
     }
