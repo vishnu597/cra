@@ -41,8 +41,8 @@ BASELINE = os.path.join(ROOT, "Tests", "lint-baseline.txt")
 LAYER_SET = re.compile(r"\b(?!layer\b)(\w*[Ll]ayer)\.(backgroundColor|borderColor|colors|opacity|shadowColor|fillColor|strokeColor)\s*=")
 FUNC_START = re.compile(r"^\s*(?:@\w+\s+)*(?:(?:private|fileprivate|internal|public|override|static|final|class|nonisolated|convenience|required|@objc)\s+)*(func\s|init[(?!])")
 CORE_IMPORT = re.compile(r"^\s*(?:@\w+\s+)*import\s+(?:(?:struct|class|enum|protocol|func|var|let|typealias)\s+)?(AppKit|Cocoa|SwiftUI|UIKit|CraCEF)\b")
-CLOCK_FILES = {"Services/SidebarStore.swift", "Services/BrowserManager.swift", "Services/LiveFolderManager.swift",
-               "Services/SidebarIntegrity.swift", "App/AppComposition.swift"}
+CLOCK_FILES = {"Services/BrowserManager.swift", "Services/LiveFolderManager.swift", "App/AppComposition.swift"}
+CORE_CLOCK_FILES = {"SidebarStore.swift", "SidebarIntegrity.swift"}
 
 
 def swift_files():
@@ -100,6 +100,8 @@ def findings():
                     for i, line in enumerate(f, 1):
                         if CORE_IMPORT.match(code(line)):
                             hit("core-platform-import", os.path.relpath(full, ROOT), i)
+                        if n in CORE_CLOCK_FILES and re.search(r"\bDate\(\)", code(line)):
+                            hit("wall-clock-in-decision", os.path.relpath(full, ROOT), i)
     return out, where
 
 

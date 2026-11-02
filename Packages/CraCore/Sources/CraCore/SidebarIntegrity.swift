@@ -6,7 +6,7 @@ extension SidebarStore {
     /// selected tab lives in the space it is selected for. Empty when the sidebar is sound.
     /// Scenarios check it at the end of a journey (cra://debug?checkStore=1, one fault line
     /// per problem) and the store tests after each kind of change.
-    func integrityProblems() -> [String] {
+    public func integrityProblems() -> [String] {
         let all = items.all
         func name(_ id: UUID) -> String { String(id.uuidString.prefix(8)) }
         var problems: [String] = []
