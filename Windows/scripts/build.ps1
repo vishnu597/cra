@@ -30,22 +30,32 @@ foreach ($file in Get-ChildItem $out -Recurse -Include *.exe, *.dll) {
     if ($machine -ne 0x8664) { throw "$($file.FullName) is not x64 (machine 0x$('{0:X4}' -f $machine))" }
 }
 # Every DLL the executables load must now be in $out: start each with only System32 on PATH.
-# 0xC0000135 (STATUS_DLL_NOT_FOUND) means one is missing; a crash code fails the build too. Cra.exe opens a window, so it is
+# 0xC0000135 (STATUS_DLL_NOT_FOUND) means one is missing; a crash code fails the build too, with
+# the faulting module from the event log. Cra.exe opens a window, so it is
 # stopped after a few seconds if it is still running.
 $cleanPath = Join-Path $env:SystemRoot 'System32'
 $savedPath = $env:Path
+$failures = @()
 try {
     $env:Path = $cleanPath
-    foreach ($exe in 'CraHelper.exe', 'Cra.exe') {
+    foreach ($exe in 'Cra.exe', 'CraHelper.exe') {
+        $started = Get-Date
         $p = Start-Process (Join-Path $out $exe) -WorkingDirectory $out -PassThru
-        if (-not $p.WaitForExit(5000)) { $p.Kill(); continue }
-        if ($p.ExitCode -eq -1073741515) { throw "$exe could not load a DLL it needs (STATUS_DLL_NOT_FOUND)" }
-        # A Swift trap (illegal instruction), access violation or fail-fast is a crash too.
-        if ($p.ExitCode -in -1073741795, -1073741819, -1073740791) {
-            throw "$exe crashed on start (exit code 0x$('{0:X8}' -f $p.ExitCode))"
+        if (-not $p.WaitForExit(5000)) { $p.Kill(); Write-Host "$exe still running after 5 s"; continue }
+        $code = '0x{0:X8}' -f $p.ExitCode
+        Write-Host "$exe exited with $code"
+        # Missing DLL, Swift trap (illegal instruction), access violation, fail-fast.
+        if ($p.ExitCode -in -1073741515, -1073741795, -1073741819, -1073740791) {
+            $failures += "$exe exited with $code"
+            # Windows Error Reporting names the faulting module and offset.
+            Start-Sleep -Seconds 2
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $started } -ErrorAction SilentlyContinue |
+                Where-Object Message -Match ([regex]::Escape($exe)) | Select-Object -First 1 |
+                ForEach-Object { Write-Host $_.Message }
         }
     }
 } finally {
     $env:Path = $savedPath
 }
+if ($failures) { throw ($failures -join '; ') }
 Write-Host "Built $out"
