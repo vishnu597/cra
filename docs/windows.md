@@ -39,6 +39,14 @@ CEF runs on the main thread, as on macOS: `external_message_pump` hands Chromium
 message-only window, so WinUI's message loop pumps it and every callback arrives on the main
 thread. No locks, no hops between threads.
 
+Chromium's own crash recovery is off: after a run that didn't quit cleanly it would reopen
+the last session in a stock Chromium window, so `CrashRecovery` clears it from the profiles
+before Chromium starts (`ChromiumProfile` in CraCore, as the Mac bridge does).
+
+WinUI's `ContentPreTranslateMessage` takes the real mouse and keyboard input of every window
+under a WinUI window for XAML, so the app's `MessageLoop` hands Chromium's windows their
+messages without it.
+
 Two things the build takes care of and must keep doing:
 
 - `libcef_dll_wrapper` is built with MSVC and the bridge with clang. The bridge empties CEF's

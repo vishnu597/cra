@@ -309,7 +309,9 @@ public final class CraApp: SwiftApplication {
         let helper = URL(fileURLWithPath: exe).deletingLastPathComponent().appendingPathComponent("CraHelper.exe").path
         let local = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: local).appendingPathComponent("Cra")
-        let cache = root.appendingPathComponent("User Data").path
+        let cacheURL = root.appendingPathComponent("User Data")
+        CrashRecovery.prepare(cache: cacheURL)
+        let cache = cacheURL.path
         let log = root.appendingPathComponent("chromium.log").path
         return helper.withCString { h in
             cache.withCString { c in
