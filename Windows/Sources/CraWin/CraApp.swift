@@ -20,6 +20,8 @@ public final class CraApp: SwiftApplication {
     private var selected: WebPage?
     /// Permission requests waiting for the user, oldest first.
     private var permissionQueue: [(origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
+    /// The window is waiting for Chromium to close its pages before it closes.
+    private var closing = false
 
     // XAML objects can only be made once the app is launched, on its UI thread (making them in
     // init fails with RPC_E_WRONG_THREAD).
@@ -39,9 +41,10 @@ public final class CraApp: SwiftApplication {
         }
     }
 
-    override public func onShutdown(exitCode: Int32) {
-        cra_cef_shutdown()
-    }
+    /// Chromium's windows bypass WinUI's input routing (MessageLoop).
+    override public class var runLoop: SwiftApplication.RunLoop { MessageLoop.run }
+
+    override public func onShutdown(exitCode: Int32) {}
 
     override public func onLaunched(_ args: WinUI.LaunchActivatedEventArgs) {
         guard startChromium() else {
@@ -51,6 +54,8 @@ public final class CraApp: SwiftApplication {
             print("Chromium did not start")
             return
         }
+        // Chromium shuts down while XAML is still up.
+        MessageLoop.willQuit = { cra_cef_shutdown() }
 
         content = Border()
         address = TextBox()
@@ -66,11 +71,11 @@ public final class CraApp: SwiftApplication {
         // WinUI's window id is its HWND.
         hwnd = UInt(window.appWindow.id.value)
         content.sizeChanged.addHandler { [weak self] _, _ in self?.layoutPages() }
-        window.closed.addHandler { [weak self] _, _ in
-            guard let self else { return }
-            for page in self.tabs { page.close() }
-            self.tabs.removeAll()
-            self.selected = nil
+        // Chromium closes its pages before their parent window goes (CEF's DoClose order).
+        window.appWindow.closing.addHandler { [weak self] _, args in
+            guard let self, let args, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return }
+            args.cancel = true
+            self.closeAllPages()
         }
         openTab(Self.startPage, background: false)
     }
@@ -128,6 +133,34 @@ public final class CraApp: SwiftApplication {
         } else {
             reloadTabList()
         }
+    }
+
+    private func closeAllPages() {
+        guard !closing else { return }
+        closing = true
+        let open = tabs
+        tabs.removeAll()
+        selected = nil
+        for page in open { page.close() }
+        // In case a page never reports back.
+        let timer = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.createTimer()
+        timer?.interval = TimeSpan(duration: 3 * 10_000_000)
+        timer?.isRepeating = false
+        timer?.tick.addHandler { [weak self] _, _ in self?.finishClosing() }
+        try? timer?.start()
+        closeTimer = timer
+        if cra_cef_live_browser_count() == 0 { finishClosing() }
+    }
+
+    private var closeTimer: DispatcherQueueTimer?
+    private var readyToClose = false
+
+    private func finishClosing() {
+        guard !readyToClose else { return }
+        readyToClose = true
+        try? closeTimer?.stop()
+        closeTimer = nil
+        try? window.close()
     }
 
     private func selectTab(offset: Int) {
@@ -415,6 +448,10 @@ extension CraApp: WebPageDelegate {
     }
 
     func pageDidClose(_ page: WebPage) {
+        if closing {
+            if cra_cef_live_browser_count() == 0 { finishClosing() }
+            return
+        }
         // A page that closed itself (window.close()); tabs Cra closed are already gone.
         forget(page)
     }
