@@ -53,8 +53,11 @@ public final class CraApp: SwiftApplication {
             print("Chromium did not start")
             return
         }
-        // Chromium shuts down while XAML is still up.
-        MessageLoop.willQuit = { cra_cef_shutdown() }
+        // Chromium shuts down while XAML is still up; then the process ends (MessageLoop.finish).
+        MessageLoop.willQuit = {
+            cra_cef_shutdown()
+            MessageLoop.finish()
+        }
 
         address = TextBox()
         tabList = StackPanel()

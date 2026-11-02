@@ -207,6 +207,7 @@ struct CraBrowser {
     bool is_popup_host = false;
     bool close_requested = false;
     bool closed_by_page = false;
+    bool focus_pending = false;  // focused before Chromium made the page: focus it once it is
     bool loading = false;
     bool can_go_back = false;
     bool can_go_forward = false;
@@ -294,6 +295,8 @@ public:
         o->browser = browser;
         o->ApplyFrame();
         if (!o->visible) browser->GetHost()->WasHidden(true);
+        if (o->focus_pending && o->visible) cra_browser_set_focused(o, 1);
+        o->focus_pending = false;
         if (o->close_requested) browser->GetHost()->CloseBrowser(true);
     }
 
@@ -774,7 +777,10 @@ extern "C" void cra_browser_set_visible(CraBrowser *b, int visible) {
 }
 
 extern "C" void cra_browser_set_focused(CraBrowser *b, int focused) {
-    if (!b || !b->browser) return;
+    if (!b) return;
+    // A new page is made asynchronously; without this, focus stayed on the page shown before.
+    b->focus_pending = focused != 0 && !b->browser;
+    if (!b->browser) return;
     // CEF's SetFocus doesn't move Win32 focus off XAML's input site, so keys would stay there.
     if (focused) {
         if (HWND hwnd = b->browser->GetHost()->GetWindowHandle()) SetFocus(hwnd);
