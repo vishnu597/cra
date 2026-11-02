@@ -1,4 +1,8 @@
+// CGFloat and CGRect come from Foundation off Apple platforms (Windows, Linux).
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
+import Foundation
 import CraCore
 import Testing
 
