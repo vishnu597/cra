@@ -58,12 +58,26 @@ jobs:
           key: cef-windows64-${{ hashFiles('scripts/fetch-cef.sh') }}
 
       # The WinUI projections take about 12 minutes to compile from scratch.
-      - name: Cache Swift build
-        uses: actions/cache@v4
+      # Restored and saved as separate steps so a failed build still saves what it compiled.
+      - name: Restore Swift build
+        uses: actions/cache/restore@v4
         with:
           path: Windows/.build
           key: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-${{ github.sha }}
-          restore-keys: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-
+          restore-keys: |
+            swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-
+            swiftpm-windows-
+
+      # Without the runtime, Cra.exe stops at the Windows App SDK's "install the runtime" prompt
+      # and the start-up check never reaches Chromium.
+      - name: Install the Windows App Runtime
+        shell: pwsh
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          curl.exe -L --no-progress-meter -o "$env:RUNNER_TEMP\war.exe" https://aka.ms/windowsappsdk/1.7/latest/windowsappruntimeinstall-x64.exe
+          & "$env:RUNNER_TEMP\war.exe" --quiet
+          Write-Host "installer exited with $LASTEXITCODE"
 
       - name: Fetch CEF and the Swift/WinRT projections
         shell: pwsh
@@ -85,8 +99,18 @@ jobs:
         timeout-minutes: 30
         run: Windows/scripts/build.ps1
 
+      - name: Save Swift build
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: Windows/.build
+          key: swiftpm-windows-${{ hashFiles('Windows/Package.swift', 'Windows/scripts/fetch-deps.ps1') }}-${{ github.sha }}
+
+      # Uploaded even when the start-up check fails, so the build can be tried on a real PC.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Cra-windows-x64
           path: Windows/build/Cra
           retention-days: 7
+          if-no-files-found: ignore

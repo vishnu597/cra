@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'fetch-deps.ps1')
 
-swift build --package-path $root -c $Configuration
+# /DEBUG writes a PDB with every function's name, so a crash in the start-up check below can be
+# read as a stack (the PDBs stay in the build folder and are not shipped).
+swift build --package-path $root -c $Configuration -Xlinker /DEBUG
 if ($LASTEXITCODE) { throw 'swift build failed' }
 $bin = (swift build --package-path $root -c $Configuration --show-bin-path).Trim()
 
@@ -33,6 +35,27 @@ foreach ($file in Get-ChildItem $out -Recurse -Include *.exe, *.dll) {
 # 0xC0000135 (STATUS_DLL_NOT_FOUND) means one is missing; a crash code fails the build too, with
 # the faulting module from the event log. Cra.exe opens a window, so it is
 # stopped after a few seconds if it is still running.
+# Runs $exe again under cdb (Windows SDK debugging tools, when installed) and prints the stack
+# at the first access violation or fail-fast, with names from the PDBs in $symbols.
+function Show-CrashStack([string]$exe, [string]$symbols) {
+    $cdb = @("${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe",
+             "$env:ProgramFiles\Windows Kits\10\Debuggers\x64\cdb.exe") |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $cdb) { Write-Host 'cdb not found; no stack'; return }
+    $stack = '.echo ==== crash; .exr -1; .ecxr; r; kn 40; ub @rip L10; u @rip L3; lm; q'
+    $script = Join-Path $env:TEMP 'cra-crash.cdb'
+    Set-Content $script @(
+        "sxe -c `"$stack`" av",
+        "sxe -c `"$stack`" c0000409",
+        "sxe -c `"$stack`" c000001d",
+        'g',
+        'q')
+    $log = Join-Path $env:TEMP 'cra-crash.log'
+    $d = Start-Process $cdb -ArgumentList @('-g', '-G', '-lines', '-y', "`"$symbols`"", '-cf', "`"$script`"", "`"$exe`"") `
+        -WorkingDirectory (Split-Path $exe) -RedirectStandardOutput $log -NoNewWindow -PassThru
+    if (-not $d.WaitForExit(120000)) { $d.Kill(); Write-Host 'cdb timed out' }
+    Get-Content $log | Write-Host
+}
 $cleanPath = Join-Path $env:SystemRoot 'System32'
 $savedPath = $env:Path
 $failures = @()
@@ -52,6 +75,7 @@ try {
             Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $started } -ErrorAction SilentlyContinue |
                 Where-Object Message -Match ([regex]::Escape($exe)) | Select-Object -First 1 |
                 ForEach-Object { Write-Host $_.Message }
+            Show-CrashStack (Join-Path $out $exe) $bin
         }
     }
 } finally {
