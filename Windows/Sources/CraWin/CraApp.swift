@@ -4,6 +4,7 @@ import Foundation
 import UWP
 import WinAppSDK
 import WindowsFoundation
+import WinSDK
 import WinUI
 
 /// The Windows shell while the real sidebar is ported: one WinUI window with a sidebar column
@@ -45,7 +46,8 @@ public final class CraApp: SwiftApplication {
     override public func onLaunched(_ args: WinUI.LaunchActivatedEventArgs) {
         guard startChromium() else {
             // Another Cra already runs on this profile and was handed this launch.
-            if cra_cef_another_instance_was_notified() != 0 { exit(0) }
+            // (Not `exit`: inside an Application that names its own exit() method.)
+            if cra_cef_another_instance_was_notified() != 0 { ExitProcess(0) }
             print("Chromium did not start")
             return
         }
