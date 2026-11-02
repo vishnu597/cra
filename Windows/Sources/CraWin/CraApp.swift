@@ -152,7 +152,7 @@ public final class CraApp: SwiftApplication {
         if cra_cef_live_browser_count() == 0 { finishClosing() }
     }
 
-    private var closeTimer: DispatcherQueueTimer?
+    private var closeTimer: WinAppSDK.DispatcherQueueTimer?
     private var readyToClose = false
 
     private func finishClosing() {
