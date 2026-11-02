@@ -24,7 +24,7 @@ public enum DownloadRow {
         case .failed: return "Failed to Download"
         case .cancelled: return "Cancelled"
         // At least a second: a row read just as it finished said "in 0 seconds".
-        case let .finished(at): return age.localizedString(fromTimeInterval: -max(1, now.timeIntervalSince(at)))
+        case let .finished(at): return age(-max(1, now.timeIntervalSince(at)))
         }
     }
 
@@ -47,10 +47,20 @@ public enum DownloadRow {
         return (r == r.rounded() ? "\(Int(r))" : String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), r)) + " " + units[i]
     }
 
-    private static let age: RelativeDateTimeFormatter = {
+    private static func age(_ interval: TimeInterval) -> String {
+        #if canImport(Darwin)
+        ageFormatter.localizedString(fromTimeInterval: interval)
+        #else
+        RelativeTime.english(interval, style: .full)
+        #endif
+    }
+
+    #if canImport(Darwin)
+    private static let ageFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
         f.locale = Locale(identifier: "en_US")
         f.unitsStyle = .full
         return f
     }()
+    #endif
 }
