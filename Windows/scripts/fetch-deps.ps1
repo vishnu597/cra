@@ -19,20 +19,33 @@ if (-not (Test-Path (Join-Path $cef 'Release\libcef.dll'))) {
     $download = Join-Path $vendor 'cef-download'
     Remove-Item -Recurse -Force $download, $cef -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $download | Out-Null
-    curl.exe -fL --retry 3 -o (Join-Path $download 'cef.tar.bz2') $url
+    curl.exe -fL --retry 3 --no-progress-meter -o (Join-Path $download 'cef.tar.bz2') $url
     if ($LASTEXITCODE) { throw "CEF download failed: $url" }
-    # Windows' own bsdtar, by relative path: a GNU tar earlier on PATH (Git's) reads the
-    # "D:" in an absolute path as a remote host and waits on it forever.
+    Write-Host "$(Get-Date -Format T) Downloaded, extracting"
+    # 7-Zip when it is there (CI runners have it): tar.exe stalled on this archive in CI.
     Push-Location $download
-    & (Join-Path $env:SystemRoot 'System32\tar.exe') -xjf cef.tar.bz2
-    $tarExit = $LASTEXITCODE
-    Pop-Location
-    if ($tarExit) { throw 'CEF extract failed' }
+    try {
+        $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+        if ($sevenZip) {
+            & $sevenZip.Source x -y -bso0 -bsp0 cef.tar.bz2
+            if ($LASTEXITCODE) { throw 'CEF extract (bz2) failed' }
+            & $sevenZip.Source x -y -bso0 -bsp0 cef.tar
+            if ($LASTEXITCODE) { throw 'CEF extract (tar) failed' }
+        } else {
+            # Windows' own bsdtar, by relative path: a GNU tar earlier on PATH (Git's) reads
+            # the "D:" in an absolute path as a remote host and waits on it forever.
+            & (Join-Path $env:SystemRoot 'System32\tar.exe') -xjf cef.tar.bz2
+            if ($LASTEXITCODE) { throw 'CEF extract failed' }
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Host "$(Get-Date -Format T) Extracted"
     Move-Item (Join-Path $download $name) $cef
     Remove-Item -Recurse -Force $download
 }
 if (-not (Test-Path (Join-Path $cef 'build\libcef_dll_wrapper\Release\libcef_dll_wrapper.lib'))) {
-    Write-Host 'Building libcef_dll_wrapper'
+    Write-Host "$(Get-Date -Format T) Building libcef_dll_wrapper"
     cmake -S $cef -B (Join-Path $cef 'build') -G 'Visual Studio 17 2022' -A x64 `
         -DCEF_RUNTIME_LIBRARY_FLAG=/MD -DUSE_SANDBOX=OFF
     if ($LASTEXITCODE) { throw 'CEF configure failed' }
@@ -50,6 +63,7 @@ $winrt = @{
 }
 $winrtDir = Join-Path $vendor 'winrt'
 New-Item -ItemType Directory -Force $winrtDir | Out-Null
+Write-Host "$(Get-Date -Format T) Fetching the Swift/WinRT projections"
 foreach ($repo in $winrt.Keys) {
     $dir = Join-Path $winrtDir $repo
     if (-not (Test-Path (Join-Path $dir '.git'))) {
