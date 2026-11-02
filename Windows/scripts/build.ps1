@@ -15,6 +15,24 @@ $out = Join-Path $root 'build\Cra'
 Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item (Join-Path $bin '*.exe'), (Join-Path $bin '*.dll') $out
+# Both executables need Resources/app.manifest (Windows 10 support, per-monitor DPI): without
+# it Chromium's GPU process crashes and the page area stays black. mt.exe ships with the
+# Windows SDK that Swift on Windows already needs.
+$mt = (Get-Command mt.exe -ErrorAction SilentlyContinue).Source
+if (-not $mt) {
+    $mt = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\mt.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { try { [version]$_.Directory.Parent.Name } catch { [version]"0.0" } } -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $mt) { throw 'mt.exe (Windows SDK) not found' }
+$manifest = Join-Path $root 'Resources\app.manifest'
+foreach ($exe in 'Cra.exe', 'CraHelper.exe') {
+    $target = Join-Path $out $exe
+    & $mt -nologo -manifest $manifest "-outputresource:$target;#1"
+    if ($LASTEXITCODE) { throw "mt.exe could not embed the manifest in $exe" }
+    if (-not (Select-String -Path $target -Pattern '8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a' -SimpleMatch -Quiet)) {
+        throw "$exe has no embedded manifest"
+    }
+}
 Get-ChildItem $bin -Directory -Filter '*.resources' | Copy-Item -Destination $out -Recurse
 # The Swift runtime (swiftCore, Foundation, Dispatch, ...) is installed with the toolchain, not
 # built by SwiftPM, so it is copied from wherever the toolchain put it on PATH.
