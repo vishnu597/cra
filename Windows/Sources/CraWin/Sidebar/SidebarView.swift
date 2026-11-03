@@ -71,8 +71,12 @@ final class SidebarView {
         buildHeader(space)
         list.children.clear()
         for item in store.listedPinnedItems(in: space) { addRow(item, depth: 0) }
-        addNewTabRow(space)
+        addDivider()
+        // Settings ▸ Tabs ▸ "Show the New Tab button above tabs": else it follows Today's last tab.
+        let newTabAtTop = store.settings.newTabButtonAtTop
+        if newTabAtTop { addNewTabRow(space) }
         for item in store.children(of: space.todayContainerID) { addRow(item, depth: 0) }
+        if !newTabAtTop { addNewTabRow(space) }
         buildSpacesBar(space)
     }
 
@@ -137,6 +141,8 @@ final class SidebarView {
 
     private func buildHeader(_ space: Space) {
         header.children.clear()
+        // Arc's single-space mode (Settings ▸ Tabs ▸ Spaces, or the space's menu).
+        header.visibility = store.hidesSpaceHeader(space.id) ? .collapsed : .visible
         let name = UI.text("\(space.emoji) \(space.title)".trimmingCharacters(in: .whitespaces), size: 14, color: palette.text)
         // Arc: clicking the space's name folds its pinned tabs away.
         let title = UI.button(name, padding: Thickness(left: 6, top: 4, right: 6, bottom: 4)) { [weak self] in
@@ -253,13 +259,16 @@ final class SidebarView {
         list.children.append(row)
     }
 
-    private func addNewTabRow(_ space: Space) {
+    /// The line between the pinned tabs and Today.
+    private func addDivider() {
         let line = Border()
         line.height = 1
         line.background = palette.tile
         line.margin = Thickness(left: 4, top: 6, right: 4, bottom: 6)
         list.children.append(line)
+    }
 
+    private func addNewTabRow(_ space: Space) {
         let row = Grid()
         row.columnDefinitions.append(UI.column(UI.star))
         row.columnDefinitions.append(UI.column(UI.auto))
@@ -349,6 +358,9 @@ final class SidebarView {
         })
         menu.items.append(UI.menuItem("New Space") { [weak self] in self?.newSpace() })
         menu.items.append(UI.menuItem("Clear Today") { [weak self] in self?.store.clearToday(space.id) })
+        if store.spaceOrder.count == 1 && !store.isIncognito(space: space.id) {
+            menu.items.append(UI.menuItem("Hide Space Header") { [weak self] in self?.store.settings.showSpaceHeaderOnSingleSpace = false })
+        }
         if store.spaceOrder.count > 1 {
             menu.items.append(MenuFlyoutSeparator())
             menu.items.append(UI.menuItem("Delete Space") { [weak self] in self?.store.deleteSpace(space.id) })
@@ -360,7 +372,7 @@ final class SidebarView {
 
     private func buildSpacesBar(_ focused: Space) {
         spacesBar.children.clear()
-        for space in store.orderedSpaces {
+        for space in store.orderedSpaces where !store.hidesSpaceHeader(space.id) {
             let mark = UI.text(space.emoji.isEmpty ? String(space.title.prefix(1)) : space.emoji, size: 15, color: palette.text, trimmed: false)
             let dot = UI.button(mark, fill: space.id == focused.id ? palette.selected : nil,
                                 padding: Thickness(left: 6, top: 3, right: 6, bottom: 3)) { [weak self] in

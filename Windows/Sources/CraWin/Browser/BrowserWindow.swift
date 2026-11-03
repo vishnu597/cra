@@ -67,6 +67,8 @@ final class BrowserWindow {
     private var closing = false
     private var readyToClose = false
     private var closeTimer: WinAppSDK.DispatcherQueueTimer?
+    /// Ctrl+,: made the first time it opens, then hidden and shown again.
+    private var settingsWindow: SettingsWindow?
     /// Permission requests waiting for the user, oldest first.
     private var permissionQueue: [(origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
 
@@ -446,6 +448,7 @@ final class BrowserWindow {
     private func perform(_ id: String) {
         switch id {
         case "find": showFindBar()
+        case "settings": openSettings()
         case "newTab": beginNewTab()
         case "reopenClosedTab": reopenClosedTab()
         case "closeTab": closeCurrentTab()
@@ -565,12 +568,27 @@ final class BrowserWindow {
                          size: SizeInt32(width: Int32(width), height: Int32(height)))
     }
 
+    // MARK: Settings
+
+    /// Ctrl+, (Arc's ⌘,): the Settings window, centred on this one when it opens.
+    private func openSettings() {
+        if settingsWindow == nil {
+            do {
+                settingsWindow = try SettingsWindow(store: store)
+            } catch {
+                print("The Settings window could not be made: \(error)")
+                return
+            }
+        }
+        settingsWindow?.show(over: window)
+    }
+
     // MARK: Keys
 
     /// Shortcuts Cra keeps from the page (Arc's, with Ctrl in place of Cmd).
     private func handleShortcut(_ key: KeyPress) -> Bool {
         let vkTab: Int32 = 0x09, vkLeft: Int32 = 0x25, vkRight: Int32 = 0x27, vkF3: Int32 = 0x72, vkF5: Int32 = 0x74
-        let vkPlus: Int32 = 0xBB, vkMinus: Int32 = 0xBD  // the = and - keys
+        let vkPlus: Int32 = 0xBB, vkMinus: Int32 = 0xBD, vkComma: Int32 = 0xBC  // the =, - and , keys
         let letter = { (c: Character) in Int32(c.asciiValue ?? 0) }
         if key.control && key.alt {
             switch key.keyCode {
@@ -594,6 +612,7 @@ final class BrowserWindow {
             // stay the page's zoom.
             case vkPlus where key.shift: addSplitPane()
             case vkMinus where key.shift: if let id = store.selectedTabID { closeSplitPane(id) }
+            case vkComma where !key.shift: openSettings()
             case vkTab: cycleTab(key.shift ? -1 : 1)
             case letter("1")...letter("9"): selectTab(number: Int(key.keyCode - letter("0")))
             default: return false

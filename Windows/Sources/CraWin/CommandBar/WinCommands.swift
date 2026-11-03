@@ -16,6 +16,7 @@ enum WinCommands {
         CommandBarCommand(id: "hardReload", name: "Force Refresh the Page", shortcut: "Ctrl+Shift+R"),
         CommandBarCommand(id: "pinTab", name: "Pin/Unpin Tab", triggers: ["pin", "unpin"], shortcut: "Ctrl+D"),
         CommandBarCommand(id: "find", name: "Find…", triggers: ["find", "search page"], shortcut: "Ctrl+F"),
+        CommandBarCommand(id: "settings", name: "Settings…", triggers: ["preferences", "settings"], shortcut: "Ctrl+,"),
         CommandBarCommand(id: "addSplitView", name: "Add Split View", triggers: ["split", "split view", "add split"],
                           shortcut: "Ctrl+Shift+="),
         CommandBarCommand(id: "closeSplitPane", name: "Close this Split Pane", triggers: ["close split", "close pane"],

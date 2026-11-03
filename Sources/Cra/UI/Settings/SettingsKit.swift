@@ -1,25 +1,5 @@
 import SwiftUI
 
-/// Geometry of Dia 1.54.2's Settings window, measured from window captures and the
-/// accessibility tree (docs/arc-reverse-engineering.md "Dia Settings window").
-enum SettingsMetrics {
-    static let windowSize = CGSize(width: 778, height: 509)
-    static let sidebarWidth: CGFloat = 204
-    static let toolbarHeight: CGFloat = 52
-    static let navPillSize = CGSize(width: 69, height: 38)
-    /// Card panes: cards sit 21 pt from the content edges, 20 pt below the toolbar.
-    static let paneInset: CGFloat = 21
-    static let paneTop: CGFloat = 20
-    static let cardCorner: CGFloat = 12
-    static let cardRowInset: CGFloat = 10
-    static let cardRowHeight: CGFloat = 43
-    /// Form panes (Tabs, Advanced): labels end 178.5 pt into the content, controls start at 202.
-    static let formLabelWidth: CGFloat = 178.5
-    static let formControlX: CGFloat = 202
-    static let formTop: CGFloat = 31
-    static let formGroupSpacing: CGFloat = 14
-}
-
 /// Rounded card behind grouped rows (white 7% over the window in dark mode).
 struct SettingsCard<Content: View>: View {
     @ViewBuilder let content: Content
