@@ -9,9 +9,10 @@ import WinSDK
 import WinUI
 
 /// One browser window on the shared SidebarStore: the toolbar, address box and sidebar on
-/// the left, the open tab's page on the right. The Windows counterpart of MainWindowController
-/// and BrowserManager, smaller for now: one window, a page made when its tab is first shown and
-/// closed when the tab leaves the sidebar or is unloaded.
+/// the left, the open tab's page on the right (or its split's panes, side by side or stacked).
+/// The Windows counterpart of MainWindowController and BrowserManager, smaller for now: one
+/// window, a page made when its tab is first shown and closed when the tab leaves the sidebar
+/// or is unloaded.
 @MainActor
 final class BrowserWindow {
     let store: SidebarStore
@@ -36,8 +37,20 @@ final class BrowserWindow {
 
     /// Pages by tab id.
     private var pages: [UUID: WebPage] = [:]
+    /// The selected tab's page: the focused pane, which takes the keyboard and the commands.
     private weak var shownPage: WebPage?
     private var shownTabID: UUID?
+    /// The panes on screen, in order: the selected tab, or every pane of its split. Their frames
+    /// and the gaps between them, in physical pixels relative to the client area.
+    private var paneIDs: [UUID] = []
+    private var paneFrames: [UUID: PixelRect] = [:]
+    private var paneGaps: [PixelRect] = []
+    /// The same layout in DIPs from the page area's top left, for hit-testing the dividers.
+    private var paneLayoutResult = SplitPaneLayout.Result()
+    private var paneOrientation: SplitOrientation = .horizontal
+    /// A divider being dragged: the one after pane `divider`, where it was pressed, and the
+    /// factors then. `factors` follows the pointer and is saved to the split on release.
+    private var paneDrag: (divider: Int, x: Int32, y: Int32, start: [UUID: CGFloat], factors: [UUID: CGFloat])?
     /// Ctrl+T, Ctrl+L: ranked by CraCore's SuggestionEngine, drawn in a window of its own over the page.
     private var engine: SuggestionEngine!
     private var commandBar: CommandBarView!
@@ -81,12 +94,14 @@ final class BrowserWindow {
         window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
         window.title = "Cra"
         hwnd = window.hwnd
-        window.onLayout = { [weak self] frame in
-            self?.shownPage?.frame = frame
+        window.onLayout = { [weak self] _ in
+            self?.layoutPanes()
             self?.placeCommandBar()
             self?.placeFindBar()
         }
         window.onMove = { [weak self] in self?.placeFindBar() }
+        window.onMouse = { [weak self] event in self?.handlePaneMouse(event) }
+        window.cursor = { [weak self] x, y in self?.paneCursor(x: x, y: y) }
         window.onFocus = { [weak self] in
             guard let self, !self.closing, !self.commandBar.isOpen else { return }
             self.focusContent()
@@ -117,6 +132,7 @@ final class BrowserWindow {
         withObservationTracking {
             sidebar.build()
             sidebarPanel.background = sidebar.fill
+            applyPaneColors(store.focusedSpace.theme)
             downloads.apply(SidebarPalette(store.focusedSpace.theme), fill: sidebar.fill)
             syncPages()
             showAddress(store.selectedTab?.tab?.url ?? "")
@@ -137,33 +153,38 @@ final class BrowserWindow {
             page.close()
             pages[id] = nil
         }
+        // Split view: the selected tab's split decides which panes are on screen. An empty pane
+        // (Arc's "Search or Enter URL…") has no page yet.
         let selected = store.selectedTab
-        if let tab = selected?.tab, let id = selected?.id, !tab.url.isEmpty {
-            let page = pages[id] ?? makePage(for: id, url: tab.url)
-            show(page, tab: id)
-        } else {
-            show(nil, tab: selected?.id)
+        let panes = selected.map { store.paneTabIDs(for: $0.id) } ?? []
+        var shown: [UUID: WebPage] = [:]
+        for id in panes {
+            guard let tab = store.item(id)?.tab, !tab.url.isEmpty else { continue }
+            shown[id] = pages[id] ?? makePage(for: id, url: tab.url)
         }
+        paneIDs = panes
+        layoutPanes()
+        for (id, page) in pages where shown[id] == nil { page.isVisible = false }
+        for page in shown.values { page.isVisible = true }
+        show(selected.flatMap { shown[$0.id] }, tab: selected?.id)
         let title = selected?.displayTitle ?? ""
         window.title = title.isEmpty ? "Cra" : "\(title) - Cra"
     }
 
     private func makePage(for id: UUID, url: String) -> WebPage {
-        let page = WebPage(parent: hwnd, frame: contentFrame(), url: url, delegate: self)
+        let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, delegate: self)
         page.userInfo = id
         page.isVisible = false
         pages[id] = page
         return page
     }
 
+    /// Focuses the selected tab's page (the panes are already on screen, syncPages).
     private func show(_ page: WebPage?, tab id: UUID?) {
         let changed = id != shownTabID
         if shownPage !== page {
-            shownPage?.isVisible = false
             shownPage = page
             if let page {
-                page.frame = contentFrame()
-                page.isVisible = true
                 page.setFocused(true)
             } else {
                 // Nothing to show (an empty space): keys would stay with the hidden page.
@@ -186,6 +207,8 @@ final class BrowserWindow {
         let open = Array(pages.values)
         pages.removeAll()
         shownPage = nil
+        paneIDs = []
+        paneDrag = nil
         for page in open { page.close() }
         closeTimer = try? dispatcher.createTimer()
         closeTimer?.interval = TimeSpan(duration: 3 * 10_000_000)
@@ -429,6 +452,12 @@ final class BrowserWindow {
         case "reload": reload(ignoringCache: false)
         case "hardReload": reload(ignoringCache: true)
         case "pinTab": if let t = store.selectedTabID { store.togglePinned(t) }
+        case "addSplitView": addSplitPane()
+        case "closeSplitPane": if let t = store.selectedTabID { closeSplitPane(t) }
+        case "separateFromSplit": if let t = store.selectedTabID { separatePane(t) }
+        case "flipSplitOrientation": if let t = store.selectedTabID, let split = store.splitContaining(t) { store.flipSplitOrientation(split.id) }
+        case "nextSplitPane": cycleSplitPane(1)
+        case "previousSplitPane": cycleSplitPane(-1)
         default: break
         }
     }
@@ -527,7 +556,7 @@ final class BrowserWindow {
     /// The top right of the page area, 10 DIPs in.
     private func placeFindBar() {
         guard findVisible, let findWindow, let window, let host = HWND(bitPattern: hwnd) else { return }
-        let scale = window.scale, frame = window.contentFrame
+        let scale = window.scale, frame = shownTabID.flatMap { paneFrames[$0] } ?? window.contentFrame
         let width = (FindBarView.width * scale).rounded(), height = (FindBarView.height * scale).rounded()
         let inset = (FindBarView.inset * scale).rounded()
         var corner = POINT(x: frame.x + frame.width, y: frame.y)
@@ -541,6 +570,7 @@ final class BrowserWindow {
     /// Shortcuts Cra keeps from the page (Arc's, with Ctrl in place of Cmd).
     private func handleShortcut(_ key: KeyPress) -> Bool {
         let vkTab: Int32 = 0x09, vkLeft: Int32 = 0x25, vkRight: Int32 = 0x27, vkF3: Int32 = 0x72, vkF5: Int32 = 0x74
+        let vkPlus: Int32 = 0xBB, vkMinus: Int32 = 0xBD  // the = and - keys
         let letter = { (c: Character) in Int32(c.asciiValue ?? 0) }
         if key.control && key.alt {
             switch key.keyCode {
@@ -560,6 +590,10 @@ final class BrowserWindow {
             case letter("G"): findNext(forward: !key.shift)
             case letter("R"): reload(ignoringCache: key.shift)
             case letter("D"): if let id = store.selectedTabID { store.togglePinned(id) }
+            // Arc's View ▸ Add Split View ⌃⇧= and Close this Split Pane ⌃⇧-; without Shift they
+            // stay the page's zoom.
+            case vkPlus where key.shift: addSplitPane()
+            case vkMinus where key.shift: if let id = store.selectedTabID { closeSplitPane(id) }
             case vkTab: cycleTab(key.shift ? -1 : 1)
             case letter("1")...letter("9"): selectTab(number: Int(key.keyCode - letter("0")))
             default: return false
@@ -587,6 +621,138 @@ final class BrowserWindow {
 
     private func reload(ignoringCache: Bool) {
         if ignoringCache { shownPage?.reloadIgnoringCache() } else { shownPage?.reload() }
+    }
+
+    // MARK: Split view
+
+    /// Arc's "Add Split View" (Ctrl+Shift+=): an empty pane next to the focused one, the command
+    /// bar asking what it shows (MainWindowController.addSplitPane). Arc stops at four panes.
+    private func addSplitPane() {
+        guard let current = store.selectedTabID else { return beginNewTab() }
+        guard store.paneTabIDs(for: current).count < SplitPaneLayout.Constants.maximumPanes else { return }
+        guard store.addEmptyPane(nextTo: current) != nil else { return }
+        // syncPages sees the empty pane selected and opens the bar.
+    }
+
+    /// Arc's "Close this Split Pane" (Ctrl+Shift+-): the pane's tab closes like any tab and the
+    /// split keeps the other panes. A pinned split's pane leaves it (closing it would only
+    /// unload the whole split).
+    func closeSplitPane(_ id: UUID) {
+        guard store.splitContaining(id) != nil else { return closeTab(id) }
+        if store.item(id)?.isEmptyTab == true || store.isPinned(id) {
+            store.archiveTab(id, reason: .manual)
+        } else {
+            closeTab(id)
+        }
+    }
+
+    /// Arc's "Separate Page from Split View": the pane becomes a normal tab again.
+    func separatePane(_ id: UUID) {
+        guard store.splitContaining(id) != nil else { return }
+        store.separateFromSplit(id)
+        store.selectTab(id)
+    }
+
+    /// Switch to Next / Previous Split View.
+    private func cycleSplitPane(_ delta: Int) {
+        guard let current = store.selectedTabID,
+              let next = SplitPaneLayout.pane(delta, from: current, in: store.paneTabIDs(for: current)) else { return }
+        store.selectTab(next)
+    }
+
+    /// Lays the panes out in the page area with CraCore's SplitPaneLayout (in DIPs, y down) and
+    /// moves their pages there.
+    private func layoutPanes() {
+        guard let window, !closing else { return }
+        let area = window.contentFrame, scale = window.scale
+        let split = paneIDs.first.flatMap { store.splitContaining($0) }
+        paneOrientation = split?.split?.orientation ?? .horizontal
+        let factors = paneDrag?.factors ?? SplitPaneLayout.normalizedFactors(ids: paneIDs, stored: split?.split?.widthFactors ?? [:])
+        let result = paneLayout(factors: factors).compute()
+        paneLayoutResult = result
+        func pixels(_ r: CGRect) -> PixelRect {
+            func px(_ v: CGFloat) -> Int32 { Int32((Double(v) * scale).rounded()) }
+            let x0 = px(r.minX), x1 = px(r.maxX), y0 = px(r.minY), y1 = px(r.maxY)
+            return PixelRect(x: area.x + x0, y: area.y + y0, width: x1 - x0, height: y1 - y0)
+        }
+        paneFrames = result.frames.mapValues(pixels)
+        paneGaps = result.gaps.map(pixels)
+        for (id, frame) in paneFrames { pages[id]?.frame = frame }
+        window.pill = paneDrag.flatMap { paneGaps.indices.contains($0.divider) ? pill(in: paneGaps[$0.divider]) : nil }
+        placeFindBar()
+    }
+
+    private func paneLayout(factors: [UUID: CGFloat]) -> SplitPaneLayout {
+        let area = window.contentFrame, scale = window.scale
+        let panes = paneIDs.map { SplitPaneLayout.Pane(id: $0, factor: factors[$0] ?? 1 / CGFloat(max(1, paneIDs.count))) }
+        return SplitPaneLayout(panes: panes, orientation: paneOrientation,
+                               containerSize: CGSize(width: Double(area.width) / scale, height: Double(area.height) / scale),
+                               backingScaleFactor: CGFloat(scale), flipped: true)
+    }
+
+    /// The divider's pill while it is dragged (SplitDraggerHandleView.Style): 4 × 36 DIPs, centred.
+    private func pill(in gap: PixelRect) -> PixelRect {
+        let thick = Int32((4 * window.scale).rounded()), long = Int32((36 * window.scale).rounded())
+        return paneOrientation == .horizontal
+            ? PixelRect(x: gap.x + (gap.width - thick) / 2, y: gap.y + (gap.height - long) / 2, width: thick, height: long)
+            : PixelRect(x: gap.x + (gap.width - long) / 2, y: gap.y + (gap.height - thick) / 2, width: long, height: thick)
+    }
+
+    /// The divider under a client point, in pixels, with Arc's hit outset.
+    private func divider(x: Int32, y: Int32) -> Int? {
+        let scale = window.scale, area = window.contentFrame
+        return paneLayoutResult.divider(at: CGPoint(x: Double(x - area.x) / scale, y: Double(y - area.y) / scale))
+    }
+
+    private func paneCursor(x: Int32, y: Int32) -> HostCursor? {
+        if paneDrag != nil || divider(x: x, y: y) != nil {
+            return paneOrientation == .horizontal ? .resizeLeftRight : .resizeUpDown
+        }
+        return nil
+    }
+
+    /// Presses on the page area that no page covers: a divider drags (a double-click makes the
+    /// panes equal again), an empty pane asks for its address.
+    private func handlePaneMouse(_ event: HostMouseEvent) {
+        switch event {
+        case .down(let x, let y, let clicks):
+            if let index = divider(x: x, y: y), let split = paneIDs.first.flatMap({ store.splitContaining($0) }) {
+                if clicks == 2 {
+                    paneDrag = nil
+                    store.setSplitWidthFactors(split.id, [:])
+                    return
+                }
+                let factors = SplitPaneLayout.normalizedFactors(ids: paneIDs, stored: split.split?.widthFactors ?? [:])
+                paneDrag = (divider: index, x: x, y: y, start: factors, factors: factors)
+                layoutPanes()
+            } else if let id = paneIDs.first(where: { paneFrames[$0].map { Self.contains($0, x: x, y: y) } == true }), pages[id] == nil {
+                if store.selectedTabID == id { openCommandBar(.editURL) } else { store.selectTab(id) }
+            }
+        case .move(let x, let y):
+            guard let drag = paneDrag else { return }
+            let delta = paneOrientation == .horizontal ? Double(x - drag.x) : Double(y - drag.y)
+            paneDrag?.factors = paneLayout(factors: drag.start).dragging(dividerAfter: drag.divider, by: CGFloat(delta / window.scale)).factors
+            layoutPanes()
+        case .up, .cancelled:
+            guard let drag = paneDrag else { return }
+            paneDrag = nil
+            if let split = paneIDs.first.flatMap({ store.splitContaining($0) }) {
+                store.setSplitWidthFactors(split.id, drag.factors.mapValues { Double($0) })
+            }
+            layoutPanes()
+        }
+    }
+
+    private static func contains(_ r: PixelRect, x: Int32, y: Int32) -> Bool {
+        x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+    }
+
+    /// The page area's own colour (between panes, in an empty pane) is the sidebar's.
+    private func applyPaneColors(_ theme: SpaceTheme) {
+        let c = HexColor.components(theme.colors.first ?? "#1C242B") ?? (r: 0.11, g: 0.14, b: 0.17)
+        let fill = HostColor(r: UInt8(c.r * 255), g: UInt8(c.g * 255), b: UInt8(c.b * 255))
+        window.background = fill
+        window.pillColor = fill.blended(with: theme.isDark ? HostColor(r: 255, g: 255, b: 255) : HostColor(r: 0, g: 0, b: 0), alpha: 0.45)
     }
 
     // MARK: Permissions
@@ -643,6 +809,12 @@ extension BrowserWindow: SidebarActions {
     /// "+ New Tab", Ctrl+T: the command bar, making a new tab.
     func beginNewTab() {
         openCommandBar(.newTab)
+    }
+
+    func addPane(toSplit id: UUID) {
+        guard let last = store.children(of: id).last(where: \.isTab) else { return }
+        store.selectTab(last.id)
+        addSplitPane()
     }
 }
 
@@ -766,6 +938,12 @@ extension BrowserWindow: WebPageDelegate {
               answer: @escaping (Bool) -> Void) {
         permissionQueue.append((origin, kinds, answer))
         if permissionQueue.count == 1 { showNextPermission() }
+    }
+
+    /// A click into another pane focuses it (Arc: the split's focusItemID follows the click).
+    func pageDidReceiveFocus(_ page: WebPage) {
+        guard !closing, let id = tabID(of: page), id != store.selectedTabID, paneIDs.contains(id) else { return }
+        store.selectTab(id)
     }
 
     func pageDidClose(_ page: WebPage) {

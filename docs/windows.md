@@ -95,4 +95,12 @@ Favicons show in the sidebar and the command bar (kept in the data folder's Favi
 under the Mac's file names, decoded with WIC), the downloads list shows Explorer's preview or
 icon of each file, and Chrome's download-started glyph, which would fly from the page's top
 left to the toolbar Cra hides, is hidden as on the Mac.
+
+Phase 2 (Arc parity) has started. Split view: the selected tab's split shows its panes side by
+side or stacked, laid out by CraCore's `SplitPaneLayout` like the Mac's. The gaps between them
+are the window's own client area, which `HostWindow` paints in the space's colour and where it
+takes the divider drags (a double-click makes the panes equal). Ctrl+Shift+= adds a pane,
+Ctrl+Shift+- closes one, a click into a pane focuses it, and the split's sidebar row has Arc's
+split menu.
+
 The parity checklist and phases are in the porting plan.
