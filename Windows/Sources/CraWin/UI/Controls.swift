@@ -80,8 +80,11 @@ struct SidebarPalette {
     /// The open tab's row and a hovered row.
     let selected: Brush
     let tile: Brush
+    /// The fill is dark: one-colour favicons are drawn white on it (FaviconView).
+    let isDark: Bool
 
     init(_ theme: SpaceTheme) {
+        isDark = theme.isDark
         fill = UI.brush(theme.colors.first ?? "#1C242B")
         if theme.isDark {
             text = UI.brush(255, 255, 255)

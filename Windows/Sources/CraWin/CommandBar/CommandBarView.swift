@@ -29,6 +29,7 @@ final class CommandBarView {
     let root = Grid()
     private let engine: SuggestionEngine
     private let store: SidebarStore
+    private let favicons: Favicons
 
     private(set) var isOpen = false
     private(set) var mode: CommandBarMode = .newTab
@@ -61,6 +62,8 @@ final class CommandBarView {
 
     private let field = TextBox()
     private let glyph = FontIcon()
+    /// The glyph's place when it is a site's favicon.
+    private let leadingFavicon = WinUI.Image()
     private let pill = Border()
     private let pillLabel = TextBlock()
     private let hint = StackPanel()
@@ -71,9 +74,10 @@ final class CommandBarView {
     private let rowsPanel = StackPanel()
     private var rows: [Row] = []
 
-    init(engine: SuggestionEngine, store: SidebarStore) {
+    init(engine: SuggestionEngine, store: SidebarStore, favicons: Favicons = .shared) {
         self.engine = engine
         self.store = store
+        self.favicons = favicons
         build()
     }
 
@@ -338,6 +342,13 @@ final class CommandBarView {
         glyph.fontSize = 18
         glyph.horizontalAlignment = .center
         glyph.verticalAlignment = .center
+        leadingFavicon.width = 20
+        leadingFavicon.height = 20
+        leadingFavicon.stretch = .uniform
+        leadingFavicon.horizontalAlignment = .center
+        leadingFavicon.verticalAlignment = .center
+        leadingFavicon.visibility = .collapsed
+        top.children.append(leadingFavicon)
         pill.cornerRadius = CornerRadius(topLeft: 6, topRight: 6, bottomRight: 6, bottomLeft: 6)
         pill.padding = Thickness(left: 8, top: 3, right: 8, bottom: 3)
         pill.margin = Thickness(left: 0, top: 0, right: 8, bottom: 0)
@@ -442,7 +453,7 @@ final class CommandBarView {
         let offered = scope == nil && !previewing ? result.scope : nil
         hint.visibility = offered == nil ? .collapsed : .visible
         if let offered { hintLabel.text = "Search \(offered.name)" }
-        glyph.glyph = WinGlyph.code(leadingSymbol())
+        showLeading(leadingGlyph())
         divider.visibility = items.isEmpty ? .collapsed : .visible
         rowsPanel.visibility = items.isEmpty ? .collapsed : .visible
         let tint = highlight
@@ -452,19 +463,34 @@ final class CommandBarView {
                 continue
             }
             row.root.visibility = .visible
-            row.show(items[i], selected: i == selectedIndex, tint: tint, ink: ink, secondary: secondaryInk)
+            let icon = items[i].faviconKey.flatMap { favicons.bitmap(forKey: $0, onDark: dark) }
+            row.show(items[i], favicon: icon, selected: i == selectedIndex, tint: tint, ink: ink, secondary: secondaryInk)
         }
         onResize(Self.height(forRows: items.count))
     }
 
-    /// The glyph before the text (CommandBarGlyph on the Mac, without favicons yet): what Return
-    /// does, the highlighted row's symbol; a magnifier before anything is typed, a globe on Ctrl+L.
-    private func leadingSymbol() -> String {
-        if scope != nil { return "magnifyingglass" }
+    /// The glyph before the text (CommandBarGlyph): what Return does, the highlighted row's
+    /// favicon or symbol; a magnifier before anything is typed, the page's favicon on Ctrl+L.
+    private func leadingGlyph() -> CommandBarGlyph {
         let untouched = !previewing && (query.isEmpty || query == openedPrefill)
-        if untouched { return mode == .editURL && openedPrefill != nil ? "globe" : "magnifyingglass" }
-        guard result.items.indices.contains(selectedIndex) else { return "magnifyingglass" }
-        return WinGlyph.symbol(for: result.items[selectedIndex])
+        let row = result.items.indices.contains(selectedIndex) ? result.items[selectedIndex] : nil
+        return CommandBarGlyph.resolve(
+            editingURL: mode == .editURL && openedPrefill != nil, untouched: untouched, scoped: scope != nil,
+            pageFaviconKey: openedPrefill.flatMap(FaviconKey.key(for:)),
+            row: row.map { (faviconKey: $0.faviconKey, symbol: WinGlyph.symbol(for: $0)) },
+            hasFavicon: { [favicons] in favicons.has($0) })
+    }
+
+    private func showLeading(_ leading: CommandBarGlyph) {
+        if case .favicon(let key) = leading, let bitmap = favicons.bitmap(forKey: key, onDark: dark) {
+            leadingFavicon.source = bitmap
+            leadingFavicon.visibility = .visible
+            glyph.visibility = .collapsed
+            return
+        }
+        if case .symbol(let symbol) = leading { glyph.glyph = WinGlyph.code(symbol) } else { glyph.glyph = WinGlyph.code("globe") }
+        leadingFavicon.visibility = .collapsed
+        glyph.visibility = .visible
     }
 
     /// One row: glyph, title, " — " and the subtitle, and what Return does at the end.
@@ -473,6 +499,7 @@ final class CommandBarView {
         let root = Border()
         private let grid = Grid()
         private let icon = FontIcon()
+        private let favicon = WinUI.Image()
         private let title = TextBlock()
         private let subtitle = TextBlock()
         private let trailing = TextBlock()
@@ -486,6 +513,12 @@ final class CommandBarView {
             icon.fontSize = 16
             icon.verticalAlignment = .center
             icon.horizontalAlignment = .left
+            favicon.width = 16
+            favicon.height = 16
+            favicon.stretch = .uniform
+            favicon.verticalAlignment = .center
+            favicon.horizontalAlignment = .left
+            grid.children.append(favicon)
             title.fontSize = 14
             title.fontWeight = UWP.FontWeight(weight: 600)
             title.textTrimming = .characterEllipsis
@@ -505,8 +538,12 @@ final class CommandBarView {
             root.child = grid
         }
 
-        func show(_ s: Suggestion, selected: Bool, tint: Brush, ink: Brush, secondary: Brush) {
+        /// `favicon`: the row's site icon when there is one (CommandBarRowView), else its glyph.
+        func show(_ s: Suggestion, favicon image: WriteableBitmap?, selected: Bool, tint: Brush, ink: Brush, secondary: Brush) {
             root.background = selected ? tint : UI.clear
+            favicon.source = image
+            favicon.visibility = image == nil ? .collapsed : .visible
+            icon.visibility = image == nil ? .visible : .collapsed
             icon.glyph = WinGlyph.code(WinGlyph.symbol(for: s))
             icon.foreground = selected ? ink : secondary
             title.text = s.title

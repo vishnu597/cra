@@ -69,20 +69,7 @@ final class FaviconCache {
         guard let ctx = CGContext(data: &buf, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        var opaque = 0, dark = 0, light = 0
-        for i in stride(from: 0, to: buf.count, by: 4) where buf[i + 3] > 128 {
-            let a = Double(buf[i + 3])
-            let r = Double(buf[i]) / a, g = Double(buf[i + 1]) / a, b = Double(buf[i + 2]) / a
-            opaque += 1
-            guard max(r, g, b) - min(r, g, b) < 0.15 else { continue }
-            let l = 0.2126 * r + 0.7152 * g + 0.0722 * b
-            if l < 0.3 { dark += 1 } else if l > 0.75 { light += 1 }
-        }
-        // Mostly see-through and almost every visible pixel the same gray.
-        var v: Bool?
-        if opaque > 20, opaque < w * h * 85 / 100 {
-            if Double(dark) / Double(opaque) > 0.92 { v = true } else if Double(light) / Double(opaque) > 0.92 { v = false }
-        }
+        let v = FaviconTone.glyphIsDark(rgba: buf)
         glyphTone[key] = .some(v)
         return v
     }
@@ -140,8 +127,5 @@ final class FaviconCache {
         }
     }
 
-    static func fileName(_ key: String) -> String {
-        let safe = key.map { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" ? String($0) : "_" }.joined()
-        return safe + ".png"
-    }
+    static func fileName(_ key: String) -> String { FaviconKey.fileName(key) }
 }

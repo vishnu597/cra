@@ -30,6 +30,7 @@ final class SidebarView {
     /// so they stay centred whatever the button shows.
     private let footer = Grid()
     private let store: SidebarStore
+    private let favicons: Favicons
     private weak var actions: SidebarActions?
     private var palette = SidebarPalette(SpaceTheme.presets[0])
 
@@ -37,8 +38,9 @@ final class SidebarView {
     private static let spaceEmoji = ["🌱", "💼", "🎮", "📚", "🎨", "🏠", "✈️", "🧪"]
     private static let favoritesPerRow = 4
 
-    init(store: SidebarStore, actions: SidebarActions) {
+    init(store: SidebarStore, actions: SidebarActions, favicons: Favicons = .shared) {
         self.store = store
+        self.favicons = favicons
         self.actions = actions
         for height in [UI.auto, UI.auto, UI.star, UI.auto] { root.rowDefinitions.append(UI.row(height)) }
         favorites.margin = Thickness(left: 0, top: 0, right: 0, bottom: 8)
@@ -100,7 +102,7 @@ final class SidebarView {
         for _ in 0..<((items.count + perRow - 1) / perRow) { favorites.rowDefinitions.append(UI.row(UI.pixels(44))) }
         let open = store.selectedTabID.map { store.splitContaining($0)?.id ?? $0 }
         for (i, item) in items.enumerated() {
-            let label = UI.text(Self.tileLabel(item), size: 15, color: palette.text, trimmed: false)
+            let label = tileIcon(item)
             label.horizontalAlignment = .center
             let tile = UI.button(label, fill: item.id == open ? palette.selected : palette.tile) { [weak self] in
                 self?.select(item.id)
@@ -115,7 +117,16 @@ final class SidebarView {
         }
     }
 
-    /// No favicons yet on Windows: a tile shows its site's first letter.
+    /// A tile's favicon at 20 DIPs (FavoriteTileView), or its site's first letter until the
+    /// icon has loaded. A split's tile shows its first tab's.
+    private func tileIcon(_ item: SidebarItem) -> FrameworkElement {
+        let tab = item.isSplit ? store.children(of: item.id).first?.tab : item.tab
+        if let bitmap = favicons.bitmap(forKey: tab?.iconKey, onDark: palette.isDark) {
+            return UI.image(bitmap, size: 20)
+        }
+        return UI.text(Self.tileLabel(item), size: 15, color: palette.text, trimmed: false)
+    }
+
     private static func tileLabel(_ item: SidebarItem) -> String {
         let name = item.tab.flatMap { URL(string: $0.url)?.host }.map { $0.hasPrefix("www.") ? String($0.dropFirst(4)) : $0 }
             ?? item.displayTitle
@@ -149,13 +160,13 @@ final class SidebarView {
             // A click opens the split on the pane last focused in it (Arc: focusItemID).
             let panes = store.paneTabIDs(for: item.children.first ?? item.id)
             let focus = item.split?.focusTabID.flatMap { panes.contains($0) ? $0 : nil } ?? panes.first
-            appendRow(icon: "⧉", title: titles, depth: depth, selected: selected, unread: false, closable: nil,
+            appendRow(icon: .text("⧉"), title: titles, depth: depth, selected: selected, unread: false, closable: nil,
                       menu: splitMenu(item, open: selected)) { [weak self] in
                 if let focus { self?.select(focus) }
             }
         } else if item.isTab {
             let closable = item.id
-            appendRow(icon: nil, title: item.displayTitle, depth: depth, selected: store.isSelected(item.id, window: nil),
+            appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, depth: depth, selected: store.isSelected(item.id, window: nil),
                       unread: item.isUnread, closable: closable, menu: tabMenu(item)) { [weak self] in
                 self?.select(item.id)
             }
@@ -174,7 +185,7 @@ final class SidebarView {
         }
         menu.items.append(MenuFlyoutSeparator())
         menu.items.append(UI.menuItem("Delete Folder") { [weak self] in self?.store.deleteFolder(folder.id) })
-        appendRow(icon: open ? "▾" : "▸", title: folder.displayTitle, depth: depth, selected: false, unread: false, closable: nil,
+        appendRow(icon: .text(open ? "▾" : "▸"), title: folder.displayTitle, depth: depth, selected: false, unread: false, closable: nil,
                   menu: menu) { [weak self] in
             self?.store.setExpanded(folder.id, !open)
         }
@@ -188,7 +199,29 @@ final class SidebarView {
         for child in children { addRow(child, depth: depth + 1) }
     }
 
-    private func appendRow(icon: String?, title: String, depth: Int, selected: Bool, unread: Bool, closable: UUID?,
+    /// What leads a row: a tab's favicon (a globe until it loads), or a mark for folders and splits.
+    private enum RowIcon {
+        case favicon(String?)
+        case text(String)
+    }
+
+    private func rowIcon(_ icon: RowIcon) -> FrameworkElement {
+        switch icon {
+        case .text(let mark):
+            return UI.text(mark, color: palette.secondaryText, trimmed: false)
+        case .favicon(let key):
+            if let bitmap = favicons.bitmap(forKey: key, onDark: palette.isDark) { return UI.image(bitmap, size: 16) }
+            // FaviconView's fallback: a globe in the tertiary text colour.
+            let globe = FontIcon()
+            globe.glyph = WinGlyph.code("globe")
+            globe.fontSize = 13
+            globe.width = 16
+            globe.foreground = palette.secondaryText
+            return globe
+        }
+    }
+
+    private func appendRow(icon: RowIcon, title: String, depth: Int, selected: Bool, unread: Bool, closable: UUID?,
                            menu: MenuFlyout?, _ action: @escaping @MainActor () -> Void) {
         let row = Grid()
         row.columnDefinitions.append(UI.column(UI.star))
@@ -197,8 +230,10 @@ final class SidebarView {
 
         let label = StackPanel()
         label.orientation = .horizontal
-        label.spacing = 6
-        if let icon { label.children.append(UI.text(icon, color: palette.secondaryText, trimmed: false)) }
+        label.spacing = 8
+        let lead = rowIcon(icon)
+        lead.verticalAlignment = .center
+        label.children.append(lead)
         let name = UI.text(title.isEmpty ? "New Tab" : title, color: palette.text)
         if unread { name.fontWeight = UWP.FontWeight(weight: 600) }
         label.children.append(name)

@@ -836,6 +836,14 @@ extension BrowserWindow: WebPageDelegate {
         store.recordVisit(url: url, title: page.currentTitle)
     }
 
+    /// Kept under the page's host, as the Mac's BrowserManager does; the tab takes that key.
+    func page(_ page: WebPage, didLoadFavicon png: Data, forURL iconURL: String) {
+        guard let id = tabID(of: page), let tab = store.item(id)?.tab,
+              let key = FaviconKey.key(for: tab.url) ?? tab.faviconKey else { return }
+        Favicons.shared.store(png: png, forKey: key, persist: !store.isIncognito(item: id))
+        if tab.faviconKey != key { store.updateTab(id, url: tab.url) }
+    }
+
     func page(_ page: WebPage, didReportThemeColor hex: String) {
         if let id = tabID(of: page) { store.setThemeColor(id, hex) }
     }
@@ -868,7 +876,11 @@ extension BrowserWindow: WebPageDelegate {
     }
 
     func page(_ page: WebPage, didUpdateDownload download: DownloadInfo) {
-        windowDownloads.insert(download.identifier)
+        if windowDownloads.insert(download.identifier).inserted {
+            // Chrome's glyph would fly from the page's top left to a toolbar Cra hides; the
+            // sidebar's downloads button shows the progress (ChromeDownloadAnimation on the Mac).
+            cra_hide_download_started_animation()
+        }
         record(download)
     }
 

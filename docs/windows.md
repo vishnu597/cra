@@ -91,7 +91,10 @@ and + New Tab): CraCore's SuggestionEngine in a borderless window owned by the b
 it floats over the page, with inline completion, Tab scopes and Ctrl+Return. Find in page
 (Ctrl+F, Ctrl+G, F3) floats the same way at the page's top right, and the downloads list
 (CraCore's DownloadHistory, downloads.json) opens from the sidebar footer's downloads button.
-Next: favicons in the bar, the sidebar and the downloads list.
+Favicons show in the sidebar and the command bar (kept in the data folder's Favicons folder
+under the Mac's file names, decoded with WIC), the downloads list shows Explorer's preview or
+icon of each file, and Chrome's download-started glyph, which would fly from the page's top
+left to the toolbar Cra hides, is hidden as on the Mac.
 
 Phase 2 (Arc parity) has started. Split view: the selected tab's split shows its panes side by
 side or stacked, laid out by CraCore's `SplitPaneLayout` like the Mac's. The gaps between them

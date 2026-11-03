@@ -25,6 +25,7 @@ final class DownloadsTray {
     /// Over the bottom of the tab list.
     let list = StackPanel()
     private let history: DownloadHistory
+    private let thumbnails: DownloadThumbnails
     private let dispatcher: WinAppSDK.DispatcherQueue
     private let glyph = FontIcon()
     private let progress = TextBlock()
@@ -46,6 +47,7 @@ final class DownloadsTray {
     init(history: DownloadHistory, dispatcher: WinAppSDK.DispatcherQueue) {
         self.history = history
         self.dispatcher = dispatcher
+        thumbnails = DownloadThumbnails(dispatcher: dispatcher)
         glyph.glyph = "\u{E896}"
         glyph.fontSize = 14
         progress.fontSize = 11
@@ -84,8 +86,9 @@ final class DownloadsTray {
     // MARK: The list
 
     private func observe() {
-        let (recent, running) = withObservationTracking {
-            (history.recent, history.live.filter(\.running))
+        let (recent, running, _) = withObservationTracking {
+            // The thumbnails' revision too: a row redraws when its picture arrives.
+            (history.recent, history.live.filter(\.running), thumbnails.revision)
         } onChange: { [weak self] in
             // Inside the change: draw once it is done.
             onMain { _ = try? self?.dispatcher.tryEnqueue { self?.observe() } }
@@ -117,7 +120,7 @@ final class DownloadsTray {
             list.children.removeAtEnd()
         }
         let now = Date()
-        for (row, item) in zip(rows, recent) { row.show(item, now: now) }
+        for (row, item) in zip(rows, recent) { row.show(item, now: now, thumbnails: thumbnails) }
     }
 
     // MARK: Hover
@@ -188,6 +191,7 @@ final class DownloadsTray {
         let root = Grid()
         private let tile = Border()
         private let tileIcon = FontIcon()
+        private let picture = WinUI.Image()
         private let name = TextBlock()
         private let subtitle = TextBlock()
         private var path: String?
@@ -206,6 +210,12 @@ final class DownloadsTray {
             tileIcon.fontSize = 18
             tileIcon.foreground = UI.brush(90, 90, 96)
             tile.child = tileIcon
+            picture.width = DownloadThumbnails.tile
+            picture.height = DownloadThumbnails.tile
+            picture.stretch = .uniform
+            picture.margin = tile.margin
+            picture.horizontalAlignment = .left
+            picture.visibility = .collapsed
             name.fontSize = 14
             name.textTrimming = .characterEllipsis
             subtitle.fontSize = 12
@@ -215,6 +225,7 @@ final class DownloadsTray {
             text.children.append(name)
             text.children.append(subtitle)
             root.children.append(tile)
+            root.children.append(picture)
             root.children.append(text)
             try? Grid.setColumn(text, 1)
             root.tapped.addHandler { [weak self] _, args in
@@ -237,12 +248,81 @@ final class DownloadsTray {
             subtitle.foreground = palette.secondaryText
         }
 
-        func show(_ item: DownloadHistory.Listed, now: Date) {
+        func show(_ item: DownloadHistory.Listed, now: Date, thumbnails: DownloadThumbnails) {
             if name.text != item.name { name.text = item.name }
+            // A finished file's preview or icon; a running one shows its type's icon, as on the Mac.
+            let image: WriteableBitmap?
+            switch item {
+            case .finished(let entry): image = thumbnails.thumbnail(for: entry.path)
+            case .live(let live): image = thumbnails.typeIcon(for: live.name)
+            }
+            if let image {
+                picture.source = image
+                picture.visibility = .visible
+                tile.visibility = .collapsed
+            } else {
+                picture.visibility = .collapsed
+                tile.visibility = .visible
+            }
             let line = item.subtitle(now: now)
             if subtitle.text != line { subtitle.text = line }
             if case .finished(let entry) = item { path = entry.path } else { path = nil }
         }
+    }
+}
+
+/// The downloads list's pictures (the Mac's DownloadThumbnails with Quick Look): Explorer's
+/// preview of each file, else its icon, cropped to a square with 6 DIP corners, made off the UI
+/// thread on first use.
+@MainActor
+@Observable
+final class DownloadThumbnails {
+    /// The tile's side in DIPs (DownloadsTrayMetrics.thumbnail).
+    static let tile = 40.0
+    /// Pixels asked for: the tile at up to 240 % scaling.
+    private static let side = 96
+
+    /// Bumped as pictures arrive.
+    private(set) var revision = 0
+    @ObservationIgnored private var images: [String: WriteableBitmap] = [:]
+    @ObservationIgnored private var loading: Set<String> = []
+    @ObservationIgnored private let dispatcher: WinAppSDK.DispatcherQueue
+
+    init(dispatcher: WinAppSDK.DispatcherQueue) {
+        self.dispatcher = dispatcher
+    }
+
+    func thumbnail(for path: String) -> WriteableBitmap? { image(key: path, file: path) }
+
+    /// The icon Explorer shows for files with this name's extension.
+    func typeIcon(for name: String) -> WriteableBitmap? {
+        let ext = URL(fileURLWithPath: name).pathExtension.lowercased()
+        // A path that doesn't exist: the bridge falls back to the type's icon.
+        return image(key: "type:" + ext, file: "cra-download." + (ext.isEmpty ? "bin" : ext))
+    }
+
+    private func image(key: String, file: String) -> WriteableBitmap? {
+        if let image = images[key] { return image }
+        guard !file.isEmpty, loading.insert(key).inserted else { return nil }
+        let side = Self.side, tile = Self.tile
+        let queue = UncheckedSendable(value: dispatcher)
+        let arrived: @MainActor (Pixels?) -> Void = { [weak self] pixels in
+            guard let self else { return }
+            if let image = pixels?.bitmap() {
+                self.images[key] = image
+                self.revision += 1
+            }
+            // A miss stays in `loading`: it isn't asked for again.
+        }
+        let done = UncheckedSendable(value: arrived)
+        DispatchQueue.global(qos: .utility).async {
+            let pixels = Pixels.file(file, side: side).map { picture in
+                let square = picture.squareCrop()
+                return square.rounded(radius: Double(square.width) * 6 / tile)
+            }
+            _ = try? queue.value.tryEnqueue { onMain { done.value(pixels) } }
+        }
+        return nil
     }
 }
 
