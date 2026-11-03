@@ -416,7 +416,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         }
         guard let s else {
             if typed.isEmpty { return }
-            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed))
+            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : commandBar.engine.searchURL(typed))
             return
         }
         switch s.kind {
@@ -432,7 +432,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         case .navigate:
             open(typed == query ? (s.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed))
         case .search:
-            open(s.url ?? store.settings.searchEngine.searchURL(typed))
+            open(s.url ?? commandBar.engine.searchURL(typed))
         case .history, .topDomain:
             open(s.url ?? "")
         case .command(let id):
@@ -786,14 +786,10 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     func browser(_ browser: CraBrowser, didUpdateDownload download: CraDownloadInfo) { app.main.browserManager(download: download) }
 
     func browser(_ browser: CraBrowser, requestsPermissionForOrigin origin: String, kinds: UInt, completion: @escaping (Bool) -> Void) {
-        if kinds == 8 { completion(false); return }
-        var what: [String] = []
-        if kinds & 1 != 0 { what.append("camera") }
-        if kinds & 2 != 0 { what.append("microphone") }
-        if kinds & 4 != 0 { what.append("location") }
+        // The main window's sheet. A quiet notification deny here would save a block for the
+        // site that its tabs then hit too (#137).
         let alert = NSAlert()
-        alert.messageText = what.isEmpty ? "\(origin) is asking for a browser permission"
-                                         : "\(origin) wants to use your \(what.joined(separator: " and "))"
+        alert.messageText = PermissionPrompt.message(origin: origin, kinds: kinds)
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Block")
         guard let window else { completion(false); return }

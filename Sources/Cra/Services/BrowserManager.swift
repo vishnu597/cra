@@ -18,6 +18,10 @@ final class TabRuntime {
     /// The tab switcher's thumbnail, taken while the page was last on screen.
     var snapshot: NSImage?
     var snapshotWork: DispatchWorkItem?
+    /// The page probe for this time on screen, until it has run (BrowserManager.scheduleProbe).
+    var probeWork: DispatchWorkItem?
+    /// Cra votes to freeze the page (BrowserManager.freezeIdleTabs); Chromium decides.
+    var freezeVoted = false
     /// When the page last went off screen (nil while shown); tab sleeping counts from here.
     var hiddenAt: Date?
     /// Invalidates a pending sleep probe even when navigation returns to the same URL.
@@ -61,8 +65,9 @@ protocol BrowserManagerDelegate: AnyObject {
     func browserManagerFocusedBrowser(_ tabID: UUID)
     /// The page closed itself (window.close()).
     func browserManagerPageClosedTab(_ tabID: UUID)
-    /// An extension asked for this tab to be in front (chrome.tabs.update with active: true).
-    func browserManagerActivationRequested(_ tabID: UUID)
+    /// An extension asked for this tab to be in front (chrome.tabs.update with active: true),
+    /// or with byPage the page did (window.focus(), clients.focus() from a notification click).
+    func browserManagerActivationRequested(_ tabID: UUID, byPage: Bool)
     /// Arc's Peek: a link the user clicked (or Shift-clicked) in `tabID`, whose page is at
     /// `pageURL`. Return true when it opens in a Peek instead.
     func browserManagerOpensPeek(url: String, fromTab tabID: UUID, pageURL: String, shiftClick: Bool) -> Bool
@@ -187,6 +192,8 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         byBrowser[ObjectIdentifier(rt.browser)] = nil
         rt.snapshotWork?.cancel()
         rt.snapshotWork = nil
+        rt.probeWork?.cancel()
+        rt.probeWork = nil
         if rt.browser.hasDevTools { rt.browser.closeDevTools() }
         devToolsViews[tabID] = nil
         devToolsPlaceholders[tabID] = nil
@@ -221,8 +228,12 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         }
         let wasVisible = Set(visibleTabIDs)
         var shown: [UUID] = []
+        // A tab without a page gets one here, timed as pageCreate: tabSwitch leaves it out (#136).
+        var creating = 0.0
         for id in tabIDs {
+            let made = runtimes[id] == nil ? Perf.now() : nil
             guard let rt = ensureRuntime(for: id) else { shown.append(id); continue }
+            if let made { creating += Perf.ms(since: made) }
             if !wasVisible.contains(id) {
                 returnToTab(rt)
                 // A page can change its colours while hidden. One still loading reports them as it
@@ -231,6 +242,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
             }
             rt.hiddenAt = nil
             rt.sleepProbeAfter = nil
+            if rt.freezeVoted { setFreezingVote(rt, false) }
             let v = rt.browser.containerView
             // Alloy hosting only: the Chromium view moves into its pane. Chrome-style
             // pages live in their own windows; re-parenting their view makes Chrome
@@ -262,15 +274,18 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         }
         if focus, let f = visibleTabID, let rt = runtimes[f] { rt.browser.setFocused(true) }
         for id in shown where !wasVisible.contains(id) {
-            scheduleSnapshot(id)
             if let rt = runtimes[id] {
+                // A loading page gets its thumbnail once it has loaded: a capture now would be of
+                // a half-painted page, in the busiest second of its load (#136).
+                if !rt.browser.isLoading { scheduleSnapshot(id) }
                 log(id, "shown: \(site(rt.browser.currentURL, id, rt.browser))\(rt.browser.isLoading ? ", loading" : "")\(rt.browser.isCreated ? "" : ", page not created yet")")
-                scheduleProbe(id, rt)
+                // A loading page is probed once it has loaded (didChangeLoading), or says it never did.
+                scheduleProbe(id, rt, after: rt.browser.isLoading ? 12 : 3)
             }
         }
         syncDevToolsVisibility()
         delegate?.browserManagerPageWindowsChanged(focus: focus)
-        if wasVisible != Set(shown) { Perf.time(.tabSwitch, ms: Perf.ms(since: started)) }
+        if wasVisible != Set(shown) { Perf.time(.tabSwitch, ms: Perf.ms(since: started) - creating) }
     }
 
     // MARK: Diagnostics
@@ -283,18 +298,22 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         browser?.isIncognito ?? store.isIncognito(item: id) ? "(incognito)" : CraLog.host(url)
     }
 
-    /// A moment after a tab comes on screen, the log gets what its page holds and where Cra put
-    /// it: for the tab that "shows a white page until reloaded", the line that says why.
-    private func scheduleProbe(_ id: UUID, _ rt: TabRuntime, attempt: Int = 1) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak rt] in
-            guard let self, let rt, self.runtimes[id] === rt, self.visibleTabIDs.contains(id) else { return }
-            // A slow site: look again once it has had time, and say so if it never finishes.
-            if rt.browser.isLoading, attempt < 4 { return self.scheduleProbe(id, rt, attempt: attempt + 1) }
+    /// A moment after a tab comes on screen and its page has loaded, the log gets what the page
+    /// holds and where Cra put it: for the tab that "shows a white page until reloaded", the line
+    /// that says why. Not sooner: the probe runs in the page, which is busiest while it loads (#136).
+    private func scheduleProbe(_ id: UUID, _ rt: TabRuntime, after delay: TimeInterval) {
+        rt.probeWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak rt] in
+            guard let self, let rt, self.runtimes[id] === rt else { return }
+            rt.probeWork = nil
+            guard self.visibleTabIDs.contains(id) else { return }
             PageProbe.run(rt.browser) { [weak self] probe in
                 guard let self, self.runtimes[id] === rt else { return }
                 self.log(id, "page \(self.site(rt.browser.currentURL, id, rt.browser))\(rt.browser.isLoading ? " still loading" : ""): \(probe) \(PageProbe.viewState(rt))")
             }
         }
+        rt.probeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: Tab switcher thumbnails
@@ -368,15 +387,16 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
 
     // MARK: Tab sleeping
 
-    /// Settings ▸ Tabs ▸ "Sleep tabs I haven't looked at in": a page off screen that long
-    /// closes, like a closed pinned tab, and loads its URL again when shown. Pages that are
+    /// Like Arc, with no setting: a page off screen that long (AppComposition.tabSleepAfter, Arc's
+    /// 4 hours) closes, like a closed pinned tab, and loads its URL again when shown. Pages that are
     /// loading, playing sound, recording, in Picture in Picture or DevTools, holding text the
     /// user typed or asking before they close (their own onbeforeunload) stay awake, and are
     /// asked again only after `refusalBackoff`. The log says once why a page stays awake.
     func sleepIdleTabs(hiddenLongerThan seconds: TimeInterval) {
         let now = clock.now
         let cutoff = now.addingTimeInterval(-seconds)
-        for (id, rt) in runtimes {
+        let recent = recentlyShown
+        for (id, rt) in runtimes where !recent.contains(id) {
             let b = rt.browser
             guard canSleep(rt, before: cutoff), rt.sleepProbeAfter.map({ $0 <= now }) ?? true else { continue }
             let url = b.currentURL
@@ -419,6 +439,46 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     }
 
     static let refusalBackoff: TimeInterval = 10 * 60
+
+    /// Arc's WebContentLifecycleOptimization freezes a page out of sight for `timeToFreezeTab`
+    /// (30 minutes), unless it is one of the 10 tabs used last or has a media player open, by
+    /// voting for it in Chromium's freezing policy (its freeze token). The policy freezes it only
+    /// while nothing it knows forbids that: sound now or lately, capture, a Web Lock or IndexedDB
+    /// lock, a device, a WebRTC connection, notification permission. Showing the tab drops the
+    /// vote. Needs the CEF patch behind "Cra.setFreezingVote" (cef-patches/freezing-vote.patch);
+    /// an older CEF answers that the method doesn't exist and nothing freezes (GitHub #136).
+    func freezeIdleTabs(hiddenLongerThan seconds: TimeInterval) {
+        let cutoff = clock.now.addingTimeInterval(-seconds)
+        let recent = recentlyShown
+        for (id, rt) in runtimes {
+            let b = rt.browser
+            let vote = !recent.contains(id) && rt.hiddenAt.map { $0 < cutoff } == true && b.isCreated && !b.isClosed
+                && !(nowPlaying?.entries.contains { $0.id == id } ?? false)
+            if vote != rt.freezeVoted { setFreezingVote(rt, vote) }
+        }
+    }
+
+    private func setFreezingVote(_ rt: TabRuntime, _ vote: Bool) {
+        rt.freezeVoted = vote
+        log(rt.tabID, vote ? "votes to freeze its page" : "drops its freezing vote")
+        rt.browser.sendDevToolsMethod("Cra.setFreezingVote", params: vote ? #"{"vote":true}"# : #"{"vote":false}"#) { _, error in
+            guard let error, vote, !Self.loggedFreezingError else { return }
+            Self.loggedFreezingError = true
+            DispatchQueue.main.async { CraLog.note("tab freezing unavailable: \(error)") }
+        }
+    }
+
+    private static var loggedFreezingError = false
+
+    /// Arc never discards the pages of the 10 tabs used last, however long ago that was
+    /// (WebContentLifecycleOptimization's protectedLRUTabCount, GitHub #136).
+    var protectedRecentTabs = 10
+
+    /// The tabs on screen now, then the ones hidden most recently, up to `protectedRecentTabs`.
+    private var recentlyShown: Set<UUID> {
+        let hidden = runtimes.values.compactMap { rt in rt.hiddenAt.map { (rt.tabID, $0) } }.sorted { $0.1 > $1.1 }.map(\.0)
+        return Set((visibleTabIDs + hidden).prefix(protectedRecentTabs))
+    }
 
     private func canSleep(_ rt: TabRuntime, before cutoff: Date) -> Bool {
         let b = rt.browser
@@ -756,12 +816,24 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     func browser(_ browser: CraBrowser, didChangeLoading loading: Bool, canGoBack: Bool, canGoForward: Bool) {
         guard let id = tabID(of: browser) else { return }
         if loading { runtimes[id]?.navigationRevision &+= 1 }
+        HitchMonitor.mark(loading ? "load-start" : "load-end")
         if loading { Perf.begin(.pageLoad, id.uuidString) } else {
             Perf.end(.pageLoad, id.uuidString)
             Perf.end(.tabWake, id.uuidString)
         }
         if !loading { runtimes[id]?.progress = 0 }
-        if !loading { scheduleSnapshot(id) }
+        // Two seconds on, the page (a video player especially) has settled before it is captured.
+        if !loading { scheduleSnapshot(id, after: 2) }
+        if !loading, let rt = runtimes[id], rt.probeWork != nil { scheduleProbe(id, rt, after: 3) }
+        if !loading, id == visibleTabID { Perf.phase("firstPageLoaded") }
+        delegate?.browserManagerDidUpdate(id)
+    }
+
+    /// The window's loading bar pulses until the page commits, then sweeps (LoadingIndicator).
+    func browser(_ browser: CraBrowser, didChangeCommittedLoad committed: Bool) {
+        guard let id = tabID(of: browser) else { return }
+        // Start-up phases: firstPageShown, then the page's navigation committed, then loaded.
+        if committed, id == visibleTabID { Perf.phase("firstPageCommitted") }
         delegate?.browserManagerDidUpdate(id)
     }
 
@@ -783,8 +855,12 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     /// A restored tab's extension page, asked for before --load-extension loaded the extension,
     /// loads again once it is up (ExtensionPageRetry).
     func browser(_ browser: CraBrowser, didFailLoadingURL url: String, errorCode: Int) {
-        guard let id = tabID(of: browser), let rt = runtimes[id], !browser.isIncognito else { return }
+        guard let id = tabID(of: browser), let rt = runtimes[id] else { return }
         let profile = store.profileDirectoryName(item: id)
+        // Which extension the request went through, if any: a slow or failed first page is then a
+        // network wait or a proxy that is down, told apart from a render (#136).
+        log(id, "\(site(url, id, browser)) failed to load: net error \(errorCode), proxy \(ExtensionStore.shared.proxyLine(inProfile: profile))")
+        guard !browser.isIncognito else { return }
         guard let wait = ExtensionPageRetry.delay(url: url, errorCode: errorCode, attempt: rt.extensionPageRetries, isOn: { ext in
             ExtensionStore.shared.entries(inProfile: profile).contains { $0.extensionID == ext }
         }) else { return }
@@ -895,7 +971,8 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     func runDevTools(_ command: DevToolsToggle.Command) {
         guard let rt = visibleRuntime else { return }
         let (effect, frontend) = rt.devTools.run(command)
-        // A press made while DevTools close is done when they reopen (DevToolsToggle.didClose).
+        // A press made while DevTools close is done when they reopen (DevToolsToggle.didClose),
+        // one made while they open once the frontend is up.
         rt.browser.devToolsAction = frontend
         perform(effect, on: rt)
     }
@@ -904,6 +981,7 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         switch effect {
         case .show: rt.browser.showDevTools()
         case .close: rt.browser.closeDevTools()
+        case .frontend: rt.browser.applyDevToolsAction()
         case .none: break
         }
     }
@@ -933,6 +1011,11 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         guard devToolsDockedState[id] != docked else { return }
         devToolsDockedState[id] = docked
         delegate?.browserManagerDevToolsChanged()
+    }
+
+    func browser(_ browser: CraBrowser, devToolsShowsPanel panel: String) {
+        guard let id = tabID(of: browser) else { return }
+        runtimes[id]?.devTools.didShowPanel(panel)
     }
 
     /// CEF's window for the visible tab's DevTools, if any.
@@ -967,16 +1050,8 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     }
 
     func browser(_ browser: CraBrowser, requestsPermissionForOrigin origin: String, kinds: UInt, completion: @escaping (Bool) -> Void) {
-        // Notification prompts are denied quietly (no modal), like Arc's default.
-        if kinds == 8 { completion(false); return }
-        var what: [String] = []
-        if kinds & 1 != 0 { what.append("camera") }
-        if kinds & 2 != 0 { what.append("microphone") }
-        if kinds & 4 != 0 { what.append("location") }
-        if kinds & 8 != 0 { what.append("notifications") }
         let alert = NSAlert()
-        alert.messageText = what.isEmpty ? "\(origin) is asking for a browser permission"
-                                         : "\(origin) wants to use your \(what.joined(separator: " and "))"
+        alert.messageText = PermissionPrompt.message(origin: origin, kinds: kinds)
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Block")
         guard let window = container.window else { completion(false); return }
@@ -988,9 +1063,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
         delegate?.browserManagerFocusedBrowser(id)
     }
 
-    func browserRequestsActivation(_ browser: CraBrowser) {
+    func browserRequestsActivation(_ browser: CraBrowser, byPage: Bool) {
         guard let id = tabID(of: browser) else { return }
-        delegate?.browserManagerActivationRequested(id)
+        delegate?.browserManagerActivationRequested(id, byPage: byPage)
     }
 
     func browserDidClose(_ browser: CraBrowser) {

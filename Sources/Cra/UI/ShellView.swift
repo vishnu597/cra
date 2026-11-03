@@ -71,6 +71,9 @@ final class ShellView: NSView {
     private var animatingPanes = false
     /// Arc's faint card over the gradient while no tab is selected.
     let placeholderHost = NSView()
+    /// Arc's loading bar in the margin above the card, for the front tab.
+    let loadingIndicator = LoadingIndicatorView()
+    private var loadingTabID: UUID?
     let statusHost: NSView
     let findHost: NSView
 
@@ -83,7 +86,12 @@ final class ShellView: NSView {
     private(set) var focusedPaneID: UUID?
     /// Panes without a page (Arc's tinted "Search or Enter URL…" pane).
     private(set) var emptyPaneIDs: Set<UUID> = []
-    var isDarkTheme = false { didSet { for c in paneCards { c.isDark = isDarkTheme } } }
+    var isDarkTheme = false {
+        didSet {
+            for c in paneCards { c.isDark = isDarkTheme }
+            loadingIndicator.isDark = isDarkTheme
+        }
+    }
     /// Each tab's page background ("#RRGGBB"), painted under its page window (PaneCardView.pageColor).
     var pageColors: [UUID: String] = [:] {
         didSet { for c in paneCards where c.pageColor != pageColors[c.tabID] { c.pageColor = pageColors[c.tabID] } }
@@ -104,8 +112,9 @@ final class ShellView: NSView {
     var showToolbar = true { didSet { needsLayout = true } }
     var hasTab = false { didSet { needsLayout = true } }
     var onEdgeHover: ((Bool) -> Void)?
+    /// Set again each time the window becomes key; only a change rebuilds the backdrop.
     var windowActive = true {
-        didSet { refreshLift() }
+        didSet { if windowActive != oldValue { refreshLift() } }
     }
 
     /// Dark vibrant themes keep the earlier calibration (underWindowBackground + 15% lift).
@@ -120,6 +129,17 @@ final class ShellView: NSView {
         filter.setValue(radius, forKey: "inputRadius")
         filter.setValue(true, forKey: "inputNormalizeEdges")
         return filter
+    }
+
+    /// The hudWindow material's filters on its desktop tint: SDR normalize, saturate 1.6.
+    static func makeTintFilters() -> [NSObject] {
+        guard let cls = NSClassFromString("CAFilter") as? NSObject.Type else { return [] }
+        let sel = NSSelectorFromString("filterWithType:")
+        guard cls.responds(to: sel) else { return [] }
+        let make = { (type: String) in cls.perform(sel, with: type)?.takeUnretainedValue() as? NSObject }
+        guard let normalize = make("sdrNormalize"), let saturate = make("colorSaturate") else { return [] }
+        saturate.setValue(1.6, forKey: "inputAmount")
+        return [normalize, saturate]
     }
 
     /// Which blur path this run takes, once: scenarios run both (CRA_FLAGS) and the
@@ -142,17 +162,24 @@ final class ShellView: NSView {
             backdropHost.isHidden = false
             CATransaction.begin(); CATransaction.setDisableActions(true)
             let tint = windowFullscreen && desktopTintLayer != nil
-            backdropLayer?.isHidden = tint
-            desktopTintLayer?.isHidden = !tint
             // Solid: Arc's material is grey 66 passing 52 % of the backdrop, flat 212 while inactive.
-            dimLayer.opacity = Float(solidBackdrop ? (windowActive ? 0.30 : 1) : windowActive ? t.blurDim : t.blurDimInactive)
+            let dim = solidBackdrop ? (windowActive ? 0.30 : 1) : windowActive ? t.blurDim : t.blurDimInactive
+            dimLayer.opacity = Float(dim)
+            // NSVisualEffectView keeps only the layer it draws from in the tree: no capture under an
+            // opaque fill, the desktop tint instead of the blur in fullscreen. A capture added back
+            // on activation draws the substitute colour until it is live, where one kept under the
+            // fill showed the window behind sharp for a frame (GitHub #132).
+            let source = dim >= 1 ? nil : tint ? desktopTintLayer : backdropLayer
+            for l in [backdropLayer, desktopTintLayer].compactMap({ $0 }) where (l === source) != (l.superlayer != nil) {
+                if l === source { backdropHost.layer?.insertSublayer(l, at: 0) } else { l.removeFromSuperlayer() }
+            }
             let top = solidBackdrop ? (windowActive ? 0.26 : 0.83) : windowActive ? t.liftActive : t.liftInactive
             let bottom = solidBackdrop ? top : windowActive ? t.liftActiveBottom : t.liftInactive
             liftLayer.colors = [NSColor(white: 1, alpha: top).cgColor, NSColor(white: 1, alpha: bottom).cgColor]
             CATransaction.commit()
             // One line per change, so a report of a sharp or off-colour sidebar can be matched
             // to the window's state in cra.log.
-            let state = "\(tint ? "desktop tint" : "blur"), \(windowActive ? "active" : "inactive")"
+            let state = "\(source == nil ? "flat" : tint ? "desktop tint" : "blur"), \(windowActive ? "active" : "inactive"), dim \(String(format: "%.2f", dim))"
             if state != loggedBackdrop {
                 loggedBackdrop = state
                 CraLog.note("sidebar backdrop: " + state)
@@ -205,10 +232,12 @@ final class ShellView: NSView {
             if b.responds(to: NSSelectorFromString("setAllowsSubstituteColor:")) { b.setValue(true, forKey: "allowsSubstituteColor") }
             backdropHost.layer?.addSublayer(b)
             backdropLayer = b
+            // AppKit's tint carries the material's colour filters, not the blur (hudWindow). Bare,
+            // it skipped the SDR normalize and the saturate: the fullscreen sidebar came out greyer
+            // than Arc's, and dark on the display in GitHub #132.
             if let tintClass = NSClassFromString("CAChameleonLayer") as? CALayer.Type {
                 let t = tintClass.init()
-                t.isHidden = true
-                backdropHost.layer?.addSublayer(t)
+                t.filters = ShellView.makeTintFilters()
                 desktopTintLayer = t
             }
         }
@@ -228,6 +257,7 @@ final class ShellView: NSView {
         contentContainer.wantsLayer = true
         contentContainer.layer?.backgroundColor = NSColor.clear.cgColor
         addSubview(contentContainer)
+        addSubview(loadingIndicator)
         parkingView.isHidden = true
         parkingView.autoresizesSubviews = false
         contentContainer.addSubview(parkingView)
@@ -548,6 +578,7 @@ final class ShellView: NSView {
         resizeHandle.frame = f.handle
         resizeHandle.isHidden = f.handle.isEmpty || !sidebarResizable
         contentContainer.frame = f.content
+        placeLoadingIndicator(over: f.content)
         cardCornerRadius = f.cornerRadius
         sidebarHost.layer?.cornerRadius = f.sidebarCorner
         if f.sidebarCorner > 0 {
@@ -559,6 +590,26 @@ final class ShellView: NSView {
             sidebarHost.shadow = nil
         }
         layoutContentChildren()
+    }
+
+    /// Centred over the card, in the margin above it; hidden where there is none (edge to
+    /// edge, fullscreen).
+    private func placeLoadingIndicator(over content: NSRect) {
+        let margin = bounds.maxY - content.maxY
+        loadingIndicator.isHidden = margin < CGFloat(LoadingIndicator.height) + 2
+        loadingIndicator.frame = loadingIndicatorFrame(over: content)
+    }
+
+    private func loadingIndicatorFrame(over content: NSRect) -> NSRect {
+        let w = CGFloat(LoadingIndicator.trackWidth) + 2
+        return NSRect(x: (content.midX - w / 2).rounded(), y: content.maxY, width: w, height: bounds.maxY - content.maxY)
+    }
+
+    /// The front tab's loading state. Another tab coming to the front shows its state at once.
+    func setLoading(_ phase: LoadingIndicator.Phase, tab: UUID?) {
+        let sameTab = tab == loadingTabID
+        loadingTabID = tab
+        loadingIndicator.setPhase(phase, animated: sameTab)
     }
 
     func layoutContentChildren(animated: Bool = false) {
@@ -688,6 +739,7 @@ final class ShellView: NSView {
             ctx.allowsImplicitAnimation = true
             if !sidebarDetached { sidebarHost.animator().frame = target.sidebar }
             contentContainer.animator().frame = target.content
+            loadingIndicator.animator().frame = loadingIndicatorFrame(over: target.content)
             cardCornerRadius = target.cornerRadius
             if paneCards.count == 1, let c = paneCards.first { c.cornerRadius = target.cornerRadius }
         } completionHandler: { [weak self] in

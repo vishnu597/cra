@@ -10,7 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     let bindings = KeyBindingRegistry.shared
     let favicons = FaviconCache()
     lazy var engine = SuggestionEngine(store: store, commands: { [unowned self] in self.bindings.commandBarCommands },
-                                       load: SearchSuggestLoader.load)
+                                       load: SearchSuggestLoader.load,
+                                       engines: { profile, legacy in
+                                           (SearchEngines.shared.defaultEngine(profilePath: profile, legacy: legacy),
+                                            SearchEngines.shared.keywords(profilePath: profile))
+                                       })
 
     /// Browser windows, one per WindowSession. Closing the last one only hides it.
     private(set) var mainWindows: [MainWindowController] = []
@@ -175,8 +179,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if problems.count > 20 { CraLog.fault("sidebar: \(problems.count - 20) more problems") }
     }
 
+    /// AppComposition.tabFreezeAfter; `cra://debug?freezeTabs=` shortens it for a test.
+    private var freezeAfter = AppComposition.tabFreezeAfter
+
     private func sleepIdleTabs() {
-        for w in mainWindows { w.browsers.sleepIdleTabs(hiddenLongerThan: store.settings.tabSleep.seconds) }
+        for w in mainWindows {
+            w.browsers.freezeIdleTabs(hiddenLongerThan: freezeAfter)
+            w.browsers.sleepIdleTabs(hiddenLongerThan: AppComposition.tabSleepAfter)
+        }
     }
 
     /// Settings > Privacy > "Always use secure connections", live like content blocking.
@@ -184,13 +194,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         observeChanges(of: { [store] in store.settings.httpsOnly }, apply: CraCEFRuntime.setHttpsOnlyModeEnabled)
     }
 
-    /// Chromium's secure DNS setting (chrome://settings/security), left on Chromium's default
-    /// like Arc: the log says what is in effect at launch and after each change (#110).
+    /// Chromium's secure DNS setting (Settings > Privacy, chrome://settings/security), left on
+    /// Chromium's default like Arc: the log says what is in effect at launch and after each
+    /// change (#110), and the Settings row follows it (#133).
     private func logSecureDNS() {
         var last: String?
         CraCEFRuntime.setSecureDNSChangeHandler {
-            guard let mode = CraCEFRuntime.secureDNSMode() else { return }
-            let line = SecureDNS(mode: mode, templates: CraCEFRuntime.secureDNSTemplates() ?? "").line
+            let setting = SecureDNSSetting.shared
+            setting.refresh()
+            guard let line = setting.inEffect?.line else { return }
             if line != last { last = line; CraLog.note("secure dns: " + line) }
         }
     }
@@ -451,15 +463,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Arc's Peek: a Little Window over `parent` that closes when a click lands past it.
-    func openPeek(url: String, over parent: MainWindowController) {
+    func openPeek(url: String, over parent: MainWindowController, fromTab tabID: UUID? = nil) {
         for p in littleWindows where p.peekParent === parent { p.closeWindow() }
         let w = LittleWindowController(app: self, url: url, peekOver: parent)
         littleWindows.append(w)
+        // Arc badges the tab the Peek came from with the peeked page's favicon (modalIcon).
+        parent.sidebarUI.peekBadge = tabID.map { .init(tabID: $0, iconKey: FaviconKey.key(for: url)) }
         w.showAsPeek()
     }
 
     func removeLittleWindow(_ w: LittleWindowController) {
         littleWindows.removeAll { $0 === w }
+        if let parent = w.peekParent, !littleWindows.contains(where: { $0.peekParent === parent }) { parent.sidebarUI.peekBadge = nil }
     }
 
     func closeLittleWindows() {
@@ -588,6 +603,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if dict["relaunch"] != nil { relaunch(); return }
             if dict["quit"] != nil { NSApp.terminate(nil); return }
             if let t = dict["selectTab"].flatMap(UUID.init(uuidString:)) { store.selectTab(t, window: main.windowID); return }
+            // Tab freezing with a short threshold (seconds) from now on, so it can be tried without
+            // waiting: the minute's pass would otherwise take the votes back.
+            if let s = dict["freezeTabs"].flatMap(Double.init) {
+                freezeAfter = s
+                for w in mainWindows { w.browsers.freezeIdleTabs(hiddenLongerThan: s) }
+                return
+            }
             // One tab-sleeping pass with a short threshold (seconds), so it can be tried without waiting.
             if let s = dict["sleepTabs"].flatMap(Double.init) {
                 for w in mainWindows { w.browsers.sleepIdleTabs(hiddenLongerThan: s) }
@@ -637,10 +659,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             if let method = dict["cdp"] {
-                // target=little: the newest Little Window's (or Peek's) page.
-                let b = dict["target"] == "little" ? littleWindows.last?.browser : main.currentBrowser
+                // target=little: the newest Little Window's (or Peek's) page; tab=<id>: that tab's page.
+                let tab = dict["tab"].flatMap(UUID.init(uuidString:)).flatMap { main.browsers.runtime(for: $0)?.browser }
+                let b = dict["target"] == "little" ? littleWindows.last?.browser : tab ?? main.currentBrowser
                 b?.sendDevToolsMethod(method, params: dict["params"] ?? "{}") { result, error in
                     NSLog("Cra cdp %@ → %@", method, result ?? "error: \(error ?? "?")")
+                }
+                return
+            }
+            // What the command bar would list for the text (rows, the Tab scope, the search), without opening it.
+            if let text = dict["suggest"] {
+                let engine = main.commandBar.engine
+                engine.resetIndex()
+                let r = engine.suggestions(for: text, mode: .newTab, currentTabID: store.selectedTabID)
+                let rows = r.items.map { "\($0.kind) \($0.title) \($0.url ?? "")" }.joined(separator: " | ")
+                NSLog("Cra suggest %@ → scope=%@ search=%@ rows=%@", text, r.scope.map { "\($0.name) \($0)" } ?? "none",
+                      engine.searchURL(text), rows)
+                engine.resetIndex()
+                return
+            }
+            // folder=<id>,1 opens a folder, ,0 closes it (its glyph turns as a click's does).
+            if let f = dict["folder"]?.split(separator: ","), f.count == 2, let id = UUID(uuidString: String(f[0])) {
+                store.setExpanded(id, f[1] == "1")
+                return
+            }
+            // Settings ▸ Advanced's search engine picker, by keyword.
+            if let keyword = dict["searchEngine"] {
+                if let e = SearchEngines.shared.keywords(profilePath: nil).first(where: { $0.keyword == keyword }) {
+                    SearchEngines.shared.setDefault(e, store: store)
                 }
                 return
             }
@@ -875,7 +921,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "zoomOut": main.zoom(by: -0.5)
         case "resetZoom": main.currentBrowser?.setZoomLevel(0)
         case "viewSource": main.currentBrowser?.viewSource()
-        // Like Chrome: ⌥⌘I, ⌥⌘J and Network close the dock when it is already open.
+        // Like Arc: ⌥⌘I closes open DevTools; ⌥⌘J and Network switch to their panel and close
+        // DevTools only when that panel already shows (DevToolsToggle.run).
         case "devTools": main.browsers.runDevTools(.toggle)
         case "jsConsole": main.browsers.runDevTools(.console)
         case "networkPanel": main.browsers.runDevTools(.network)
@@ -913,7 +960,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "previousSplitPane": main.cycleSplitPane(-1)
         case "settings": showSettingsWindow()
         case "importData": main.showImport()
+        case "rebuildArcProfiles": ArcProfileRebuilder.run(store: store) { [weak self] in self?.relaunch() }
         case "setDefaultBrowser": Task { await SystemIntegration.shared.makeDefaultBrowser() }
+        case "clearBrowsingData":
+            // Chrome's dialog, in a normal window: what it deletes from history leaves the command bar too.
+            let normal = useNormalWindow()
+            _ = store.createTab(url: BrowsingDataClear.pageURL, select: true)
+            normal.showWindow(nil)
         default:
             if id.hasPrefix("item"), let n = Int(id.dropFirst(4)) {
                 let tabs = store.visibleTabs(in: store.focusedSpaceID)
@@ -954,6 +1007,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if settingsController == nil {
             let actions = SettingsActions(
                 importData: { [weak self] in self?.main.showImport() },
+                rebuildArcProfiles: { [weak self] in
+                    guard let self else { return }
+                    ArcProfileRebuilder.run(store: self.store) { [weak self] in self?.relaunch() }
+                },
                 openURL: { [weak self] url in
                     guard let self else { return }
                     self.useNormalWindow()
@@ -996,6 +1053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let setDefault = item("setDefaultBrowser")
         if setDefault.keyEquivalent.isEmpty { setDefault.keyEquivalent = "♡"; setDefault.keyEquivalentModifierMask = .command }
         appMenu.addItem(setDefault)
+        appMenu.addItem(item("clearBrowsingData"))
         appMenu.addItem(.separator())
         appMenu.addItem(item("importData"))
         let update = NSMenuItem(title: "Check for Updates…", action: #selector(SoftwareUpdater.checkForUpdates(_:)), keyEquivalent: "")

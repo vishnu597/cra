@@ -480,7 +480,7 @@ public final class SidebarStore {
             if let key = FaviconKey.key(for: url) { t.faviconKey = key }
         }
         // A live folder's tab keeps the pull request's title (Arc shows that, not the page's).
-        if let title, !(t.liveItemURL.map { t.url.hasPrefix($0) } ?? false) { t.savedTitle = title }
+        if let title, !(t.liveItemURL.map { t.url.hasPrefix($0) } ?? false) { t.noteTitle(title, pinned: isPinned(id)) }
         // Pages report titles and addresses over and over while they load, and every write to
         // `items` re-renders the sidebar's lists: only real changes are written.
         guard t != it.tab else { return }
@@ -530,7 +530,7 @@ public final class SidebarStore {
     /// Pinned tabs have a home URL. Reset returns there (Arc: resetTab).
     public func resetPinnedTab(_ id: UUID) -> String? {
         guard var it = items[id], var t = it.tab, isPinned(id) else { return nil }
-        t.url = t.savedURL
+        t.returnHome()
         it.data = .tab(t)
         items[id] = it
         // Closed, it no longer shows under a closed folder (Arc).
@@ -543,7 +543,7 @@ public final class SidebarStore {
     /// Make the current page the pinned home (Arc: replacePinnedTab).
     public func setPinnedHomeToCurrent(_ id: UUID) {
         guard var it = items[id], var t = it.tab else { return }
-        t.savedURL = t.url
+        t.makeCurrentPageHome()
         it.data = .tab(t)
         items[id] = it
         touch()
@@ -559,6 +559,7 @@ public final class SidebarStore {
             t.savedTitle = ""
             t.faviconKey = FaviconKey.key(for: url)
         }
+        if t.savedURL != url { t.homeTitle = nil }
         t.savedURL = url
         it.data = .tab(t)
         items[id] = it
@@ -683,7 +684,7 @@ public final class SidebarStore {
             // Moving into a pinned section makes the current page the home.
             let kind = rootContainerKind(newParent)
             switch kind {
-            case .pinned, .favorites: t.savedURL = t.url
+            case .pinned, .favorites: t.makeCurrentPageHome()
             default: break
             }
             it.data = .tab(t)
@@ -693,7 +694,7 @@ public final class SidebarStore {
             // A pinned split keeps each pane's page as that pane's home.
             for c in it.children {
                 guard var pane = items[c], var t = pane.tab else { continue }
-                t.savedURL = t.url
+                t.makeCurrentPageHome()
                 pane.data = .tab(t)
                 items[c] = pane
             }
@@ -1536,7 +1537,11 @@ public final class SidebarStore {
     /// The Chromium folder a tab's pages load in: its space's profile, or nil for the
     /// Default profile (and for incognito, which has its own off-the-record one).
     public func profilePath(item id: UUID) -> String? {
-        guard let sid = spaceID(ofItem: id), !isIncognito(space: sid), let p = profile(spaces[sid]?.profileID) else { return nil }
+        spaceID(ofItem: id).flatMap { profilePath(space: $0) }
+    }
+
+    public func profilePath(space sid: UUID) -> String? {
+        guard !isIncognito(space: sid), let p = profile(spaces[sid]?.profileID) else { return nil }
         return chromiumCache.appendingPathComponent(p.directoryName, isDirectory: true).path
     }
 
@@ -1628,11 +1633,15 @@ public final class SidebarStore {
         rankingFile.save(ranking)
     }
 
-    /// Chrome's Delete browsing data deleted history: the command bar forgets it too.
+    /// Chrome's Delete browsing data deleted history: the command bar forgets it too, and the
+    /// archive (Cra's History) drops the tabs closed in that time.
     public func clearHistory(_ range: BrowsingDataClear.Range) {
         (history, ranking) = BrowsingDataClear.clearing(range, history: history, ranking: ranking)
+        archive = BrowsingDataClear.keptArchive(archive, clearing: range)
         historyFile.saveNow(Array(history.values))
         rankingFile.saveNow(ranking)
+        archiveFile.saveNow(archive)
+        touch()
         CoreLog.note("history cleared (\(range == .allTime ? "all time" : "a time range"))")
     }
 
