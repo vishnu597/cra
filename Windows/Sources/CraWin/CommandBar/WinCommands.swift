@@ -4,29 +4,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// The commands the Windows command bar offers: the Mac's ids, names and triggers
-/// (KeyBindingRegistry) for what the Windows app does so far, with its Ctrl shortcuts.
-enum WinCommands {
-    static let all: [CommandBarCommand] = [
-        CommandBarCommand(id: "newTab", name: "New Tab…", triggers: ["new tab"], shortcut: "Ctrl+T"),
-        CommandBarCommand(id: "reopenClosedTab", name: "Restore Last Closed Tab", triggers: ["reopen", "undo close", "restore"],
-                          shortcut: "Ctrl+Shift+T"),
-        CommandBarCommand(id: "closeTab", name: "Close Tab", triggers: ["close", "archive tab"], shortcut: "Ctrl+W"),
-        CommandBarCommand(id: "reload", name: "Refresh the Page", triggers: ["refresh", "reload"], shortcut: "Ctrl+R"),
-        CommandBarCommand(id: "hardReload", name: "Force Refresh the Page", shortcut: "Ctrl+Shift+R"),
-        CommandBarCommand(id: "pinTab", name: "Pin/Unpin Tab", triggers: ["pin", "unpin"], shortcut: "Ctrl+D"),
-        CommandBarCommand(id: "find", name: "Find…", triggers: ["find", "search page"], shortcut: "Ctrl+F"),
-        CommandBarCommand(id: "settings", name: "Settings…", triggers: ["preferences", "settings"], shortcut: "Ctrl+,"),
-        CommandBarCommand(id: "addSplitView", name: "Add Split View", triggers: ["split", "split view", "add split"],
-                          shortcut: "Ctrl+Shift+="),
-        CommandBarCommand(id: "closeSplitPane", name: "Close this Split Pane", triggers: ["close split", "close pane"],
-                          shortcut: "Ctrl+Shift+-"),
-        CommandBarCommand(id: "separateFromSplit", name: "Separate Page from Split View", triggers: ["separate", "unsplit"]),
-        CommandBarCommand(id: "flipSplitOrientation", name: "Flip Split View Orientation",
-                          triggers: ["vertical split", "horizontal split", "flip split"]),
-    ]
-}
-
 /// SF Symbols names (what CraCore's rows carry) as Segoe Fluent Icons glyphs, the font
 /// FontIcon draws with on Windows 11 (Segoe MDL2 Assets, with the same code points, on 10).
 enum WinGlyph {

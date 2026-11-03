@@ -45,8 +45,6 @@ through `Sources/Cra/App/CraCoreExports.swift`.
 This logic is pure enough for CraCore but still lives in the app. Move a piece when a change
 touches it anyway, not as a side errand.
 
-- `App/KeyBindings.swift`: `KeyAction`, `MenuSection` and the default bindings, in a file that
-  imports AppKit for `Shortcut`'s event matching.
 - `Services/Import/`: the parsers for other browsers' files. Tested on `Tests/Fixtures` by
   `scripts/test-store.sh`.
 - `UI/ToolbarComposition.swift`, `UI/Windows/ExtensionLaunch.swift`,

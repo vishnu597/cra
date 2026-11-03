@@ -1,7 +1,7 @@
 /// A keyboard shortcut as keybindings.json stores it: `key` is the lowercase character or a
 /// special key (`tab`, `left`...), `modifiers` the device-independent modifier bits of
 /// AppKit's NSEvent.ModifierFlags. The app reads events into it (Shortcut in KeyBindings.swift).
-public struct KeyChord: Codable, Hashable {
+public struct KeyChord: Codable, Hashable, Sendable {
     public var key: String
     public var modifiers: UInt
 
@@ -11,7 +11,7 @@ public struct KeyChord: Codable, Hashable {
     }
 
     /// NSEvent.ModifierFlags' bits for the four keys a shortcut can hold.
-    public struct Modifiers: OptionSet, Hashable {
+    public struct Modifiers: OptionSet, Hashable, Sendable {
         public let rawValue: UInt
         public init(rawValue: UInt) { self.rawValue = rawValue }
         public static let shift = Modifiers(rawValue: 1 << 17)

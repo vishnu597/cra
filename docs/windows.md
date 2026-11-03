@@ -111,4 +111,13 @@ login" (a value in the user's Run key, cleared from Task Manager's StartupApprov
 turned on), and Tabs, with the new-tab, single-space and tab cleanup rows. It follows the
 system's light or dark mode and accent colour.
 
+Shortcuts: the actions, their names and command bar phrases and their default keys are CraCore's
+(`KeyBindingDefaults`, with `.mac` and `.windows` tables), and `KeyBindingRegistry` lays the
+user's own keys from `keybindings.json` over them. Windows' table has the Mac's actions the
+Windows app performs, with Ctrl in place of ⌘ and Chrome's Windows keys where those differ
+(Alt+Left and Right go back and forward, Ctrl+Tab cycles tabs, F3 and F5). The file keeps the
+Mac's format: a key's `.control` bit is Ctrl on Windows, `.option` is Alt. The page's keys, the
+command bar's rows and Settings ▸ Shortcuts (Dia's list and shortcut field: click it, press the
+new keys, Esc cancels, Backspace removes) all read the registry.
+
 The parity checklist and phases are in the porting plan.

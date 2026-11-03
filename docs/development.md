@@ -166,7 +166,7 @@ their own child windows, the hosting before 0.1.17, for comparing the two.
 
 Cra registers the `cra://` scheme so it can be driven from a shell:
 
-    open "cra://action/newTab"              # any action id from KeyBindings.swift
+    open "cra://action/newTab"              # any action id from KeyBindingDefaults.swift
     open "cra://commandbar?query=github"    # open the command bar with text
     open "cra://open?url=https://example.com&background=1"
     open "cra://open?url=https://example.com&little=1"   # in a Little Window

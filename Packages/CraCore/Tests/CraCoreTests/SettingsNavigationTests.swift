@@ -48,6 +48,7 @@ struct SettingsNavigationTests {
         #expect(SettingsPane.windowsPanes.allSatisfy { SettingsPane.allCases.contains($0) })
         let order = SettingsPane.windowsPanes.compactMap { SettingsPane.allCases.firstIndex(of: $0) }
         #expect(order == order.sorted(), "in the Mac's order")
+        #expect(SettingsPane.windowsPanes == [.general, .tabs, .shortcuts])
     }
 
     /// Dia's measurements: the content column fits beside the sidebar, the form's controls start
@@ -60,5 +61,8 @@ struct SettingsNavigationTests {
         #expect(SettingsMetrics.paneInset * 2 < content && SettingsMetrics.paneTop > 0 && SettingsMetrics.formTop > 0)
         #expect(SettingsMetrics.cardRowInset * 2 < SettingsMetrics.cardRowHeight && SettingsMetrics.cardCorner > 0)
         #expect(SettingsMetrics.formGroupSpacing > 0)
+        // Shortcuts: the list leaves room for the detail column beside it.
+        #expect(SettingsMetrics.shortcutsListWidth + SettingsMetrics.shortcutsInset * 2 < content - 200)
+        #expect(SettingsMetrics.shortcutsRowHeight == 36)
     }
 }

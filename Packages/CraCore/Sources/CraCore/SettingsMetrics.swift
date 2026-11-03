@@ -23,4 +23,8 @@ public enum SettingsMetrics {
     public static let formControlX: CGFloat = 202
     public static let formTop: CGFloat = 31
     public static let formGroupSpacing: CGFloat = 14
+    /// Shortcuts: the pane's content starts 19 pt in, the action list is 272 pt wide with 36 pt rows.
+    public static let shortcutsInset: CGFloat = 19
+    public static let shortcutsListWidth: CGFloat = 272
+    public static let shortcutsRowHeight: CGFloat = 36
 }
