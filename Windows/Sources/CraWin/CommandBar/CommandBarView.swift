@@ -330,7 +330,8 @@ final class CommandBarView {
 
     /// The selected row's tint: a site's brand colour in its scope, else the space's colour.
     private var highlight: Brush {
-        if case .site(let site)? = scope { return UI.brush(site.color, alpha: 150) }
+        // Chromium's keyword engines have no brand colour: they take the space's.
+        if case .site(let site)? = scope, let color = site.color { return UI.brush(color, alpha: 150) }
         return UI.brush(space.accent ?? space.colors.first ?? "#5C6BC0", alpha: dark ? 140 : 110)
     }
 
@@ -446,7 +447,7 @@ final class CommandBarView {
         pill.visibility = scope == nil ? .collapsed : .visible
         if let scope {
             pillLabel.text = scope.name
-            if case .site(let site) = scope { pill.background = UI.brush(site.color) } else {
+            if case .site(let site) = scope, let color = site.color { pill.background = UI.brush(color) } else {
                 pill.background = UI.brush(space.accent ?? space.colors.first ?? "#5C6BC0")
             }
         }

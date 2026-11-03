@@ -54,7 +54,9 @@ static bool g_quitting = false;
 static bool g_useChromeStyle = false;
 static bool g_useMockKeychain = false;
 /// Resolved by Swift from the chosen profile, including environment-free dev launches.
-static NSString* g_extensionsDirectory = nil;
+// Extensions/ folders for --load-extension and the profiles each loads in (+setExtensionPaths:profiles:).
+static NSArray<NSString*>* g_extensionPaths = nil;
+static NSString* g_extensionProfiles = nil;
 static BOOL g_chromeHosting = NO;
 static NSMutableArray<CraBrowser*>* g_pendingCreation = nil;
 
@@ -172,6 +174,7 @@ static CraClient* AsCraClient(CefClient* c) {
 @property (nonatomic, copy) NSString* currentURL;
 @property (nonatomic, copy) NSString* currentTitle;
 @property (nonatomic) BOOL isLoading;
+@property (nonatomic) BOOL hasCommittedLoad;
 @property (nonatomic) BOOL canGoBack;
 @property (nonatomic) BOOL canGoForward;
 @property (nonatomic) BOOL isCreated;
@@ -424,6 +427,38 @@ static void ApplyProfilePreferences(CefRefPtr<CefRequestContext> context) {
     ApplyHttpsOnly(context);
 }
 
+static const char kNotificationBlocksCleared[] = "cra.notification_blocks_cleared";
+
+/// Up to 0.1.27 Cra answered every notification request with a quiet deny, and Chromium kept
+/// each one as the site's notification block (Messenger, Facebook, YouTube...), so those sites
+/// could never ask again. Once per profile, those blocks go back to Ask. Blocks made after this
+/// come from the prompt and stay.
+static void ClearSilentNotificationBlocks(CefRefPtr<CefRequestContext> context) {
+    CefRefPtr<CefValue> done = context->GetPreference(kNotificationBlocksCleared);
+    if (!done || done->GetType() != VTYPE_BOOL || done->GetBool()) return;
+    CefRefPtr<CefValue> exceptions = context->GetPreference("profile.content_settings.exceptions.notifications");
+    if (exceptions && exceptions->GetType() == VTYPE_DICTIONARY) {
+        CefRefPtr<CefDictionaryValue> sites = exceptions->GetDictionary();
+        CefDictionaryValue::KeyList patterns;
+        sites->GetKeys(patterns);
+        for (const CefString& pattern : patterns) {
+            CefRefPtr<CefDictionaryValue> entry = sites->GetDictionary(pattern);
+            if (!entry || entry->GetInt("setting") != CEF_CONTENT_SETTING_VALUE_BLOCK) continue;
+            // "https://www.messenger.com:443,*": the requesting origin, any top-level site.
+            std::string origin = pattern.ToString().substr(0, pattern.ToString().find(','));
+            context->SetContentSetting(origin, origin, CEF_CONTENT_SETTING_TYPE_NOTIFICATIONS,
+                                       CEF_CONTENT_SETTING_VALUE_DEFAULT);
+            NSLog(@"CraCEF: notification block cleared for %s", origin.c_str());
+        }
+    }
+    CefRefPtr<CefValue> yes = CefValue::Create();
+    yes->SetBool(true);
+    CefString error;
+    if (!context->SetPreference(kNotificationBlocksCleared, yes, error)) {
+        NSLog(@"CraCEF: %s: %s", kNotificationBlocksCleared, error.ToString().c_str());
+    }
+}
+
 // Cra's extension list (ExtensionStore) reads extensions.settings. On disk it lags ~10 s
 // behind an install (Chromium's pref writer batches), so a "Load unpacked" extension was
 // missing from the Site Control Center (GitHub #43); the live pref and its changes are not.
@@ -500,6 +535,7 @@ public:
     void OnRequestContextInitialized(CefRefPtr<CefRequestContext> context) override {
         ApplyProfilePreferences(context);
         if (!path_) { g_incognitoReady = true; return; }
+        ClearSilentNotificationBlocks(context);
         ObserveExtensionSettings(context);
         if (!g_readyProfiles) g_readyProfiles = [NSMutableSet set];
         [g_readyProfiles addObject:path_];
@@ -550,6 +586,13 @@ class CraApp : public CefApp, public CefBrowserProcessHandler {
 public:
     CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
 
+    void OnRegisterCustomPreferences(cef_preferences_type_t type, CefRawPtr<CefPreferenceRegistrar> registrar) override {
+        if (type != CEF_PREFERENCES_TYPE_REQUEST_CONTEXT) return;
+        CefRefPtr<CefValue> no = CefValue::Create();
+        no->SetBool(false);
+        registrar->AddPreference(kNotificationBlocksCleared, no);
+    }
+
     CefRefPtr<CefClient> GetDefaultClient() override {
         if (!g_strayClient) g_strayClient = new StrayBrowserClient();
         return g_strayClient;
@@ -575,15 +618,13 @@ public:
         command_line->AppendSwitchWithValue("profile-directory", "Default");
         // Unpacked Chrome extensions (Chrome-style browsers only): one folder per extension.
         if (process_type.empty()) {
-            // Use the same resolved data root as AppPaths/ExtensionStore, never an
-            // independent production fallback when CraDev is opened from Finder.
-            NSString* dir = g_extensionsDirectory;
-            NSMutableArray<NSString*>* paths = [NSMutableArray array];
-            for (NSString* name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
-                NSString* p = [dir stringByAppendingPathComponent:name];
-                if ([[NSFileManager defaultManager] fileExistsAtPath:[p stringByAppendingPathComponent:@"manifest.json"]]) [paths addObject:p];
+            // The app lists them from the same data root as AppPaths/ExtensionStore. The
+            // command line installs them in every profile; Cra's CEF build skips a profile
+            // --cra-load-extension-profiles leaves out (extension-profiles.patch, #131).
+            if (g_extensionPaths.count) {
+                command_line->AppendSwitchWithValue("load-extension", CefStringFromNS([g_extensionPaths componentsJoinedByString:@","]));
+                if (g_extensionProfiles) command_line->AppendSwitchWithValue("cra-load-extension-profiles", CefStringFromNS(g_extensionProfiles));
             }
-            if (paths.count) command_line->AppendSwitchWithValue("load-extension", CefStringFromNS([paths componentsJoinedByString:@","]));
         }
         command_line->AppendSwitchWithValue("autoplay-policy", "document-user-activation-required");
         // WebRTC hides this Mac's local IP behind a random .local name announced over
@@ -648,6 +689,7 @@ public:
     void OnContextInitialized() override {
         CEF_REQUIRE_UI_THREAD();
         ApplyProfilePreferences(CefRequestContext::GetGlobalContext());
+        ClearSilentNotificationBlocks(CefRequestContext::GetGlobalContext());
         ObserveExtensionSettings(CefRequestContext::GetGlobalContext());
         ObserveSecureDNS();
         g_contextInitialized = true;
@@ -789,6 +831,13 @@ static const char kCraDevToolsHooks[] =
     // (DevToolsWindow::DoAction); -runDevToolsAction queues on __craRun until then.
     "var lc=h.loadCompleted;h.loadCompleted=function(){var r=lc&&lc.apply(h,arguments);h.__craLoaded=1;"
     "var q=h.__craRun||[];h.__craRun=[];q.forEach(function(f){f();});return r;};"
+    // The panel on show, so Console and Network can tell a switch from a close (GitHub #138):
+    // the main tab bar is the one with Elements; its selected tab is #tab-<panel>.
+    "(function(){var now=null,n=0,w=setInterval(function(){var e=find(document,'#tab-elements'),tabs=e&&e.parentNode;"
+    "if(tabs){clearInterval(w);var report=function(){var t=tabs.querySelector('.tabbed-pane-header-tab.selected');"
+    "var p=t&&t.id.indexOf('tab-')==0?t.id.slice(4):null;if(p&&p!==now){now=p;console.log('__cra_devtools_panel:'+p);}};"
+    "report();new MutationObserver(report).observe(tabs,{attributes:true,subtree:true,attributeFilter:['class']});return;}"
+    "if(++n>200)clearInterval(w);},150);})();"
     "if(!/[?&]can_dock=/.test(location.search)){installClose();return;}"
     "var sent=false;"
     "h.setInspectedPageBounds=function(b){sent=true;try{console.log('__cra_devtools_bounds:'+JSON.stringify({x:b.x,y:b.y,width:b.width,height:b.height}));}catch(e){}};"
@@ -879,6 +928,7 @@ public:
         static const std::string kClose = "__cra_devtools_close";
         static const std::string kBounds = "__cra_devtools_bounds:";
         static const std::string kDocked = "__cra_devtools_docked:";
+        static const std::string kPanel = "__cra_devtools_panel:";
         std::string m = message.ToString();
         if (m == kClose) {
             if (CraBrowser* o = owner_) [o closeDevTools];
@@ -892,6 +942,14 @@ public:
                 CraDevToolsLog(@"bounds %@", NSStringFromRect(r));
                 if (CraBrowser* o = owner_) [o.delegate browser:o devToolsPageBounds:r];
             }
+            return true;
+        }
+        if (m.rfind(kPanel, 0) == 0) {
+            NSString* panel = [NSString stringWithUTF8String:m.c_str() + kPanel.size()];
+            CraDevToolsLog(@"panel %@", panel);
+            CraBrowser* o = owner_;
+            if (o && panel.length && [o.delegate respondsToSelector:@selector(browser:devToolsShowsPanel:)])
+                [o.delegate browser:o devToolsShowsPanel:panel];
             return true;
         }
         if (m.rfind("__cra_dbg:", 0) == 0) { CraDevToolsLog(@"%s", m.c_str()); return true; }
@@ -1033,6 +1091,48 @@ private:
 
 // MARK: - Browser client
 
+// Chrome's permission request types as CraCEF's `kinds` bits (CraCEF.h), so the sheet can say
+// what a page asks for. A type CEF adds later, not in this table, comes through as 16.
+static const struct { uint32_t cef; NSUInteger kind; } kPermissionKinds[] = {
+    {CEF_PERMISSION_TYPE_CAMERA_STREAM | CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM, 1},
+    {CEF_PERMISSION_TYPE_MIC_STREAM, 2},
+    {CEF_PERMISSION_TYPE_GEOLOCATION, 4},
+    {CEF_PERMISSION_TYPE_NOTIFICATIONS, 8},
+    {CEF_PERMISSION_TYPE_CLIPBOARD, 1 << 5},
+    {CEF_PERMISSION_TYPE_WINDOW_MANAGEMENT, 1 << 6},
+    {CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED | CEF_PERMISSION_TYPE_LOCAL_NETWORK, 1 << 7},
+    {CEF_PERMISSION_TYPE_LOOPBACK_NETWORK, 1 << 8},
+    {CEF_PERMISSION_TYPE_STORAGE_ACCESS, 1 << 9},
+    {CEF_PERMISSION_TYPE_TOP_LEVEL_STORAGE_ACCESS, 1 << 10},
+    {CEF_PERMISSION_TYPE_LOCAL_FONTS, 1 << 11},
+    {CEF_PERMISSION_TYPE_IDLE_DETECTION, 1 << 12},
+    {CEF_PERMISSION_TYPE_MIDI_SYSEX, 1 << 13},
+    {CEF_PERMISSION_TYPE_MULTIPLE_DOWNLOADS, 1 << 14},
+    {CEF_PERMISSION_TYPE_KEYBOARD_LOCK, 1 << 15},
+    {CEF_PERMISSION_TYPE_POINTER_LOCK, 1 << 16},
+    {CEF_PERMISSION_TYPE_PROTECTED_MEDIA_IDENTIFIER, 1 << 17},
+    {CEF_PERMISSION_TYPE_REGISTER_PROTOCOL_HANDLER, 1 << 18},
+    {CEF_PERMISSION_TYPE_AR_SESSION, 1 << 19},
+    {CEF_PERMISSION_TYPE_VR_SESSION, 1 << 20},
+    {CEF_PERMISSION_TYPE_HAND_TRACKING, 1 << 21},
+    {CEF_PERMISSION_TYPE_SENSORS, 1 << 22},
+    {CEF_PERMISSION_TYPE_DISK_QUOTA, 1 << 23},
+    {CEF_PERMISSION_TYPE_IDENTITY_PROVIDER, 1 << 24},
+    {CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL, 1 << 25},
+    {CEF_PERMISSION_TYPE_WEB_APP_INSTALLATION, 1 << 26},
+    {CEF_PERMISSION_TYPE_FILE_SYSTEM_ACCESS, 1 << 27},
+    {CEF_PERMISSION_TYPE_AMBIENT_LOGIN, 1 << 28},
+};
+
+static NSUInteger CraPermissionKinds(uint32_t requested) {
+    NSUInteger kinds = 0;
+    for (const auto& k : kPermissionKinds) {
+        if (requested & k.cef) kinds |= k.kind;
+        requested &= ~k.cef;
+    }
+    return requested ? kinds | 16 : kinds;
+}
+
 class CraClient : public CefClient,
                   public CefLifeSpanHandler,
                   public CefLoadHandler,
@@ -1120,6 +1220,7 @@ public:
                               bool canGoForward) override {
         CraBrowser* o = owner_;
         if (!o) return;
+        if (isLoading && !o.isLoading) o.hasCommittedLoad = NO;
         o.isLoading = isLoading;
         o.canGoBack = canGoBack;
         o.canGoForward = canGoForward;
@@ -1136,6 +1237,14 @@ public:
         if ([o.delegate respondsToSelector:@selector(browser:didReportBackgroundColor:)])
             [o.delegate browser:o didReportBackgroundColor:@""];
         frame->ExecuteJavaScript(kLoadingBackgroundProbe, frame->GetURL(), 0);
+        SetCommittedLoad(o, YES);
+    }
+
+    void SetCommittedLoad(CraBrowser* o, BOOL committed) {
+        if (o.hasCommittedLoad == committed) return;
+        o.hasCommittedLoad = committed;
+        if ([o.delegate respondsToSelector:@selector(browser:didChangeCommittedLoad:)])
+            [o.delegate browser:o didChangeCommittedLoad:committed];
     }
 
     void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override {
@@ -1281,7 +1390,8 @@ public:
 
     // Chromium's audible state, which CEF has no callback for: the engine sends it as a
     // "Cra.audible" message (scripts/cef-patches/audible-state.patch). "Cra.activate": an
-    // extension asked for this tab to be in front (scripts/cef-patches/extension-tab-activate.patch).
+    // extension asked for this tab to be in front (scripts/cef-patches/extension-tab-activate.patch),
+    // or with true the page did (scripts/cef-patches/page-activate.patch).
     bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                                   CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override {
         if (source_process != PID_BROWSER) return false;
@@ -1291,8 +1401,10 @@ public:
             return true;
         }
         if (message->GetName() == "Cra.activate") {
-            if (o && [o.delegate respondsToSelector:@selector(browserRequestsActivation:)])
-                [o.delegate browserRequestsActivation:o];
+            CefRefPtr<CefListValue> args = message->GetArgumentList();
+            BOOL byPage = args->GetSize() > 0 && args->GetBool(0);
+            if (o && [o.delegate respondsToSelector:@selector(browserRequestsActivation:byPage:)])
+                [o.delegate browserRequestsActivation:o byPage:byPage];
             return true;
         }
         return false;
@@ -1350,7 +1462,16 @@ public:
     bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request,
                         bool user_gesture, bool is_redirect) override {
         CraBrowser* o = owner_;
-        if (!o || !user_gesture || is_redirect || !frame->IsMain()) return false;
+        if (!o || !frame->IsMain()) return false;
+        if (OpensPeek(o, request, user_gesture, is_redirect)) return true;
+        // A new page, also one started while the last is still loading: the loading bar waits
+        // for its answer again.
+        if (!is_redirect) SetCommittedLoad(o, NO);
+        return false;
+    }
+
+    bool OpensPeek(CraBrowser* o, CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) {
+        if (!user_gesture || is_redirect) return false;
         cef_transition_type_t tt = request->GetTransitionType();
         if ((tt & TT_SOURCE_MASK) != TT_LINK || (tt & TT_FORWARD_BACK_FLAG)) return false;
         if (![o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:)]) return false;
@@ -1622,14 +1743,9 @@ public:
             callback->Continue(CEF_PERMISSION_RESULT_DISMISS);
             return true;
         }
-        NSUInteger kinds = 0;
-        if (requested_permissions & (CEF_PERMISSION_TYPE_CAMERA_STREAM | CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM)) kinds |= 1;
-        if (requested_permissions & CEF_PERMISSION_TYPE_MIC_STREAM) kinds |= 2;
-        if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kinds |= 4;
-        if (requested_permissions & CEF_PERMISSION_TYPE_NOTIFICATIONS) kinds |= 8;
-        if (kinds == 0) kinds = 16;
         CefRefPtr<CefPermissionPromptCallback> cb = callback;
-        [o.delegate browser:o requestsPermissionForOrigin:NSStringFromCef(requesting_origin) kinds:kinds
+        [o.delegate browser:o requestsPermissionForOrigin:NSStringFromCef(requesting_origin)
+                      kinds:CraPermissionKinds(requested_permissions)
                  completion:^(BOOL allowed) {
             answering_prompt_ = true;
             cb->Continue(allowed ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
@@ -1981,6 +2097,10 @@ class CraDevToolsObserver : public CefDevToolsMessageObserver {
 
 - (void)showDevTools { [self showDevToolsInspectingPoint:NSZeroPoint]; }
 - (void)closeDevTools { if (_browser) _browser->GetHost()->CloseDevTools(); }
+- (void)applyDevToolsAction {
+    // A frontend still loading takes the action when DevToolsClient prepares it.
+    if (_devToolsBrowser && !_devToolsBrowser->IsLoading()) [self runDevToolsAction];
+}
 // The frontend's own API, which Chrome's DevToolsWindow::DoAction calls through DevToolsAPI.
 - (void)runDevToolsAction {
     NSString* action = _devToolsAction;
@@ -2395,6 +2515,11 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     CefWindow::CreateTopLevelWindow(new SpikeWindowDelegate(view));
 }
 
++ (void)setExtensionPaths:(NSArray<NSString*>*)paths profiles:(NSString*)profiles {
+    g_extensionPaths = [paths copy];
+    g_extensionProfiles = [profiles copy];
+}
+
 + (BOOL)initializeWithCachePath:(NSString*)cachePath
                userAgentProduct:(NSString*)product
                         logPath:(NSString*)logPath
@@ -2403,7 +2528,6 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     if (g_libraryLoader) return YES;
     g_useChromeStyle = useChromeStyle;
     g_useMockKeychain = useMockKeychain;
-    g_extensionsDirectory = [[cachePath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Extensions"];
     g_libraryLoader = new CefScopedLibraryLoader();
     if (!g_libraryLoader->LoadInMain()) {
         NSLog(@"CraCEF: failed to load Chromium Embedded Framework");
@@ -2501,11 +2625,58 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     if (!value || value->GetType() != VTYPE_DICTIONARY) return nil;
     return NSStringFromCef(CefWriteJSON(value, JSON_WRITER_DEFAULT));
 }
++ (NSString*)preference:(NSString*)name forProfile:(NSString*)profilePath {
+    if (!g_contextInitialized || g_quitting) return nil;
+    if (profilePath.length && ![g_readyProfiles containsObject:profilePath]) return nil;
+    CefRefPtr<CefRequestContext> context = profilePath.length ? ProfileContext(profilePath) : CefRequestContext::GetGlobalContext();
+    CefRefPtr<CefValue> value = context ? context->GetPreference(CefStringFromNS(name)) : nullptr;
+    if (!value) return nil;
+    return NSStringFromCef(CefWriteJSON(value, JSON_WRITER_DEFAULT));
+}
++ (BOOL)setPreference:(NSString*)name json:(NSString*)json forProfile:(NSString*)profilePath {
+    if (!g_contextInitialized || g_quitting) return NO;
+    if (profilePath.length && ![g_readyProfiles containsObject:profilePath]) return NO;
+    CefRefPtr<CefRequestContext> context = profilePath.length ? ProfileContext(profilePath) : CefRequestContext::GetGlobalContext();
+    CefRefPtr<CefValue> value = CefParseJSON(CefStringFromNS(json), JSON_PARSER_RFC);
+    if (!context || !value) return NO;
+    CefString cefName = CefStringFromNS(name);
+    if (!context->CanSetPreference(cefName)) return NO;
+    CefString error;
+    if (!context->SetPreference(cefName, value, error)) {
+        NSLog(@"CraCEF: %@: %s", name, error.ToString().c_str());
+        return NO;
+    }
+    return YES;
+}
 + (void)setExtensionSettingsChangeHandler:(void (^)(void))handler {
     g_extensionSettingsHandler = [handler copy];
 }
 + (NSString*)secureDNSMode { return SecureDNSPreference("dns_over_https.mode"); }
 + (NSString*)secureDNSTemplates { return SecureDNSPreference("dns_over_https.templates"); }
++ (BOOL)setSecureDNSMode:(NSString*)mode templates:(NSString*)templates {
+    if (!g_contextInitialized || g_quitting || [self secureDNSIsManaged]) return NO;
+    CefRefPtr<CefPreferenceManager> local = CefPreferenceManager::GetGlobalPreferenceManager();
+    if (!local) return NO;
+    // Provider first when turning secure on, mode first otherwise, so the network service
+    // never sees "secure" without a server in between.
+    std::vector<std::pair<const char*, NSString*>> writes = {{"dns_over_https.mode", mode}, {"dns_over_https.templates", templates}};
+    if ([mode isEqualToString:@"secure"]) std::swap(writes[0], writes[1]);
+    for (const auto& [name, string] : writes) {
+        CefRefPtr<CefValue> value = CefValue::Create();
+        value->SetString(CefStringFromNS(string));
+        CefString error;
+        if (!local->SetPreference(name, value, error)) {
+            NSLog(@"CraCEF: %s: %s", name, error.ToString().c_str());
+            return NO;
+        }
+    }
+    return YES;
+}
++ (BOOL)secureDNSIsManaged {
+    if (!g_contextInitialized || g_quitting) return NO;
+    CefRefPtr<CefPreferenceManager> local = CefPreferenceManager::GetGlobalPreferenceManager();
+    return local && !(local->CanSetPreference("dns_over_https.mode") && local->CanSetPreference("dns_over_https.templates"));
+}
 + (void)setSecureDNSChangeHandler:(void (^)(void))handler {
     g_secureDNSHandler = [handler copy];
     if (g_contextInitialized) NotifySecureDNS();

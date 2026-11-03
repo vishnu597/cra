@@ -230,6 +230,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
             self.closeLibrary()
         }
         sidebarActions.resetPinnedTab = { [weak self] id in self?.resetPinnedTab(id) }
+        sidebarActions.separatePinnedTab = { [weak self] id in self?.separatePinnedTab(id) }
         sidebarActions.editPinnedURL = { [weak self] id in self?.editPinnedURL(id) }
         sidebarActions.openURL = { [weak self] url in
             guard let self else { return }
@@ -239,7 +240,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
             guard let self else { return }
             let t = typed.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty else { return }
-            self.loadInSelectedTab(SuggestionEngine.looksLikeURL(t) ? SuggestionEngine.urlFromInput(t) : self.store.settings.searchEngine.searchURL(t))
+            self.loadInSelectedTab(SuggestionEngine.looksLikeURL(t) ? SuggestionEngine.urlFromInput(t) : self.commandBar.engine.searchURL(t))
+        }
+        sidebarActions.openTyped = { [weak self] typed in
+            guard let self else { return }
+            let t = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return }
+            self.store.createTab(url: SuggestionEngine.looksLikeURL(t) ? SuggestionEngine.urlFromInput(t) : self.commandBar.engine.searchURL(t), window: self.windowID)
         }
         sidebarActions.focusPane = { [weak self] id in
             guard let self, self.selectedTabID != id else { return }
@@ -302,6 +309,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         }
         commandBar.onCommit = { [weak self] s, typed, mode in self?.handleCommit(s, typed: typed, mode: mode) }
         commandBar.onOpenInBackground = { [weak self] s, typed in self?.openInBackground(s, typed: typed) ?? false }
+        commandBar.onOpenInSplit = { [weak self] s, typed in self?.openInSplit(s, typed: typed) ?? false }
         commandBar.onClose = { [weak self] in self?.hideCommandPanel() }
         commandBar.spaceName = { [weak self] id in self?.store.space(id)?.title ?? "" }
     }
@@ -431,6 +439,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         if sidebarUI.canGoBack != (b?.canGoBack ?? false) { sidebarUI.canGoBack = b?.canGoBack ?? false }
         if sidebarUI.canGoForward != (b?.canGoForward ?? false) { sidebarUI.canGoForward = b?.canGoForward ?? false }
         if sidebarUI.isLoading != (b?.isLoading ?? false) { sidebarUI.isLoading = b?.isLoading ?? false }
+        shell.setLoading(LoadingIndicator.Phase(isLoading: b?.isLoading ?? false, committed: b?.hasCommittedLoad ?? false),
+                         tab: browsers.visibleTabID)
         let themeColor = browsers.visibleRuntime?.themeColor ?? ""
         if sidebarUI.pageThemeColor != themeColor { sidebarUI.pageThemeColor = themeColor }
         for (id, rt) in browsers.runtimes where sidebarUI.progress[id] != rt.progress { sidebarUI.progress[id] = rt.progress }
@@ -1266,25 +1276,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func browserManagerPageClosedTab(_ tabID: UUID) { closeTab(tabID) }
 
     /// An extension brought one of this window's tabs to the front (SwitchyOmega's Options with
-    /// its settings tab already open): selected, as in Arc (GitHub #38).
-    func browserManagerActivationRequested(_ tabID: UUID) {
+    /// its settings tab already open): selected, as in Arc (GitHub #38). A page that asked
+    /// (Chromium allows that after a click on its notification, or from its opener) also
+    /// brings the window and Cra to the front, like Arc: Messenger's chat opens on a click.
+    func browserManagerActivationRequested(_ tabID: UUID, byPage: Bool) {
         store.selectTab(tabID, window: windowID)
-        if NSApp.isActive, window?.isKeyWindow == false { showWindow(nil) }
+        if byPage, !HitchMonitor.background {
+            showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else if NSApp.isActive, window?.isKeyWindow == false {
+            showWindow(nil)
+        }
     }
 
     /// Arc's Peek (Settings ▸ Tabs ▸ Links): a link to another site clicked in a favorite or
     /// pinned tab (any tab with "In every tab" on), or any Shift-clicked link, opens over the
     /// window and the tab stays put.
     func browserManagerOpensPeek(url: String, fromTab tabID: UUID, pageURL: String, shiftClick: Bool) -> Bool {
-        guard !isIncognito, let target = SiteKey.site(of: url) else { return false }
+        guard !isIncognito, SiteKey.site(of: url) != nil else { return false }
         if shiftClick {
             guard store.settings.peekOnShiftClick else { return false }
         } else {
+            // Another host, not another site: Arc peeks from pin.lvh.me to away.lvh.me (GitHub #139).
             guard store.settings.peekLinksToOtherSites,
                   store.settings.peekInEveryTab || store.isPinned(tabID),
-                  let here = SiteKey.site(of: pageURL), here != target else { return false }
+                  PinnedNavigation.linkLeavesHost(url, from: pageURL) else { return false }
         }
-        app.openPeek(url: url, over: self)
+        app.openPeek(url: url, over: self, fromTab: tabID)
         return true
     }
 
@@ -1305,16 +1323,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func debugRunInDevTools(_ script: String) { currentBrowser?.executeJavaScript(script, inDevTools: true) }
 
     func closeCurrentTab() {
-        // ⌘W with tabs picked in the sidebar closes all of them.
-        if !sidebarUI.multiSelection.isEmpty {
-            let ids = sidebarUI.multiSelection
-            sidebarUI.clearPicks()
-            for id in ids where id != selectedTabID { closeTab(id) }
-            if let open = selectedTabID, ids.contains(open) { closeTab(open) }
-            return
+        // ⌘W with tabs picked in the sidebar takes all of them. As in Arc (SidebarClose.commandW),
+        // a Today tab among them archives them all, pinned ones too; otherwise they all keep
+        // their place and unload.
+        let ids = sidebarUI.multiSelection.isEmpty ? selectedTabID.map { [$0] } ?? [] : Array(sidebarUI.multiSelection)
+        guard !ids.isEmpty else { return }
+        sidebarUI.clearPicks()
+        let action = SidebarClose.commandW(anyToday: ids.contains { !store.isPinned($0) })
+        // The open tab goes last so closing it doesn't hop through tabs about to close.
+        let open = selectedTabID
+        for id in ids.filter({ $0 != open }) + ids.filter({ $0 == open }) {
+            if action == .keep || !store.isPinned(id) {
+                closeTab(id)
+            } else {
+                // A pinned split goes as one, as it closes as one.
+                for p in store.paneTabIDs(for: id) { store.archiveTab(p, reason: .manual) }
+            }
         }
-        guard let id = selectedTabID else { return }
-        closeTab(id)
     }
 
     /// Today tabs are archived. Pinned tabs and favorites stay; they unload
@@ -1349,6 +1374,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func resetPinnedTab(_ id: UUID) {
         guard let home = store.resetPinnedTab(id) else { return }
         app.runtime(for: id)?.browser.loadURL(home)
+    }
+
+    /// Arc's ⌘-click on the favicon of a pinned tab away from its page ("Separate From Pinned
+    /// Tab", GitHub #139): the page moves to a new Today tab at the top, the pinned tab goes back
+    /// to its page and stays open.
+    func separatePinnedTab(_ id: UUID) {
+        guard let t = store.item(id)?.tab, store.isPinned(id), t.url != t.savedURL else { return }
+        _ = store.createTab(url: t.url, title: t.savedTitle, in: store.spaceID(ofItem: id), select: false, index: 0)
+        resetPinnedTab(id)
+        store.selectTab(id, window: windowID)
     }
 
     /// Edit Pinned URL… (#54): Arc's dialog with the pinned URL. A page showing the old
@@ -2231,7 +2266,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         func open(_ url: String) {
             store.recordQuerySelection(query: query, url: url)
             let fillsEmptyPane = selectedTab?.isEmptyTab == true
-            if mode == .editURL || fillsEmptyPane, selectedTabID != nil {
+            // A pinned tab keeps to its host: another host's address opens a Today tab (Arc).
+            let leavesPinned = !fillsEmptyPane && selectedTabID.map(store.isPinned) == true
+                && PinnedNavigation.typedURLOpensNewTab(url, from: selectedTab?.tab?.url ?? "")
+            if mode == .editURL || fillsEmptyPane, selectedTabID != nil, !leavesPinned {
                 loadInSelectedTab(url)
             } else {
                 store.createTab(url: url, window: windowID)
@@ -2239,7 +2277,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         }
         guard let s else {
             if typed.isEmpty { return }
-            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed))
+            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : commandBar.engine.searchURL(typed))
             return
         }
         switch s.kind {
@@ -2252,7 +2290,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
             let url = typed == commandBar.query ? (s.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed)
             open(url)
         case .search:
-            open(s.url ?? store.settings.searchEngine.searchURL(typed))
+            open(s.url ?? commandBar.engine.searchURL(typed))
         case .history, .topDomain:
             open(s.url ?? "")
         case .command(let id):
@@ -2269,20 +2307,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     /// ⌘Return in the bar (Arc): the row's page in a new background tab, the current tab staying
     /// in front; an open tab's row opens its address again rather than switching (GitHub #85).
     private func openInBackground(_ s: Suggestion?, typed: String) -> Bool {
-        let url: String?
-        switch s?.kind {
-        case nil:
-            url = typed.isEmpty ? nil : SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed)
-        case .navigate?:
-            url = typed == commandBar.query ? (s?.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed)
-        case .search?:
-            url = s?.url ?? store.settings.searchEngine.searchURL(typed)
-        case .switchToTab?, .archived?, .history?, .topDomain?:
-            url = s?.url
-        default:
-            url = nil
-        }
-        guard let url, !url.isEmpty else { return false }
+        guard let url = pageURL(s, typed: typed) else { return false }
         store.recordQuerySelection(query: commandBar.query, url: url)
         let tab = store.createTab(url: url, select: false, window: windowID)
         store.markUnread(tab.id, false)  // Arc saves these read, unlike a link opened in the background
@@ -2293,6 +2318,54 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         // With the sidebar out the new row shows there; hidden, Arc says so in a toast.
         if !sidebarVisible { showToast("New Tab Created") }
         return true
+    }
+
+    /// ⌥Return in the bar: the row opens as a split pane beside the current tab instead of in its
+    /// place, an open tab of this space joining the split as it is. False takes it as Return: no
+    /// tab to split, an empty one (the row fills it), a tab in another space, a row with no page.
+    private func openInSplit(_ s: Suggestion?, typed: String) -> Bool {
+        guard let current = selectedTabID, store.item(current)?.isEmptyTab == false else { return false }
+        if case .switchToTab(let id)? = s?.kind {
+            guard id != current, store.spaceID(ofItem: id) == store.spaceID(ofItem: current) else { return false }
+            if store.paneTabIDs(for: current).contains(id) {
+                store.selectTab(id, window: windowID)
+                return true
+            }
+        }
+        guard store.paneTabIDs(for: current).count < 4 else {
+            showToast("Cannot Add New Pane")
+            return true
+        }
+        if case .switchToTab(let id)? = s?.kind {
+            store.recordQuerySelection(query: commandBar.query, url: s?.url ?? "")
+            let split = store.splitContaining(current).map { sp in store.addToSplit(sp.id, tabID: id, at: nil); return store.item(sp.id) }
+                ?? store.createSplit(with: [current, id], at: current)
+            store.selectTab(split.flatMap { store.paneID(for: id, in: $0) } ?? id, window: windowID)
+            return true
+        }
+        guard let url = pageURL(s, typed: typed) else { return false }
+        store.recordQuerySelection(query: commandBar.query, url: url)
+        guard store.addEmptyPane(nextTo: current, url: url) != nil else { return false }
+        refresh()
+        return true
+    }
+
+    /// The page a row opens anew (⌘Return, ⌥Return), nil for rows that open none.
+    private func pageURL(_ s: Suggestion?, typed: String) -> String? {
+        let url: String?
+        switch s?.kind {
+        case nil:
+            url = typed.isEmpty ? nil : SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : commandBar.engine.searchURL(typed)
+        case .navigate?:
+            url = typed == commandBar.query ? (s?.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed)
+        case .search?:
+            url = s?.url ?? commandBar.engine.searchURL(typed)
+        case .switchToTab?, .archived?, .history?, .topDomain?:
+            url = s?.url
+        default:
+            url = nil
+        }
+        return url?.isEmpty == false ? url : nil
     }
 
     /// Arc's toast at the top right of the page (ShinyToast): Cra's confirmations.
@@ -2509,8 +2582,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         browsers.windowVisibilityChanged(covered: true)
     }
 
-    private static var screenIsLocked: Bool {
-        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+    /// Asked once, then kept by the system's lock and unlock notifications: the session query is a
+    /// WindowServer round trip, and every occlusion change of a fullscreen window asked it (#136).
+    private static let screenLock = ScreenLockState()
+    private static var screenIsLocked: Bool { screenLock.isLocked }
+
+    @MainActor private final class ScreenLockState {
+        private(set) var isLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+        private var observers: [NSObjectProtocol] = []
+
+        init() {
+            let center = DistributedNotificationCenter.default()
+            observers = [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)].map { name, locked in
+                center.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.isLocked = locked }
+                }
+            }
+        }
     }
 
     /// The frame lives in the store's observed prefs, which every sidebar row reads (selection):

@@ -23,6 +23,9 @@ struct SuggestionEngineTests {
 
     final class Flag { var up = false }
 
+    /// What the engine reader was asked for.
+    final class Reads: @unchecked Sendable { var all: [(String?, SearchEngine)] = [] }
+
     /// Asks the engine about `query` and waits for its answer to come in.
     private func fetch(_ e: SuggestionEngine, _ query: String) async {
         let answered = Flag()
@@ -51,8 +54,9 @@ struct SuggestionEngineTests {
         let e = engine(f)
         let search = e.suggestions(for: "hello world", mode: .newTab, currentTabID: nil)
         let typed = search.items.first { $0.id == "typed" }
-        #expect(typed?.kind == .search && typed?.url == f.store.settings.searchEngine.searchURL("hello world"))
-        #expect(typed?.subtitle == "Search \(f.store.settings.searchEngine.label)" && search.query == "hello world")
+        #expect(typed?.kind == .search && typed?.url == "https://www.google.com/search?q=hello%20world&ie=UTF-8")
+        #expect(typed?.subtitle == "Search Google" && search.query == "hello world")
+        #expect(e.searchURL("hello world") == typed?.url && e.searchEngine == ChromiumSearchEngine(.google))
         let address = e.suggestions(for: "example.org/path", mode: .editURL, currentTabID: nil)
         let open = address.items.first { $0.id == "typed" }
         #expect(open?.kind == .navigate && open?.url == TypedURL.fromInput("example.org/path") && open?.subtitle == "Open URL")
@@ -150,6 +154,26 @@ struct SuggestionEngineTests {
         #expect(r.contains("typed"))
     }
 
+    /// The app reads Chromium's engines (its default and keywords) when the bar opens; the
+    /// default reader stands in with Cra's own setting.
+    @Test func chromiumsEnginesAreReadOncePerOpening() {
+        let f = StoreFixture()
+        let wiki = ChromiumSearchEngine(id: 30, name: "Wikipedia DA", keyword: "wda", url: "https://da.wikipedia.org/w/index.php?search={searchTerms}")
+        let reads = Reads()
+        let e = SuggestionEngine(store: f.store, commands: { [] }, load: { _ in nil }, engines: { profile, legacy in
+            reads.all.append((profile, legacy))
+            return (ChromiumSearchEngine(.duckduckgo), [wiki])
+        })
+        let typed = e.suggestions(for: "hello", mode: .newTab, currentTabID: nil).items.first { $0.id == "typed" }
+        #expect(typed?.subtitle == "Search DuckDuckGo" && typed?.url == "https://duckduckgo.com/?q=hello")
+        #expect(e.suggestions(for: "wda", mode: .newTab, currentTabID: nil).scope?.name == "Wikipedia DA")
+        #expect(reads.all.count == 1 && reads.all.first?.1 == f.store.settings.searchEngine)
+        #expect(reads.all.first?.0 == f.store.profilePath(space: f.store.focusedSpaceID))
+        e.resetIndex()
+        _ = e.searchURL("again")
+        #expect(reads.all.count == 2, "read again when the bar opens again")
+    }
+
     // MARK: Scopes
 
     @Test func aSiteScopeSearchesThatSite() throws {
@@ -194,10 +218,10 @@ struct SuggestionEngineTests {
         network.answer = Data(#"["cat",["cat videos","cats","https://cat.example/"],[],[],{"google:suggesttype":["QUERY","QUERY","NAVIGATION"]}]"#.utf8)
         let e = engine(f, network: network)
         await fetch(e, " cat ")
-        #expect(network.asked == [f.store.settings.searchEngine.suggestURL("cat")].compactMap { $0 })
+        #expect(network.asked == [e.searchEngine.suggestURL("cat")].compactMap { $0 })
         let r = e.suggestions(for: "cat", mode: .newTab, currentTabID: nil)
         let search = r.items.first { $0.id == "sugg:cat videos" }
-        #expect(search?.kind == .search && search?.url == f.store.settings.searchEngine.searchURL("cat videos"))
+        #expect(search?.kind == .search && search?.url == e.searchEngine.searchURL("cat videos"))
         let site = r.items.first { $0.id == "sugg:https://cat.example/" }
         #expect(site?.title == "cat.example" && site?.kind == .history)
 

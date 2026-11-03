@@ -87,6 +87,35 @@ Legend: [O] observed in shipped artifact or data file, [I] inference, [U] unknow
   `siteSearchSpaceTriggerEnabled` show Space was a trigger once and Tab is the only one now. Cra's "%" tab scope
   (#49, Zen's idea) reuses all of it: "%" offers "Search Tabs  Tab", the pill takes the space's colour (Arc has no
   colour for a scope that isn't a site), rows are the bar's own tab rows. Cra: TabSearchScope, CommandBarScope.
+- [O] Entering and leaving a scope (3 Nov, Arc 1.171, disassembly of `CommandBar.CommandBarContainer` + a 120 fps
+  recording of Little Arc, "youtube" Tab): the container's layer gets `arc_commandBarBounce`, a CASpringAnimation on
+  `transform` toward scale 0.95 about the centre (damping ratio 0.9, response 0.7: stiffness ≈ 80.57, damping ≈ 16.16,
+  mass 1), its duration cut to 0.1 s, autoreverses, fill forwards: the bar dips ~1% and is back within 0.2 s. With a
+  site colour, an `NSHostingController<SplashView>` goes under the bar: `Color(nsColor:)` clipped to a 12 pt continuous
+  rounded rectangle, `.blur(radius:)` 0 → 150 and `.opacity` 1 → 0 under `.animation(.easeOut(duration: 1.2))`; on
+  screen a haze of the site's colour spreads past the bar over the page and fades. Leaving the scope bounces again and
+  drops the splash. Measured side by side (100 fps, same crops, 3 Nov): the bar's edge moves in 0.96% (Arc) / 1.0%
+  (Cra) peaking at 80/90 ms on Tab, 1.04/1.07% on Backspace; red 60–140 pt above the bar starts at ~150 ms and peaks at
+  10.3 at 450 ms in both, gone by 1 s, within 0.5 at every 50 ms. Arc's splash also shows through the bar: its inside
+  goes from (26, 26, 26) to (47, 20, 19) at once, holds for 0.17 s, then fades by 1 s. Cra's material can't see the
+  panel under it, so the inside is a layer of the colour under the bar's tint keyed to that curve (within 2 levels).
+  Cra: CommandBarView.scopeChanged.
+- [O] Search engines (3 Nov): Settings ▸ Profiles has "Default Search Engine" and "Search Settings" (Chromium's page).
+  Arc's bar is Chromium's omnibox, so the profile's default (`default_search_provider_data.template_url_data`, kept in
+  Secure Preferences with a MAC) and its keywords (Web Data `keywords`) are what it searches with. Chromium adds sites
+  it sees as inactive keywords (`safe_for_autoreplace` 1, `is_active` 0); those never take Tab. Cra kept its own engine
+  list until 3 Nov (reported on X: custom engines and edited built-in ones did nothing). Cra: ChromiumSearchEngine,
+  SearchEngines (reads Web Data as `immutable=1`, Chromium holds it with an exclusive lock), SiteSearch.match.
+- [O] Folder glyph (3 Nov, `FolderIcon.FolderIconView` disassembled, checked against AX-toggled folders captured at
+  1x): 16 × 16, r = round(W/7), line px(1.25), tab height px(round(H·0.25)), shoulder floor(tab/1.5); back path (r,0) →
+  (0.41W,0) → (0.58W,t) → round corners; the front a rounded rect under the tab. Both hinge on the bottom-left
+  (anchor (0,1)); per state m34 −0.0029129464, x +3 / Y 32° when expanded (+1.5 / 16° peeked open), then X +28° on the
+  back, −30° on the front (half for peeked open). Shading gradients black 0 → 0.36 (back, 0,0 → 0.6,1, opacity 0.2
+  closed / 1 open) and 0 → 0.15 (front, 0.1,0 → 0.9,1, 0 / 1). No animation of its own: the state change runs in a
+  CATransaction with actions on, so Core Animation's implicit 0.25 s (recorded: 50% at ~95 ms, 90% at ~165 ms in Arc;
+  ~105 / ~175 ms in Cra). Colours come from outside (`ColorSpec`): on one
+  gold theme the back was #E9B300, the front #FCEDBC and every edge black at ~26%; how the back colour follows the
+  theme was not worked out, so Cra keeps its measured outline over cream. Cra: FolderGlyphView.
 - [O] Sidebar glyphs (29 Oct, 1x and 2x captures, fitted pixel by pixel): the tab row's hover ✕ is two 2 pt
   round-capped strokes 4.25 pt out from a centre on a whole point, white 0.6 over the hover fill; at 1x it is
   perfectly symmetric (176/142/85), which no SF Symbol size reproduces (xmark 13.5 bold is closest at 2x but
@@ -121,8 +150,8 @@ Legend: [O] observed in shipped artifact or data file, [I] inference, [U] unknow
 - [O] Sidebar 328pt wide. Row 1: traffic lights, sidebar toggle right after them (~93pt), nav ← → ↻ right-aligned when a
   tab is selected and the toolbar shows the URL; with no tab the nav moves into the toolbar and the toolbar shows a
   centered "Search or Enter URL…". Favorites: 4 tiles, ~44pt tall, active tile gets a dashed outline. Space header: emoji +
-  name, 13pt semibold (re-fitted 1 Nov), secondary color. Rows 40pt pitch, 14pt titles, 16pt favicons, custom-titled/navigated pinned tabs show
-  the host as an 11pt second line, folders use a blue folder glyph, nested rows indent ~18pt. Bottom row: library icon
+  name, 13pt semibold (re-fitted 1 Nov), secondary color. Rows 40pt pitch, 14pt titles, 16pt favicons, a site in developer mode shows its host
+  as an 11pt second line (see "A pinned tab away from its page"), folders use a blue folder glyph, nested rows indent 16 pt (measured 3 Nov, #139). Bottom row: library icon
   left, tiny space emoji centered (inactive dimmed), + right.
 - [O] Content: rounded card inset ~8-10pt with the toolbar strip (42pt: lock + monospaced URL, copy link, extensions,
   capture, DevTools, sidebar toggle) on top; no card at all when no tab is selected.
@@ -210,9 +239,9 @@ keyboard-focus indicator, shown on a tab chosen without the mouse, never on clic
 Re-measured 29 Oct (issue #12, ScreenCaptureKit frames every ~60 ms): an AppleScript select
 of a tab in another space switched the space and drew the ring ~0.4 s later, still there
 2.5 s on; a select within the shown space drew none. Cra rings only a tab switcher pick
-that changed space; next/previous tab and ⌘1–9 stay in the space and show no ring. Host subtitles under pinned
-tabs appear only when the tab left the pinned host (Phantom at /signin shows none); the
-"Ahrefs / ahrefs.com" row in Arc stays unexplained (same host, same URL, loaded).
+that changed space; next/previous tab and ⌘1–9 stay in the space and show no ring. Host subtitles: wrongly read
+here as "a pinned tab that left its host"; Arc's code (3 Nov, #139) shows the host only for a site in
+developer mode, and ahrefs.com is in Victor's StorableDeveloperModeState.json.
 
 ### DevTools docking (CEF 154 note)
 
@@ -624,6 +653,19 @@ Chrome's own window ignores the pointer and has `preventKeyWindow` set (2 Nov): 
 resize band outside its frame that the overlay doesn't cover, and once key (a drag on that band, or
 AppKit picking it when a click activates Cra) Chrome shows its ±10 s controls on focus and on every
 mouse move, under Cra's ±15 s ones.
+Pressing the overlay (3 Nov, #134, `PictureInPictureGesture` in CraCore): the buttons take clicks
+whether or not the controls are faded in, a press moves or resizes only past 3 pt of travel (a click
+on play used to nudge the window by its drift), edges are 8 pt deep with 16 pt corners like
+Chromium's, and a resize keeps the opposite edge or corner where it was (the vertical anchors were
+inverted, so the top edge stayed put while the bottom was dragged). The cursor comes from a tracking
+area over the same zones (cursor rects only work in a key window, and the overlay never is one), and
+while the pointer is over the window Cra sets "SetsCursorInBackground" on its WindowServer
+connection, so the resize cursors show with another app in front too (verified with `screencapture
+-C` over each edge and corner, Finder in front and Cra in front). A press with Cra in the background
+already reached the overlay (it activates Cra and acceptsFirstMouse lets it through); without the
+cursor it only looked dead. Drags are measured from each
+event's own screen location; `cra.log` gets `pip: move`, `pip: resize <edge> from W×H`, `pip: resized
+<edge> W×H → W×H` (with "asked" when Chromium kept another size) and `pip: overlay has no parent window`.
 One residual difference: Chrome paints its origin strip ("File on your device", top gradient)
 inside the compositor layer for about two seconds when the window first appears (present at
 1.5 s, gone at 2.5 s in quarter-second captures); it is drawn whether or not the window is
@@ -970,6 +1012,80 @@ of the sidebar strip, pixel runs at x=500 px (2x), y = 160/700/1200/1700/2100.
   state; record `screencapture -V` instead. AX `AXScroll*ByPage` on Arc's list scrolled the drawing out of
   step with the hit-testing, so later clicks landed on other rows. In Cra, `cliclick c:` is too fast for
   the row's SwiftUI tap; `dd: w:80 du:` selects.
+
+### A pinned tab away from its page (Arc 1.171, 3 Nov 2026, GitHub #139, field metadata + disassembly)
+- [O static] `TabCellView` has no reset button. Its fields include `iconContainerView`, `_slashView`,
+  `_regionHoverState: RegionHoverState<BackgroundRegion>?` (region `icon | body`, plus modifier flags) and
+  `_hoverSubtitleState: HoverSubtitleState?` (`reset | resetAndSeparate`, strings "Back to Pinned URL" and
+  "Separate From Pinned Tab"). `TabCellState` carries `canResetTab`, `resetTabTitle`, `resetTabIcon` and
+  `resetItemShortcut`, so Arc keeps the pinned page's own name and icon next to the current page's.
+- [O static] `ARCUI.SlashView`: a 4 × 15 pt view, stroked from (1, 1) to (w − 1, h − 1) with a 2 pt line and
+  round caps, in the `TabCellSlash` asset (black 30 % light, white 30 % dark, P3), with 4 pt after it.
+  [O reporter, 2x screenshot] Favicon, 4 pt, the slash, 5 pt, the name (13 pt after the favicon, not 11).
+- [I] Hovering the icon region shows "Back to Pinned URL" as the subtitle, and a click there resets the tab.
+  Not checked live: which modifier picks `resetAndSeparate`, and whether the icon region gets its own hover fill
+  (`_regionalBackgroundView`).
+- [O static] `SidebarUI.TabHighlightState`: `developerTab | tabCapturing | syncedTab`, drawn by
+  `TabHighlightView` (in `CellSelectionStateView`). It has two 2 pt layers on the bounds inset by 1 pt with a radius
+  of 11. For `developerTab` they are systemYellow under black dashes at 80 % opacity, and each dash is the
+  perimeter ÷ 60 / 80 / 100 (width < 210 / < 346 / larger). `tabCapturing` is solid yellow, `syncedTab` is
+  rgb(0.901, 0.631, 0.827).
+- [O static] `TabCellState.subtitle` (built in `TabCellState.init`, first match wins): the host (+ `:port`)
+  when developer mode is on for the page; "Double-click to rename" for the rename-hint item; a GitHub live
+  folder item's subtitle; else none. `titleSourceInfo` and leaving the pinned URL never set it. Victor's
+  "Ahrefs" row shows ahrefs.com because ahrefs.com is in `StorableDeveloperModeState.json`.
+- [O reporter, 2x screenshots] Nested rows: Arc's fill starts after the indent (24 pt for depth 1 against 5 pt
+  at the top level), so a folder's gutter stays empty.
+- Cra (TabRowView): the slash replaces the trailing ↩ button, and the icon region (the fill's edge to just past the
+  slash) shows the hover subtitle and resets on click. `TabData.homeTitle` keeps the pinned page's title, and
+  going back restores that title and the home's favicon key. The developer ring is `FocusRingLayer(developer:)` on
+  the open tab. Each row's fill starts `depth × 18` pt in (23 pt against Arc's 24). The capturing and synced
+  rings are not built.
+
+### Closing and pinned tabs, recorded (Arc 1.171, 3 Nov 2026, GitHub #139)
+Offline Arc on a fake home (scratch tools: fake-home generator, `sandbox-exec` allowing only loopback, pages on
+`pin.lvh.me` / `away.lvh.me` / `dev.lvh.me` port 47139 served locally; `localhost` is developer mode by itself,
+so test pages must not use it). Live HID clicks and hovers at 1x, plus a static pass over TabCellState.
+- [O live] Close button per row, shown only while the row is hovered (24 pt square, hover square GrayA4,
+  radius 6, 6 pt before the fill's right end; glyph two 14 × 2 pt bars, crossed or flat):
+
+  | Row | Glyph | Tooltip | Click |
+  |---|---|---|---|
+  | Pinned, open | minus | Close and Keep Pinned ⌘W | unloads, back to its pinned page (name and icon too), the tab before it opens |
+  | Pinned, background, away from its page | minus | Close and Keep Pinned | back to its pinned page, unloads; selection stays |
+  | Pinned, background, on its page (loaded or not) | ✕ | Archive this tab | archived out of the pinned section |
+  | Pinned, shown under a closed folder [O static] | minus | Close and Keep Pinned | as above |
+  | Today, open | ✕ | Archive this tab ⌘W | archived; the tab below opens |
+  | Today, background (loaded or not) | ✕ | Archive this tab | archived |
+  | Picked with others | its own button | singular tooltip | acts on that row only |
+  | Favorite tile | none | — | ⌘W deselects it, the tab before it opens |
+  | Pinned split, open | one minus at the row's end | Close this item ⌘W | the whole split unloads, stays pinned |
+  | Pinned split, background | one ✕ at the row's end | Archive this item | the whole split is archived |
+  | Today split, open | an ✕ inside every pane | Archive this item | that pane is archived, the split becomes a tab |
+  | Today split, background | one ✕ at the row's end | Archive this item | the whole split is archived |
+
+- [O live] ⌘W on several picked tabs closes them all; [O static] a Today tab among them archives every one,
+  otherwise they all deselect. The ⌘W keycaps only show on the open row's tooltip.
+- [O live] Split cells: 4 pt inside the fill, 4 pt apart, each favicon 6 pt into its cell. An open split draws
+  each pane as a 28 pt pill (4 pt inset top and bottom, radius ~6, 224 on the 241 fill, light theme); a hovered
+  pinned split shortens its last pill to end 5 pt before the minus.
+- [O live] A pinned tab away from its page: current favicon, slash, current title, nothing under it. Its hover
+  splits in two: the icon region (a 36 pt rounded square at the fill's left) and the body (the fill from 30 pt
+  in to its end). On the icon: the pinned page's favicon (resetTabIcon) replaces the icon, the slash and the close
+  button hide, "Back to Pinned URL" shows under the title; with ⌘ held, the current favicon and "Separate From
+  Pinned Tab". On the body of a background row: its own fill, the slash hides, the button shows. On the open row
+  the icon square darkens over the white fill (241 → 230), left corners round, right edge straight.
+  Click on the icon: the tab goes back to its pinned page (a navigation: Back works) and opens. ⌘-click: the
+  current page moves to a new Today tab at the top of Today, the pinned tab goes back and stays open.
+- [O live] A typed address (⌘L, Enter) on a pinned tab: another host opens a new Today tab (pin.lvh.me →
+  away.lvh.me did, so it is the host, not the site), the same host stays in the pinned tab. A same-host link
+  stays; another host's link opens Peek, with the peeked page's favicon as a badge on the pinned row.
+- [O live] ⌘W on an open Today split archives only the focused pane (the other becomes a tab). ⌘-click picks a
+  tab without opening it; the open tab is part of the selection, so ⌘W takes it too.
+- [O live] Developer mode: the host and port under the title on every row of that site, the dashed ring only
+  on the open one. Nested rows indent 16 pt (favicon 26 → 42, text 45 → 61) and their fill starts after it.
+- [O live, 100 fps] The minus makes the row jump to scale 0.9 at once and spring back to 1 in ~0.24 s without
+  overshoot (left edge 10 px in at 1x, back by 1.11 s): a critically damped spring, ω ≈ 14 (stiffness 196, damping 28).
 
 ### Backdrop-layer blur for light vibrant themes (25 Oct 2026, final)
 
@@ -1861,6 +1977,19 @@ Theme palettes in a hand-built space can be borrowed; only the `background` styl
   build in none of 3 (other sessions' windows moved between runs, so take that as a hint). Not seen here: the
   sharp sidebar on activation from Mission Control, Finder or a fullscreen Space (1x displays).
   `screencapture` stills are no use for this: they disagreed with recordings of the same state.
+- [O] Follow-up (3 Nov 2026, issue #132: on another Mac the fullscreen solid sidebar rested ~60 levels darker than
+  Arc in the same space). NSVisualEffectView's hudWindow tree, dumped from a probe: windowed active = backdrop
+  (sdrNormalize, gaussianBlur 30, colorSaturate 1.6, `scale` 0.125, `substituteColor` nil: the window server picks
+  the substitute) + fill + tone + the `CAChameleonLayer` at opacity 0.05; fullscreen = the backdrop REMOVED from
+  the tree, the chameleon first at opacity 1 with `[sdrNormalize, colorSaturate 1.6]` and no blur. CAChameleonLayer
+  has no properties of its own. Cra's tint was bare (no filters) and its blur only hidden. On this Mac's SDR
+  displays a bare chameleon already resolves the wallpaper (194/166/146; with the filters 209/163/131) and a hidden
+  blur beside it changes nothing, so the dark rest did not reproduce; the filters are the one difference left
+  against Arc's layer, and `sdrNormalize` is the EDR-display step. Cra now builds the tint with those filters and
+  keeps only the layer it draws from in the tree, like AppKit (none while inactive, under the opaque fill).
+  CloudDev (#F25E6B, 0.8) fullscreen, stills: 214/116/119 before, 217/114/117 after (Arc on #132's Mac 210/110/117).
+  A Space swipe reads the inactive value until the app is active again, then steps in one frame, as AppKit's
+  material does (`followsWindowActiveState`).
 - [O] Tab list scroller: AppKit overlay scroller (AXScrollBar, 17 pt track) shown while scrolling, then faded;
   the knob is 4 pt wide, 3 pt in from the sidebar edge, white 49 % on a dark theme, no track. Cra:
   `SidebarScroller`, 10 pt wide so it stays in the gutter right of the rows (knob on Arc's exact columns).
@@ -2274,6 +2403,15 @@ was frontmost, 1x region captures and 100 fps recordings; test tabs archived aft
   what is in effect at launch and after each change (`secure dns: automatic, no provider (system resolver)`, `secure
   via dns.google`, `off`), and Export Diagnostics' summary has a `Secure DNS:` line (`SecureDNS` in CraCore, hosts
   only).
+- Cra (3 Nov 2026, issue #133, a deviation: Arc and Dia have no such row): Settings ▸ Privacy ▸ Connections has a Secure
+  DNS menu under "Always use secure connections": Automatic (the default), Off, Google, Cloudflare, Quad9, OpenDNS,
+  CleanBrowsing (Family Filter), DNS4EU (Protective), Custom…. It reads and writes the same two Local State prefs as
+  chrome://settings/security (`SecureDNSPrefs`, `SecureDNSProvider` in CraCore; `setSecureDNSMode:templates:` in
+  CraCEF), so settings.json keeps no copy, a fresh install still has no `dns_over_https` key, and a choice made on
+  either page shows on the other at once. The write is live: a net log shows `secure_dns_mode` 1 → 2 and DoH queries
+  to dns.google with no relaunch. Custom takes whitespace-separated `https://` templates with a host, path kept as
+  typed (NextDNS ids). The footnote is `SecureDNS.summary`, built from the same value as the log line. A
+  DnsOverHttps* policy makes the menu read-only.
 
 ## Shift + wheel switches spaces (Arc 1.171, 2 Nov 2026, issue #93, live Arc, HID wheel events)
 
@@ -2349,6 +2487,33 @@ tap with a real Shift key held around them; the space read from each window's `s
   reset the URL loader factories. Cra logs the winner and the overridden ones per profile when they change, and
   Export Diagnostics' summary.txt has a "Proxy:" section.
 
+## Importing Arc's profiles (3 Nov 2026, issue #131, reporter's Arc: seven spaces on six profiles)
+
+- [O static] Each space in StorableSidebar.json names its Chromium profile: `profile` is `{"default": true}` or
+  `{"custom": {"_0": {"directoryBasename": "Profile 2", "machineID": …}}}`. The folder's name in Arc's space
+  menu is `User Data/Local State` → `profile.info_cache[<folder>].name`. Each profile keeps its own cookies, logins,
+  `extensions.settings` and `extensions.pinned_extensions`.
+- Cra's import makes one Cra profile per Arc profile besides Default (reusing a Cra profile of the same name) and
+  puts the spaces on it. Each Arc profile's cookies and passwords are staged for the Cra profile its spaces landed
+  on. A Cra profile Chromium has not opened yet gets Cookies and Login Data with Default's schema and meta rows
+  before Chromium starts, so the first page is signed in. Arc's pins become that profile's list. An Arc profile no
+  imported space uses goes to Default, as everything did before.
+- `--load-extension` installs in every profile (`ExtensionService::Init` runs it per profile, and command-line
+  installs are never restored from prefs). `extension-profiles.patch` (CEF codecs9) adds
+  `--cra-load-extension-profiles`: for each `--load-extension` path, in order, the profile folders that load it
+  ("Default|Profile <id>") or `*`. An imported extension loads only in the Cra profiles of the Arc profiles that
+  had it turned on (extension-profiles.json); one every profile had, or one from an import that bound no profiles,
+  still loads everywhere. CDP's `Extensions.loadUnpacked`/`uninstall` only reach the default profile, and a
+  hand-written `extensions.settings` entry fails Secure Preferences' MAC check, so neither could do this.
+- Checked on a test copy with a three-profile fake Arc: each space's page read its own profile's cookie, Chromium's
+  per-profile prefs held exactly the probes that profile was given, and the toolbar and Extensions menu differed per
+  space as in Arc.
+- Installs imported before this: Settings ▸ Profiles ▸ Rebuild from Arc… (also the command bar's "Rebuild Profiles
+  from Arc…"). It moves spaces still on Default onto their Arc space's profile, matched by name (a name Arc or Cra
+  uses twice is skipped), stages those Arc profiles' sign-ins (or, if the Keychain refuses, moves them signed out
+  after asking), scopes the extensions the old import left loading everywhere (profiles made in Cra keep them),
+  seeds the pins and restarts. Sign-ins made in Cra since the import stay with Default.
+
 ## The tab shown after ⌘W (Arc 1.171, 2 Nov 2026, issue #105, offline Arc driven through its menus)
 Offline Arc as in "One space": one space with pinned S and P2 and Today C, B, A, D (A, B, C saved with
 `activeTabBeforeCreationID` and `referrerID` = S, unread), the selected tab and the window's
@@ -2382,3 +2547,22 @@ doesn't pick a tab, and the selection saved in StorableWindows.json wasn't alway
 - Cra: CloseSuccessor (CraCore) with SidebarStore's per-window `previousTab` (not saved; set in `updateWindow`
   whenever what the window shows changes) and `hasPage` (a window's browser manager has the page). A tab put to sleep has no page, like Arc's unloaded tabs.
   `activeTabBeforeCreationID` is still saved and imported but no longer picks the next tab.
+
+## The loading bar above the card (Arc 1.171, 2 Nov 2026, PR #130, Kevin McKelvin's 60 fps recordings)
+Measured frame by frame by Kevin McKelvin from screen recordings of Arc (1.4 px per pt), against a local server
+that waits 3 s before answering and then serves a page whose image takes 5 s.
+- [O] A 4 pt bar, centred over the card in the margin above it.
+- [O] Waiting (the request is out, nothing committed): a 48 pt pill at 75 % white fades in over 0.7 s, out over
+  0.65 s and stays off for 0.25 s (a 1.6 s cycle).
+- [O] Loading (the main frame committed): the pill widens to a 130 pt track at 18 % white in about 0.35 s. A 76 %
+  white segment sweeps it every 1.12 s: its head runs left to right in 0.37 s, then its tail, then the track
+  stays empty for the rest of the cycle. Both edges move at a steady speed.
+- [O] Done: the whole track lights up, then shrinks toward the middle (to about 75 pt) and fades in 0.3 s.
+- [O] It moves whatever Reduce Motion says.
+- [?] Not measured: a navigation started while the last page is still loading. Cra goes back to the waiting pill
+  until the new page commits, as Chromium treats it as a new navigation.
+- Cra: LoadingIndicator (CraCore) has the numbers and the phase rule. CraBrowser.hasCommittedLoad is NO from each
+  main-frame navigation (OnBeforeBrowse, not redirects) until OnLoadStart. LoadingIndicatorView draws it with Core
+  Animation; a tab coming to the front shows its own state at once, without the widening or the finish. With no
+  margin (edge to edge, fullscreen) there is no bar; on light themes it is black at the same opacities. It slides
+  with the card when the sidebar hides or shows.

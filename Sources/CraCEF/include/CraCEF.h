@@ -74,7 +74,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 - (BOOL)browser:(CraBrowser *)browser handleUnhandledKeyEvent:(NSEvent *)event;
 - (void)browser:(CraBrowser *)browser didUpdateDownload:(CraDownloadInfo *)download;
 /// Ask the user. `kinds` is a bitmask: 1 = camera, 2 = microphone,
-/// 4 = location, 8 = notifications, 16 = other.
+/// 4 = location, 8 = notifications, 16 = a type CraCEF has no bit for, and from
+/// 1 << 5 Chrome's other types (kPermissionKinds in CraCEF.mm, worded by CraCore's
+/// PermissionPrompt).
 - (void)browser:(CraBrowser *)browser requestsPermissionForOrigin:(NSString *)origin kinds:(NSUInteger)kinds completion:(void (^)(BOOL allowed))completion;
 - (void)browserDidReceiveFocus:(CraBrowser *)browser;
 - (void)browserDidClose:(CraBrowser *)browser;
@@ -96,16 +98,22 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 - (void)browser:(CraBrowser *)browser didChangeMediaCapture:(BOOL)capturing;
 /// The page started or stopped playing sound (see `isAudible`).
 - (void)browser:(CraBrowser *)browser didChangeAudible:(BOOL)audible;
+/// `hasCommittedLoad` changed: the main frame committed, or a new navigation started.
+- (void)browser:(CraBrowser *)browser didChangeCommittedLoad:(BOOL)committed;
 /// The page's main-frame load failed with a net error (ERR_ABORTED, a navigation cut off,
 /// is left out): `url` is the address that failed.
 - (void)browser:(CraBrowser *)browser didFailLoadingURL:(NSString *)url errorCode:(NSInteger)errorCode;
 /// An extension asked to bring this page's tab to the front (chrome.tabs.update with
-/// active: true; scripts/cef-patches/extension-tab-activate.patch).
-- (void)browserRequestsActivation:(CraBrowser *)browser;
+/// active: true; scripts/cef-patches/extension-tab-activate.patch), or with byPage the page
+/// did (window.focus(), or clients.focus() from a notification click; page-activate.patch).
+- (void)browserRequestsActivation:(CraBrowser *)browser byPage:(BOOL)byPage;
 /// Arc's Peek: a link the user clicked (`shiftClick` NO: before it navigates the page or
 /// opens as a target=_blank tab) or Shift-clicked (YES, instead of a new window). Return
 /// YES to show it in a Peek; the page then stays where it is.
 - (BOOL)browser:(CraBrowser *)browser opensPeekForURL:(NSString *)url shiftClick:(BOOL)shiftClick;
+/// The DevTools frontend shows `panel` ("elements", "console", "network", …): on load, and
+/// on every switch, from Cra or the frontend's own tab bar.
+- (void)browser:(CraBrowser *)browser devToolsShowsPanel:(NSString *)panel;
 @end
 
 @interface CraBrowser : NSObject
@@ -120,6 +128,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 @property (nonatomic, readonly, copy) NSString *currentURL;
 @property (nonatomic, readonly, copy) NSString *currentTitle;
 @property (nonatomic, readonly) BOOL isLoading;
+/// NO from the start of a main-frame navigation until it commits (the server answered and the
+/// new page began to load), YES after.
+@property (nonatomic, readonly) BOOL hasCommittedLoad;
 @property (nonatomic, readonly) BOOL canGoBack;
 @property (nonatomic, readonly) BOOL canGoForward;
 @property (nonatomic, readonly) BOOL isCreated;
@@ -158,6 +169,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// panel to select ("console", "network", "elements"), or "inspect" for the element picker. Done
 /// once the frontend is up (at once when DevTools are already open), then cleared.
 @property (nonatomic, copy, nullable) NSString *devToolsAction;
+/// Does devToolsAction in DevTools already open, without showing them again; a frontend
+/// still loading does it once up.
+- (void)applyDevToolsAction;
 - (void)closeDevTools;
 - (double)zoomLevel;
 - (void)setZoomLevel:(double)level;
@@ -238,6 +252,11 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// before Chromium is ready and once quitting starts.
 + (nullable NSString *)secureDNSMode;
 + (nullable NSString *)secureDNSTemplates;
+/// Writes both, as chrome://settings/security does; Chromium's network service picks the
+/// change up at once. NO when Chromium isn't ready, a policy sets them, or a write fails.
++ (BOOL)setSecureDNSMode:(NSString *)mode templates:(NSString *)templates;
+/// A policy (DnsOverHttpsMode, DnsOverHttpsTemplates) sets secure DNS, so Settings can't.
++ (BOOL)secureDNSIsManaged;
 /// Called on the main queue once Chromium is ready (at once if it already is) and after the
 /// secure DNS setting changes.
 + (void)setSecureDNSChangeHandler:(nullable void (^)(void))handler;
@@ -250,6 +269,10 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 + (NSInteger)blockedDomainCount;
 /// The blocking decision for a request made by a page, for diagnostics and tests.
 + (BOOL)shouldBlockRequestURL:(NSString *)requestURL onPageURL:(NSString *)pageURL;
+/// Unpacked extension folders to load with --load-extension, set before initializing, and
+/// for each in the same order the profile folders that load it ("Default|Profile <id>", "*"
+/// for every profile), comma-separated; nil when every one loads in every profile.
++ (void)setExtensionPaths:(NSArray<NSString *> *)paths profiles:(nullable NSString *)profiles;
 + (BOOL)initializeWithCachePath:(NSString *)cachePath
                  userAgentProduct:(NSString *)product
                           logPath:(NSString *)logPath
@@ -308,6 +331,13 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// Default), as JSON. Chromium writes it to Preferences ~10 s after a change. nil until
 /// that profile has loaded.
 + (nullable NSString *)extensionSettingsForProfile:(nullable NSString *)profilePath;
+/// A profile's pref as Chromium holds it now (nil profilePath is Default), as JSON: how Cra reads
+/// `default_search_provider_data.template_url_data`, the engine chrome://settings/searchEngines
+/// made the default. nil until that profile has loaded.
++ (nullable NSString *)preference:(NSString *)name forProfile:(nullable NSString *)profilePath;
+/// Sets a profile's pref to a JSON value, as chrome://settings would. NO when the profile hasn't
+/// loaded, a policy holds the pref, or the value isn't one it takes.
++ (BOOL)setPreference:(NSString *)name json:(NSString *)json forProfile:(nullable NSString *)profilePath;
 /// Called on the main queue after a loaded profile's `extensions.settings` changed: an
 /// extension installed, enabled, disabled or removed.
 + (void)setExtensionSettingsChangeHandler:(nullable void (^)(void))handler;

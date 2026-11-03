@@ -381,7 +381,7 @@ final class BrowserWindow {
         }
         guard let s else {
             if typed.isEmpty { return }
-            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed))
+            open(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : engine.searchURL(typed))
             return
         }
         switch s.kind {
@@ -393,7 +393,7 @@ final class BrowserWindow {
         case .navigate:
             open(typed == query ? (s.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed))
         case .search:
-            open(s.url ?? store.settings.searchEngine.searchURL(typed))
+            open(s.url ?? engine.searchURL(typed))
         case .history, .topDomain:
             open(s.url ?? "")
         case .command(let id):
@@ -414,11 +414,11 @@ final class BrowserWindow {
         let url: String?
         switch s?.kind {
         case nil:
-            url = typed.isEmpty ? nil : SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : store.settings.searchEngine.searchURL(typed)
+            url = typed.isEmpty ? nil : SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : engine.searchURL(typed)
         case .navigate?:
             url = typed == query ? (s?.url ?? SuggestionEngine.urlFromInput(typed)) : SuggestionEngine.urlFromInput(typed)
         case .search?:
-            url = s?.url ?? store.settings.searchEngine.searchURL(typed)
+            url = s?.url ?? engine.searchURL(typed)
         case .switchToTab?, .archived?, .history?, .topDomain?:
             url = s?.url
         default:
