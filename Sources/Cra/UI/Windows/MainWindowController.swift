@@ -550,28 +550,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     /// good. A row that hasn't heard from Chromium for a while reads the file instead:
     /// gone means it ended, the full size with no .crdownload beside it means it's done.
     private func checkStalledDownloads() {
-        let inProgress = DownloadHistory.shared.live.filter { $0.running && windowDownloads.contains($0.id) }
-        guard !inProgress.isEmpty else {
+        guard DownloadHistory.shared.isRunning(anyOf: windowDownloads) else {
             downloadWatchdog?.invalidate()
             downloadWatchdog = nil
             return
         }
         let fm = FileManager.default
-        for t in inProgress where !t.path.isEmpty && Date().timeIntervalSince(t.updated) > 5 {
-            guard !fm.fileExists(atPath: t.path + ".crdownload") else { continue }
-            let size = (try? fm.attributesOfItem(atPath: t.path))?[.size] as? Int64
-            let state: CraDownloadState
-            if size == nil { state = .cancelled }
-            else if let size, t.total > 0, size >= t.total { state = .complete }
-            else { continue }
+        let settled = DownloadHistory.shared.settledStalled(among: windowDownloads, now: Date(),
+                                                            fileSize: { (try? fm.attributesOfItem(atPath: $0))?[.size] as? Int64 },
+                                                            partialExists: { fm.fileExists(atPath: $0 + ".crdownload") })
+        for (t, outcome) in settled {
             let info = CraDownloadInfo()
             info.identifier = t.id
             info.fullPath = t.path
             info.suggestedName = t.name
             info.totalBytes = t.total
-            info.receivedBytes = size ?? 0
-            info.percent = state == .complete ? 100 : t.percent
-            info.state = state
+            switch outcome {
+            case .complete(let size):
+                info.receivedBytes = size
+                info.percent = 100
+                info.state = .complete
+            case .cancelled:
+                info.receivedBytes = 0
+                info.percent = t.percent
+                info.state = .cancelled
+            }
             browserManager(download: info)
         }
     }

@@ -126,8 +126,8 @@ final class FindBarView: NSView, NSTextFieldDelegate {
         // Like SwiftUI's .onChange on the query: every change, typed or set, searches.
         if visible, query != lastQuery { onFind(query, true) }
         lastQuery = query
-        if let matches, !query.isEmpty {
-            count.stringValue = "\(matches == 0 ? 0 : active)/\(matches)"
+        if let label = FindInPage.countLabel(query: query, matches: matches, active: active) {
+            count.stringValue = label
             count.isHidden = !visible
         } else {
             count.stringValue = ""
