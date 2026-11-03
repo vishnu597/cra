@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// The store, clock and flags; built the same way by the test hosts.
     let composition = AppComposition()
     var store: SidebarStore { composition.store }
-    let bindings = KeyBindingRegistry()
+    let bindings = KeyBindingRegistry.shared
     let favicons = FaviconCache()
     lazy var engine = SuggestionEngine(store: store, bindings: bindings)
 
@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         "nextTab", "previousTab", "recentTab", "recentTabBackward", "nextSpace", "previousSpace", "devTools", "jsConsole", "inspectElement",
         "viewArchive", "openLibrary", "settings", "clearToday", "newLittleWindow", "promoteLittleWindow",
         "addSplitView", "closeSplitPane",
-    ] + (1...9).flatMap { ["item\($0)", "space\($0)"] })
+    ] + (1...9).flatMap { ["item\($0)", "space\($0)", "moveTabToSpace\($0)"] })
 
     // MARK: Lifecycle
 
@@ -44,12 +44,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         bootstrapped = true
         NSApp.setActivationPolicy(.regular)
         installURLEventHandler()
+        PerfCEF.install(app: self)
         CraCEFRuntime.setChromeHosting(store.settings.chromeEngine)
         CraCEFRuntime.setOwnContextMenus(EmbeddedPages.isEnabled)
         CraCEFRuntime.setDocumentStartScript(PageScript.mainWorld, isolatedScript: PageScript.isolatedWorld, world: PageScript.world)
         startContentBlocking()
         SoftwareUpdater.shared.start(app: self)
         buildMenus()
+        store.hasPage = { [unowned self] in self.runtime(for: $0) != nil }
         NotificationCenter.default.addObserver(forName: .craKeyBindingsChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.buildMenus() }
         }
@@ -76,6 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSApp.activate(ignoringOtherApps: true)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.installURLEventHandler() }
+        // The Site Control Center's Share would otherwise pay for finding the share extensions.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { SharePicker.warmUp() }
         // Extension welcome pages and chrome.tabs.create land in Cra, not in a Chrome window.
         // --load-extension extensions count as freshly installed on every launch, so their
         // onInstalled welcome pages come back each time: right after launch, drop them unless
@@ -86,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let installed = ExtensionStore.shared.entries.map(\.extensionID)
         let hasNewExtension = !Set(installed).isSubset(of: welcomed)
         try? JSONEncoder().encode(installed.sorted()).write(to: welcomedFile, options: .atomic)
-        CraCEFRuntime.setStrayPageHandler { [weak self] url in
+        CraCEFRuntime.setStrayPageHandler { [weak self] url, profile in
             Task { @MainActor in
                 guard let self else { return }
                 if Date().timeIntervalSince(launchedAt) < 10,
@@ -94,9 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     NSLog("Cra: dropped start-up page from an extension: %@", url)
                     return
                 }
-                self.useNormalWindow()
-                self.openExtensionPage(url)
-                self.main.showWindow(nil)
+                // The window in use, and a space on the profile whose extension asked (#107).
+                let window = self.useNormalWindow()
+                self.openExtensionPage(url, window: window.windowID, profile: profile)
+                window.showWindow(nil)
             }
         }
         CraCEFRuntime.setRelaunchHandler { [weak self] urls in
@@ -111,11 +116,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let urls = pendingURLs
         pendingURLs = []
         for u in urls { openExternalURL(u) }
+        Perf.phase("windowsShown")
     }
 
     /// A fresh install runs Dia's onboarding (cover, default browser, privacy,
     /// import, pinned tabs, personalization, outro).
-    private var needsOnboarding: Bool {
+    var needsOnboarding: Bool {
         !store.settings.hasSeenImportPrompt && store.allTabs().count <= 2
     }
 
@@ -158,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         observeContentBlocking()
         observeHttpsOnly()
+        logSecureDNS()
     }
 
     /// A sidebar whose links disagree (SidebarIntegrity) says so in the log, one fault a problem.
@@ -174,6 +181,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Settings > Privacy > "Always use secure connections", live like content blocking.
     private func observeHttpsOnly() {
         observeChanges(of: { [store] in store.settings.httpsOnly }, apply: CraCEFRuntime.setHttpsOnlyModeEnabled)
+    }
+
+    /// Chromium's secure DNS setting (chrome://settings/security), left on Chromium's default
+    /// like Arc: the log says what is in effect at launch and after each change (#110).
+    private func logSecureDNS() {
+        var last: String?
+        CraCEFRuntime.setSecureDNSChangeHandler {
+            guard let mode = CraCEFRuntime.secureDNSMode() else { return }
+            let line = SecureDNS(mode: mode, templates: CraCEFRuntime.secureDNSTemplates() ?? "").line
+            if line != last { last = line; CraLog.note("secure dns: " + line) }
+        }
     }
 
     private func observeContentBlocking() {
@@ -225,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// window_dialog_sheet_visible, active tabs). Little Windows go to the Library on quit,
     /// so an open one waits too.
     func autoUpdateBlocker() -> String? {
-        if mainWindows.contains(where: { $0.overlay.toasts.contains { $0.state == CraDownloadState.inProgress.rawValue } }) { return "a download is in progress" }
+        if DownloadHistory.shared.hasRunningDownloads { return "a download is in progress" }
         if NSApp.modalWindow != nil || NSApp.windows.contains(where: { $0.isVisible && $0.attachedSheet != nil }) { return "a dialog is open" }
         if !littleWindows.isEmpty { return "a Little Window is open" }
         if PictureInPictureChrome.shared.isPlaying { return "Picture in Picture is playing" }
@@ -281,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     guard let self, var w = note.object as? NSWindow else { return }
                     while let parent = w.parent { w = parent }
                     if let c = self.mainWindows.first(where: { $0.window === w }) { self.store.activeWindowID = c.windowID }
+                    self.littleWindows.first { $0.window === w }?.refreshTarget()
                 }
             }
         }
@@ -288,13 +307,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// A page an extension opens as a tab. Its options page stays one tab, as in Chrome and
     /// Arc: opening it again selects the open one (GitHub #38).
-    func openExtensionPage(_ url: String, window: UUID? = nil) {
+    /// `profile` is the Chromium profile folder whose extension asked, nil for the focused page's.
+    func openExtensionPage(_ url: String, window: UUID, profile: String? = nil) {
+        // Extensions run in the normal profile, so Chrome opens their pages in a normal window:
+        // in an incognito one the page can't load (#107). Incognito is Default's off the record.
+        var window = window, profile = profile
+        if mainWindows.first(where: { $0.windowID == window })?.isIncognito == true {
+            let normal = useNormalWindow()
+            if !normal.isIncognito {
+                window = normal.windowID
+                profile = profile ?? "Default"
+                normal.showWindow(nil)
+            }
+        }
         let page = { (u: String) in u.split(separator: "#", maxSplits: 1).first.map(String.init) ?? u }
-        if ExtensionStore.shared.optionsPageOwner(url) != nil,
-           let open = store.allTabs().first(where: { $0.tab.map { page($0.url) == page(url) } == true && !store.isIncognito(item: $0.id) }) {
-            store.selectTab(open.id, window: window)
-        } else {
-            store.createTab(url: url, select: true, window: window)
+        let space = { (id: UUID) in ExtensionPagePlacement.Space(id: id, profile: self.store.profileDirectoryName(space: id)) }
+        let open = store.allTabs().compactMap { t -> (tab: UUID, space: UUID)? in
+            guard t.tab.map({ page($0.url) == page(url) }) == true, let sid = store.spaceID(ofItem: t.id) else { return nil }
+            return (t.id, sid)
+        }
+        let target = ExtensionPagePlacement.target(
+            focused: space(store.focusedSpaceID(window: window)),
+            spaces: store.orderedSpaces.filter { !store.isIncognito(space: $0.id) }.map { space($0.id) },
+            profile: profile, openTabs: open, singleton: ExtensionStore.shared.optionsPageOwner(url) != nil)
+        switch target {
+        case .select(let tab): store.selectTab(tab, window: window)
+        case .create(let sid): store.createTab(url: url, in: sid, select: true, window: window)
         }
     }
 
@@ -306,6 +344,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             ?? mainWindows.first(where: { !$0.isIncognito }) {
             store.activeWindowID = normal.windowID
         }
+        return main
+    }
+
+    /// The normal window a page sent to `spaceID` opens in (SpaceWindow): one already showing
+    /// the space, else the one in use last, which then switches to it.
+    @discardableResult
+    func useNormalWindow(forSpace spaceID: UUID) -> MainWindowController {
+        let last = useNormalWindow()
+        guard !last.isIncognito else { return last }
+        var seen = Set<UUID>()
+        let normal = NSApp.orderedWindows.compactMap { w in mainWindows.first { $0.window === w } }
+            .filter { !$0.isIncognito && seen.insert($0.windowID).inserted }
+            .map { (id: $0.windowID, space: store.focusedSpaceID(window: $0.windowID)) }
+        store.activeWindowID = SpaceWindow.window(for: spaceID, windows: normal, lastUsed: last.windowID)
         return main
     }
 
@@ -499,9 +551,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 TestGesture.scroll(by: g[0], steps: Int(g[1]), at: NSPoint(x: g[2], y: w.frame.height - g[3]), in: w)
                 return
             }
+            // menuAt=x,y (&button=right): the menu a click there opens, e.g. the ⌄ or a row's (#89).
+            if let g = dict["menuAt"]?.split(separator: ",").compactMap({ Double($0) }), g.count == 2, let w = main.window {
+                TestGesture.openMenu(at: NSPoint(x: g[0], y: w.frame.height - g[1]), in: w, right: dict["button"] == "right")
+                return
+            }
             if let st = dict["status"] { main.browserManager(statusMessage: st); return }
             // Scenario hooks (scripts/scenario.sh): what a journey needs without a pointer.
             if dict["checkStore"] != nil { logSidebarProblems(); return }
+            // A main-thread stall of this many milliseconds, for the performance recorder's tests.
+            if let ms = dict["stall"].flatMap(Double.init) { usleep(useconds_t(min(max(ms, 0), 30_000) * 1000)); return }
+            if let path = dict["perfReport"] {
+                PerfRecorder.shared?.snapshot { report in
+                    try? PerfReport.encoder().encode(report).write(to: URL(fileURLWithPath: path), options: .atomic)
+                }
+                return
+            }
             if let js = dict["pageJS"] { main.currentBrowser?.executeJavaScript(js); return }
             if let path = dict["installExtension"] {
                 do { try ExtensionStore.shared.add(folder: URL(fileURLWithPath: path, isDirectory: true)) } catch {
@@ -646,6 +711,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "addSplitView": return store.selectedTabID != nil
         case "editSpace", "deleteSpace", "nextSpace", "previousSpace", "manageSpaces": return !main.isIncognito
         case "closeLittleWindows": return !littleWindows.isEmpty
+        case let id? where id.hasPrefix("moveTabToSpace"):
+            guard let n = Int(id.dropFirst(14)), n >= 1, n <= store.spaceOrder.count else { return false }
+            if let little = keyLittleWindow { return little.hasPage }
+            return store.selectedTabID != nil && !main.isIncognito
         default: break
         }
         return true
@@ -781,12 +850,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "copyURL":
             if let url = current.flatMap({ store.item($0)?.tab?.url }) {
                 copy(url)
-                main.sidebarUI.flashStatus("Copied Current URL", symbol: "link")
+                main.showToast("Copied Current URL")
             }
         case "copyURLMarkdown":
             if let c = current, let it = store.item(c), let url = it.tab?.url {
                 copy("[\(it.displayTitle)](\(url))")
-                main.sidebarUI.flashStatus("Copied URL as Markdown", symbol: "link")
+                main.showToast("Copied URL as Markdown")
             }
         case "print": main.currentBrowser?.print()
         case "capturePage": main.capturePage()
@@ -805,10 +874,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "zoomOut": main.zoom(by: -0.5)
         case "resetZoom": main.currentBrowser?.setZoomLevel(0)
         case "viewSource": main.currentBrowser?.viewSource()
-        case "devTools", "jsConsole":
-            // Toggle, like Chrome: ⌥⌘I closes the dock when it is already open.
-            main.browsers.toggleDevTools()
-        case "inspectElement": main.browsers.showDevTools()
+        // Like Chrome: ⌥⌘I, ⌥⌘J and Network close the dock when it is already open.
+        case "devTools": main.browsers.runDevTools(.toggle)
+        case "jsConsole": main.browsers.runDevTools(.console)
+        case "networkPanel": main.browsers.runDevTools(.network)
+        case "inspectElement": main.browsers.runDevTools(.inspect)
         // Arc's Library is a mode of the window's sidebar; ⇧⌘J opens it on Downloads.
         case "openLibrary": main.toggleLibrary()
         case "viewArchive": main.showLibrary(.archive)
@@ -849,6 +919,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if n - 1 < tabs.count { store.selectTab(tabs[n - 1].id) }
             } else if id.hasPrefix("space"), let n = Int(id.dropFirst(5)) {
                 if n - 1 < store.spaceOrder.count { store.focusSpace(store.spaceOrder[n - 1]) }
+            } else if id.hasPrefix("moveTabToSpace"), let n = Int(id.dropFirst(14)) {
+                if let c = current, n - 1 < store.spaceOrder.count { store.moveTabAndFollow(c, toSpace: store.spaceOrder[n - 1]) }
             }
         }
     }
@@ -887,7 +959,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     _ = self.store.createTab(url: url, select: true)
                     self.settingsWindow?.close()
                     self.main.showWindow(nil)
-                })
+                },
+                exportDiagnostics: { [weak self] in self?.exportDiagnostics() })
             let c = SettingsWindowController(store: store, bindings: bindings, actions: actions)
             settingsController = c
             settingsWindow = c.window
@@ -902,10 +975,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let m = NSMenuItem(title: a.name, action: #selector(menuAction(_:)), keyEquivalent: "")
         m.representedObject = a.id
         m.target = self
-        if let s = a.primary {
-            m.keyEquivalent = s.key
-            m.keyEquivalentModifierMask = s.flags
-        }
+        m.showShortcut(of: id)
         return m
     }
 
@@ -991,6 +1061,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         spaces.addItem(item("editSpace")); spaces.addItem(item("deleteSpace")); spaces.addItem(item("manageSpaces"))
         spaces.addItem(.separator())
         for n in 1...9 { spaces.addItem(item("space\(n)")) }
+        spaces.addItem(.separator())
+        for n in 1...9 { spaces.addItem(item("moveTabToSpace\(n)")) }
         menubar.addItem(submenu: spaces, title: "Spaces")
 
         let tabs = NSMenu(title: "Tabs")

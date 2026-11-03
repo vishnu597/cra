@@ -1,0 +1,48 @@
+# The fork's own check (not for upstream): how far main has drifted from VictorKildahl/cra's
+# main, and whether upstream still merges in cleanly. Fails only on a conflicting merge, the
+# drift that has to be resolved by hand before the Windows port can be folded back.
+name: Upstream drift
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    if: github.repository != 'VictorKildahl/cra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare with upstream main
+        run: |
+          git remote add upstream https://github.com/VictorKildahl/cra.git
+          git fetch --quiet upstream main
+          read -r behind ahead < <(git rev-list --left-right --count upstream/main...HEAD)
+          {
+            echo "## Upstream drift"
+            echo
+            echo "main is **$behind** commits behind and **$ahead** ahead of VictorKildahl/cra main."
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$behind" -eq 0 ] && exit 0
+          echo "::warning::main is $behind commits behind upstream main"
+          git log --oneline HEAD..upstream/main | head -40 | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          git config user.name drift-check
+          git config user.email drift-check@users.noreply.github.com
+          if git merge --no-commit --no-ff upstream/main > /dev/null 2>&1; then
+            echo "Upstream merges in cleanly." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo
+              echo "Upstream does not merge cleanly. Conflicting files:"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::upstream main conflicts with the fork; sync it by hand"
+            exit 1
+          fi

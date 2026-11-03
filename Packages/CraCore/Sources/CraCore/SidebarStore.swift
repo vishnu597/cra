@@ -39,6 +39,11 @@ public final class SidebarStore {
     @ObservationIgnored public private(set) var lastNormalWindowID = UUID()
     /// Spaces of incognito windows. Not in `spaceOrder`, never saved.
     public private(set) var incognitoSpaceIDs: Set<UUID> = []
+    /// Per window, the tab shown before the selected one: a close goes back to it (CloseSuccessor).
+    /// Not saved: after a relaunch it has no page, so Arc wouldn't go back to it either.
+    @ObservationIgnored private var previousTab: [UUID: UUID] = [:]
+    /// Whether a tab's page is loaded; AppDelegate asks the windows' browser managers.
+    @ObservationIgnored public var hasPage: (UUID) -> Bool = { _ in true }
 
     // MARK: Persistence
 
@@ -221,7 +226,12 @@ public final class SidebarStore {
         guard let i = prefs.windows.firstIndex(where: { $0.id == (id ?? activeWindowID) }) else { return }
         var w = prefs.windows[i]
         change(&w)
-        if w != prefs.windows[i] { prefs.windows[i] = w }
+        guard w != prefs.windows[i] else { return }
+        // Whatever changes what the window shows (a pick, a close, a space switch), the tab it
+        // showed is the one a close goes back to (CloseSuccessor; Arc counts space switches too).
+        let shown = { (s: WindowSession) in s.focusedSpaceID.flatMap { s.selectedTabPerSpace[$0] } }
+        if shown(w) != shown(prefs.windows[i]) { previousTab[w.id] = shown(prefs.windows[i]) }
+        prefs.windows[i] = w
     }
 
     /// A new window on `spaceID` with nothing open yet.
@@ -430,17 +440,7 @@ public final class SidebarStore {
             $0.focusedSpaceID = sid
             $0.selectedTabPerSpace[sid] = id
         }
-        var updated = it
-        updated.isUnread = false
-        if var t = updated.tab { t.timeLastActiveAt = clock.now; updated.data = .tab(t) }
-        items[id] = updated
-        // Selecting a pane focuses it inside its split (Arc: focusItemID).
-        if let p = it.parentID, var split = items[p], var s = split.split {
-            s.focusTabID = id
-            s.timeLastActiveAt = clock.now
-            split.data = .split(s)
-            items[p] = split
-        }
+        noteShown(id)
         if !isIncognito(space: sid) {
             var dates = ranking.recentlySwitchedToTabs[id] ?? []
             dates.append(clock.now)
@@ -449,6 +449,26 @@ public final class SidebarStore {
             rankingFile.save(ranking)
         }
         touch()
+    }
+
+    /// A tab coming on screen, picked or handed the selection by a close: it's read and last
+    /// active now (Arc clears the unread mark either way).
+    private func noteShown(_ id: UUID) {
+        guard var it = items[id] else { return }
+        it.isUnread = false
+        if var t = it.tab { t.timeLastActiveAt = clock.now; it.data = .tab(t) }
+        items[id] = it
+        // Selecting a pane focuses it inside its split (Arc: focusItemID).
+        if let p = it.parentID, var split = items[p], var s = split.split {
+            s.focusTabID = id
+            s.timeLastActiveAt = clock.now
+            split.data = .split(s)
+            items[p] = split
+        }
+        // In a closed folder the tab shows under the outermost closed one (Arc, GitHub #85).
+        let peeks = FolderPeek.opening(id, folders: folderChain(of: id), isExpanded: { self._prefs.expandedFolders.contains($0) },
+                                       peeks: _prefs.peekedFolders)
+        if peeks != _prefs.peekedFolders { prefs.peekedFolders = peeks }
     }
 
     public func updateTab(_ id: UUID, url: String? = nil, title: String? = nil) {
@@ -513,6 +533,9 @@ public final class SidebarStore {
         t.url = t.savedURL
         it.data = .tab(t)
         items[id] = it
+        // Closed, it no longer shows under a closed folder (Arc).
+        let peeks = FolderPeek.removing(id, peeks: _prefs.peekedFolders)
+        if peeks != _prefs.peekedFolders { prefs.peekedFolders = peeks }
         touch()
         return t.savedURL
     }
@@ -954,11 +977,57 @@ public final class SidebarStore {
         moveItem(id, to: space.pinnedContainerID, index: nil)
     }
 
-    public func moveTab(_ id: UUID, toSpace sid: UUID) {
-        guard let space = spaces[sid] else { return }
-        if isFavorite(id) { return moveItem(id, to: space.favoritesContainerID, index: nil) }
-        let pinned = isPinned(id)
-        moveItem(id, to: pinned ? space.pinnedContainerID : space.todayContainerID, index: pinned ? nil : 0)
+    /// `following`: the window that goes along to `sid`.
+    public func moveTab(_ id: UUID, toSpace sid: UUID, following: UUID? = nil) {
+        moveTabs([id], toSpace: sid, following: following)
+    }
+
+    /// Items of one space, in sidebar order, moved together (picked tabs dropped on a space):
+    /// favorites and pinned tabs join the end of their section, Today tabs lead the new Today,
+    /// each keeping its order.
+    public func moveTabs(_ ids: [UUID], toSpace sid: UUID, following: UUID? = nil) {
+        let ids = ids.filter { items[$0] != nil }
+        guard let space = spaces[sid], let first = ids.first else { return }
+        let from = spaceID(ofItem: first)
+        let moved = Set(ids + ids.flatMap { items[$0]?.children ?? [] })
+        let today = from.flatMap { spaces[$0] }.map { shownTabs(under: $0.todayContainerID) } ?? []
+        let favorites = ids.filter { isFavorite($0) }
+        let pinned = ids.filter { !isFavorite($0) && isPinned($0) }
+        moveItems(favorites, to: space.favoritesContainerID, index: nil)
+        moveItems(pinned, to: space.pinnedContainerID, index: nil)
+        moveItems(ids.filter { !favorites.contains($0) && !pinned.contains($0) }, to: space.todayContainerID, index: 0)
+        // The window that goes along leaves nothing selected in the old space (Arc 1.171, Move to
+        // Today in <space>); another window that had it open there picks the next tab, as on close.
+        guard let from, from != sid, spaceID(ofItem: first) == sid else { return }
+        for w in prefs.windows {
+            guard let sel = w.selectedTabPerSpace[from], moved.contains(sel) else { continue }
+            let list = today.contains(sel) ? today.filter { $0 == sel || !moved.contains($0) } : []
+            let next = w.id == following ? nil : closeSuccessor(of: sel, in: from, window: w.id, list: list)
+            updateWindow(w.id) { $0.selectedTabPerSpace[from] = next }
+            if let next, w.focusedSpaceID == from { noteShown(next) }
+        }
+    }
+
+    /// Arc's command bar "Move to Today in <space>": the tab goes to that space and the
+    /// window follows it there with the tab still selected. A pane brings its split along.
+    @discardableResult
+    public func moveTabAndFollow(_ id: UUID, toSpace sid: UUID, window: UUID? = nil) -> Bool {
+        let moving = splitContaining(id)?.id ?? id
+        guard items[id]?.isTab == true, spaces[sid] != nil, spaceID(ofItem: moving) != sid else { return false }
+        moveTab(moving, toSpace: sid, following: self.window(window).id)
+        guard spaceID(ofItem: moving) == sid else { return false }
+        selectTab(id, window: window)
+        return true
+    }
+
+    /// The sidebar's Move to: the tab the window has open (or its split) takes the window
+    /// along, as in Arc (#86); any other tab moves on its own.
+    public func moveTab(_ id: UUID, toSpace sid: UUID, window: UUID?) {
+        if let open = selectedTabID(window: window), open == id || splitContaining(open)?.id == id {
+            moveTabAndFollow(open, toSpace: sid, window: window)
+        } else {
+            moveTab(id, toSpace: sid)
+        }
     }
 
     // MARK: Folders
@@ -1038,6 +1107,38 @@ public final class SidebarStore {
         return _prefs.expandedFolders.contains(id)
     }
 
+    /// The tabs a closed folder lists under itself (FolderPeek), in sidebar order.
+    public func peekedTabs(in folder: UUID) -> [SidebarItem] {
+        items.observe(folder)
+        guard _prefs.peekedFolders[folder] != nil else { return [] }
+        let inside = tabs(under: folder)
+        let listed = Set(FolderPeek.listed(in: folder, peeks: _prefs.peekedFolders, tabsInside: inside.map(\.id)))
+        return inside.filter { listed.contains($0.id) }
+    }
+
+    /// The tabs a container shows as rows, top to bottom: an open folder's, a closed folder's
+    /// peeked ones, one pane per split (its focused one). Arc hands a close over to the row
+    /// above or below among these, never to a tab hidden in a closed folder (#105).
+    public func shownTabs(under id: UUID) -> [UUID] {
+        children(of: id).flatMap { c -> [UUID] in
+            if c.isTab { return [c.id] }
+            if let s = c.split { return [s.focusTabID.flatMap { c.children.contains($0) ? $0 : nil } ?? c.children.first].compactMap { $0 } }
+            guard c.isFolder else { return [] }
+            return _prefs.expandedFolders.contains(c.id) ? shownTabs(under: c.id) : peekedTabs(in: c.id).map(\.id)
+        }
+    }
+
+    /// The folders an item sits in, outermost first.
+    private func folderChain(of id: UUID) -> [UUID] {
+        var out: [UUID] = []
+        var p = items[id]?.parentID
+        while let pid = p, let parent = items[pid] {
+            if parent.isFolder { out.insert(pid, at: 0) }
+            p = parent.parentID
+        }
+        return out
+    }
+
     /// Whether `id` is the open tab of the window's focused space, or of `space`.
     public func isSelected(_ id: UUID, inSpace space: UUID? = nil, window: UUID?) -> Bool {
         items.observe(id)
@@ -1058,6 +1159,9 @@ public final class SidebarStore {
     private func notifyItemReaders(of old: WindowPrefs) {
         for id in old.expandedFolders.symmetricDifference(prefs.expandedFolders) { items.notify(id) }
         for id in old.collapsedPinnedSpaces.symmetricDifference(prefs.collapsedPinnedSpaces) { items.notify(id) }
+        for id in Set(old.peekedFolders.keys).union(prefs.peekedFolders.keys) where old.peekedFolders[id] != prefs.peekedFolders[id] {
+            items.notify(id)
+        }
         let first = spaceOrder.first
         for w in prefs.windows {
             let was = old.windows.first { $0.id == w.id }
@@ -1072,7 +1176,12 @@ public final class SidebarStore {
         }
     }
     public func setExpanded(_ id: UUID, _ expanded: Bool) {
-        if expanded { prefs.expandedFolders.insert(id) } else { prefs.expandedFolders.remove(id) }
+        var p = prefs
+        if expanded { p.expandedFolders.insert(id) } else { p.expandedFolders.remove(id) }
+        // Open, it shows everything; closed again, only the open tab stays in sight (Arc).
+        let open = selectedTabID.flatMap { folderChain(of: $0).contains(id) ? $0 : nil }
+        p.peekedFolders = FolderPeek.expanding(id, expanded, openTabInside: open, peeks: p.peekedFolders)
+        if p != prefs { prefs = p }
     }
 
     /// Arc's spacesWithCollapsedPinnedSections: clicking the space name hides its pinned tabs.
@@ -1242,6 +1351,7 @@ public final class SidebarStore {
         let split = splitContaining(id)
         let folder = it.parentID.flatMap { items[$0]?.isFolder == true ? $0 : nil }
         let index = folder.flatMap { items[$0]?.children.firstIndex(of: id) }
+        let list = pinned ? [] : (sid.flatMap { spaces[$0] }.map { shownTabs(under: $0.todayContainerID) } ?? [])
         // Closed out of a live folder: the item stays out (Arc: hiddenItems). The archive keeps
         // the live copy so ⇧⌘T can put it back.
         if let folder, items[folder]?.isLiveFolder == true {
@@ -1256,31 +1366,35 @@ public final class SidebarStore {
             if archive.count > 2000 { archive.removeLast(archive.count - 2000) }
         }
         if !selectedIn.isEmpty, let sid {
-            // Closing a pane keeps the split on screen: focus a neighbour pane.
-            let next = split.flatMap { s in items[s.id]?.children.first { items[$0]?.isTab == true } } ?? nextSelection(after: it, in: sid)
-            for w in selectedIn { updateWindow(w) { $0.selectedTabPerSpace[sid] = next } }
+            for w in selectedIn {
+                // Closing a pane keeps the split on screen: focus a neighbour pane. The split
+                // still goes back to the tab shown before it (Arc).
+                let kept = previousTab[w]
+                let next = split.flatMap { s in items[s.id]?.children.first { items[$0]?.isTab == true } }
+                    ?? closeSuccessor(of: id, in: sid, window: w, list: list)
+                updateWindow(w) { $0.selectedTabPerSpace[sid] = next }
+                guard focusedSpaceID(window: w) == sid else { continue }
+                if split != nil { previousTab[w] = kept }
+                if let next { noteShown(next) }
+            }
         }
         if let split { collapseSplitIfNeeded(split.id) }
         touch()
     }
 
-    /// Arc goes back to the tab you came from (activeTabBeforeCreationID) and
-    /// otherwise to the neighbour in the list.
-    private func nextSelection(after closed: SidebarItem, in sid: UUID) -> UUID? {
-        if let back = closed.tab?.activeTabBeforeCreationID, items[back]?.isTab == true, spaceID(ofItem: back) == sid {
-            return back
-        }
-        let list = visibleTabs(in: sid)
-        guard !list.isEmpty else { return nil }
-        if let p = closed.parentID, let siblings = items[p]?.children {
-            // Prefer the sibling that took the closed tab's slot (the one below it).
-            let today = tabs(under: p)
-            if let first = today.first { _ = first }
-            _ = siblings
-        }
-        // Fall back to the top-most today tab, then the first visible tab.
-        if let space = spaces[sid], let first = tabs(under: space.todayContainerID).first { return first.id }
-        return list.first?.id
+    /// The tab shown once the selected `id` closes in window `w`: `list` is the space's Today
+    /// tabs while `id` is still among them, empty for a pinned tab.
+    private func closeSuccessor(of id: UUID, in sid: UUID, window w: UUID, list: [UUID]) -> UUID? {
+        let back = previousTab[w].flatMap { spaceID(ofItem: $0) == sid ? $0 : nil }
+        return CloseSuccessor.next(closing: id, previous: back, hasPage: hasPage, list: list)
+    }
+
+    /// A pinned tab, favorite or pinned split closed (unloaded) while selected: the tab to show
+    /// instead, if any.
+    public func closeSuccessor(ofPinned id: UUID, window w: UUID) -> UUID? {
+        guard let sid = spaceID(ofItem: id) else { return nil }
+        let back = previousTab[w].flatMap { spaceID(ofItem: $0) == sid ? $0 : nil }
+        return CloseSuccessor.afterPinned(closing: id, isSplit: splitContaining(id) != nil, previous: back, hasPage: hasPage)
     }
 
     @discardableResult
@@ -1512,6 +1626,14 @@ public final class SidebarStore {
             if let k = ranking.queriesToSelected.keys.first { ranking.queriesToSelected[k] = nil }
         }
         rankingFile.save(ranking)
+    }
+
+    /// Chrome's Delete browsing data deleted history: the command bar forgets it too.
+    public func clearHistory(_ range: BrowsingDataClear.Range) {
+        (history, ranking) = BrowsingDataClear.clearing(range, history: history, ranking: ranking)
+        historyFile.saveNow(Array(history.values))
+        rankingFile.saveNow(ranking)
+        CoreLog.note("history cleared (\(range == .allTime ? "all time" : "a time range"))")
     }
 
     public func recordCommandUse(_ id: String) {

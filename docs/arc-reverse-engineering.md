@@ -251,10 +251,18 @@ the frontend only offers when it can dock.
 Arc's View ▸ Developer submenu (read via Accessibility): View Source ⌥⌘U, Developer Tools
 ⌥⌘I, Inspect Elements ⌥⌘C, JavaScript Console ⌥⌘J, "Turn off Developer Mode for this
 site" ⌃D. ⇧⌘D is Hide Toolbar and ⌘D is Pin/Unpin Tab. Developer Mode is per site and
-swaps the toolbar: default = nav buttons left, centred friendly URL (host bright, path dim)
+swaps the toolbar: default = nav buttons left, centred host (path dim with Show Full URL)
 behind a link glyph, sidebar toggle right; developer = lock + full monospace URL left,
 copy/capture/DevTools/source icons right, nav buttons in the sidebar's title row. Cra
 stores the hosts in `AppSettings.developerHosts`.
+
+The ⌄ after ↻ in that title row (GitHub #89, Arc screenshot from vrubzov1957): "✓ Reload ⌘R",
+"Refresh (Ignore Cache) ⇧⌘R", a separator, "Clear Cookies and Refresh". Arc's context menus show
+the shortcut glyphs of rows that have one. Cra's chevron lists Refresh ✓ ⌘R, Force Refresh ⇧⌘R |
+Clear Cookies, Clear Cache | View Source ⌥⌘U, Developer Tools ⌥⌘I in the menu bar's words, and
+every context-menu row for a KeyBindings command shows its keys, overrides included
+(`MenuItems.add(_:action:)`, `NSMenuItem.showShortcut(of:)`). The split row's per-pane submenus don't:
+each pane has one and the keys act on the focused pane.
 
 Extensions: CEF 154 has no extension API for Alloy-style browsers. A spike
 (`cra://debug?chromeSpike=<url>`) proved the alternative: a Chrome-style Views window
@@ -612,6 +620,10 @@ Cra: Chromium's PiP window (class NativeWidgetMac…, title "Picture in Picture"
 that swallows the pointer (so Chrome's controls never appear) and does dragging / aspect-locked edge
 resizing; the frame is remembered in UserDefaults like Arc's LastPiPPosition. Measured on Cra: the
 corner alpha ramp and the shadow extents are identical to Arc's capture, pixel for pixel.
+Chrome's own window ignores the pointer and has `preventKeyWindow` set (2 Nov): it keeps a 4 pt
+resize band outside its frame that the overlay doesn't cover, and once key (a drag on that band, or
+AppKit picking it when a click activates Cra) Chrome shows its ±10 s controls on focus and on every
+mouse move, under Cra's ±15 s ones.
 One residual difference: Chrome paints its origin strip ("File on your device", top gradient)
 inside the compositor layer for about two seconds when the window first appears (present at
 1.5 s, gone at 2.5 s in quarter-second captures); it is drawn whether or not the window is
@@ -1181,7 +1193,9 @@ Static only (strings of `Dia.app/Contents/MacOS/Dia`, no decompiler; not observe
   (split limit; `rectangle.portrait.split.2x1.slash` sits next to the view), extension installed,
   password saved, import progress/result, '<shortcut> again to <action>', trace status.
 - Unknown: display duration and transition (no runtime capture). Cra shows the status for 2 s
-  with a 0.15 s fade in / 0.2 s fade out (`SidebarUIState.flashStatus`).
+  with a 0.15 s fade in / 0.2 s fade out (`SidebarUIState.flashStatus`). Replaced 2 Nov 2026: Arc shows these
+  ("Copied Current URL", "Cannot Add New Pane") as its toast, one component for every confirmation, and Cra now
+  does too (`ShinyToast`, see the #85 section).
 
 ## Dia Extensions menu (Dia 1.54.2, 25 Oct 2026)
 
@@ -1542,6 +1556,13 @@ Arc's popup this time, so geometry is not measured.
   (plus Boost items).
 - [O] Extension popup window (user screenshot): ≈472×380 pt titled window, ≈25 pt title bar with a red close button and
   disabled minimize/zoom, the popup page filling the rest.
+- [O] Clicks while a popup is up (2 Nov 2026, live: HID clicks, CGWindowList sampled every 15 ms, AX focused window;
+  Detailed SEO and 1Password pinned): the popup window is key, so the browser window is inactive. A click in the
+  normal toolbar only takes focus back, which closes the popup: its own button leaves it closed (nothing reopens
+  within 3.5 s), 1Password's button closes Detailed SEO's popup and opens nothing (one plain click opens it), and
+  Split View Menu opens no menu (it does on a plain click). The developer bar's Extensions Menu did act on that
+  click (popup closed and the Site Control Center opened); its Detailed SEO tile then did nothing on the first
+  click. Cra: `FirstClick` (CraCore), GitHub #87. [U] Back/reload/URL: Arc's popup covered them.
 - Cra: `UI/SiteControlCenter.swift` (same geometry; Cra's popover lands at Arc's exact screen coordinates), the
   second action is Copy URL (no Boosts), Capture = visible page, Capture full page = DevTools
   `Page.captureScreenshot` with `captureBeyondViewport`; Clear Cookies = `Storage.clearDataForOrigin`, Clear Cache =
@@ -1571,7 +1592,12 @@ Arc's popup this time, so geometry is not measured.
   with no toolbar to anchor to, which swallowed the next click on the page. Cra turns it off the way Chrome's
   "Show downloads when they're done" setting does: `download_bubble.partial_view_enabled` = false on the global and
   incognito request contexts (CraCEF.mm HideDownloadBubble). Verified in a test instance: no bubble window, the first
-  click after a download reaches the page, Cra's toast still shows.
+  click after a download reaches the page.
+- Arc has no download toast. A running download, a failed one ("Failed to Download") and paused or cancelled ones are
+  rows in its downloads list, with a speed ("e.g. 3 MB/s"); finished ones read "54 seconds ago". Cra's bottom-right
+  download cards (its only other toast design) are gone (2 Nov 2026, #85 follow-up): the hover list shows running,
+  failed and cancelled downloads too (DownloadHistory.live, DownloadRow). [U] Arc's exact wording and icon for a
+  running or failed row (Cra: "81.3 MB of 104.9 MB — 30.1 MB/s", the file type's icon) — to capture live.
 - Chrome's download-started animation (DownloadBubbleStartedAnimationViews, Chromium 156.0.8078.48): a views popup
   parented to the page, `accept_events = false`, 2 × kIconBackgroundRadius 32 = 64×64 pt, 500 ms, flying to the hidden
   toolbar's download button. Only reduced motion turns it off (CEF_CTBT_DOWNLOAD is deprecated: downloads became a
@@ -1703,7 +1729,9 @@ Library button's hover list (downloads) and its click (the archive) showed diffe
 - Cra: `LibraryView` in the sidebar (Downloads and Archived Tabs; Cra has no Media, Easels, Spaces or Boosts pages),
   `SidebarUIState.libraryPage` per window, `MainWindowController.showLibrary/closeLibrary`. The Library button and
   ⇧⌘L toggle it on the last page, ⇧⌘J opens Downloads, "View Archive" opens Archived Tabs, Esc and the back arrow
-  leave. Opening it from a hidden sidebar shows the sidebar until it closes.
+  leave. Opening it from a hidden sidebar shows the sidebar until it closes. Unlike Arc's quick slide-and-fade, the
+  button and ⇧⌘L slide the Library in and out on the swipe's spring when the sidebar is docked (Victor, 2 Nov 2026;
+  see "Swiping into the Library" below); a second press mid-slide turns it around at its current speed.
 
 ## A tab open in two windows (Arc 1.170, 27 Oct 2026, Swift metadata)
 
@@ -1815,6 +1843,24 @@ Theme palettes in a hand-built space can be borrowed; only the `background` styl
   0.30, lift 0.26; inactive dim 1, lift 0.83) matches all 22 test spaces within 2/255 over both backdrops, except
   intensity 0 over white (19/255 light). A space with no `windowTheme` is Arc's default dark purple; the import
   uses Ink instead of the next preset.
+- [O] Sidebar backdrop through activation and fullscreen (2 Nov 2026, issue #83; Arc 1.171, 1x external display,
+  ~56 fps `screencapture -v` recordings, a probe app with Cra's layer next to NSVisualEffectView panels over a
+  6 pt stripe window). Arc's sidebar is an NSVisualEffectView (`behindWindowBlurView`). Its layer tree, dumped
+  from a probe: inactive = no CABackdropLayer at all, an opaque fill; active windowed = a CABackdropLayer with
+  `allowsSubstituteColor` 1 (Cra's had 0); active fullscreen = the backdrop removed and a `CAChameleonLayer`
+  "desktop tint" at opacity 1 in its place, with the same filters as the blur (hudWindow: sdrNormalize,
+  colorSaturate 1.6). In fullscreen there is nothing behind the window, so Cra's capture read black: black at
+  intensity 1 sat at 17/17/17, NSVisualEffectView over the same wallpaper at 130/102/84, raw tint 186/156/135.
+  Victor's light vibrant theme fullscreen, same display and wallpaper: Arc 207/169/112 (top) … 215/161/105,
+  Cra before 69/64/47 … 78/66/47, Cra with the tint 192/176/129 … 207/171/123 (Arc saturates the tint, Cra's
+  untinted blur path doesn't). A capture that isn't live (probe: `windowServerAware` off) shows the window behind
+  sharp and legible; the same layer with `allowsSubstituteColor` draws a flat fill instead. Arc switches active ↔
+  inactive in one frame, no fade. Cra: `ShellView` allows the substitute colour and swaps in the desktop tint while
+  the window is fullscreen; `cra.log` notes each change ("sidebar backdrop: desktop tint, active"). Cra before the
+  change kept a stale, hard-edged backdrop for seconds after launch and activation in 2 of 3 runs, the changed
+  build in none of 3 (other sessions' windows moved between runs, so take that as a hint). Not seen here: the
+  sharp sidebar on activation from Mission Control, Finder or a fullscreen Space (1x displays).
+  `screencapture` stills are no use for this: they disagreed with recordings of the same state.
 - [O] Tab list scroller: AppKit overlay scroller (AXScrollBar, 17 pt track) shown while scrolling, then faded;
   the knob is 4 pt wide, 3 pt in from the sidebar edge, white 49 % on a dark theme, no track. Cra:
   `SidebarScroller`, 10 pt wide so it stays in the gutter right of the rows (knob on Arc's exact columns).
@@ -1898,6 +1944,37 @@ child window key; AppKit then spent the next toolbar click on making the main wi
 buttons accept first mouse while a child window is key. Clicks after the page had focus were not affected
 (real HID test).
 
+## Toolbar clicks, developer bar buttons, developer-mode rows (Arc 1.170, 2 Nov 2026, issue #88)
+
+AX reads of Arc's windows, 1x window captures, and HID clicks while the Mac was idle:
+
+- [O] Normal bar address: `example.org/cra88/deep/path?q=1` showed host bright and path + query dim, but
+  only because Victor's Arc has **Show Full URL** on (`toolbarShowFullURLsEnabledPreference = 1`; the
+  reporter's screenshots, Arc's default, show `github.com` alone). The option is on the address's
+  right-click menu as "Show Full URL" / "Hide Full URL" (ArcCore strings, with "Copy URL" and "Hide
+  Toolbar"). Cra: `AppSettings.toolbarShowsFullURL`, off; the Arc import takes Arc's preference.
+- [O] The link glyph before the address is a button of its own, "Copy Current URL", 24 x 24 pt; the
+  address text starts 27 pt after the button's left edge (AX frames). Hovering the address lights a
+  24 pt pill around the host only, 7 pt either side of the text, starting about 20 pt into the copy
+  button's box (reporter's 2x capture: glyph 14 pt at 34-48 pt, pill 49.75-132.5 pt, text 56.5-126 pt;
+  pill 86/86/86 on a 65/65/65 bar). Cra's ToolbarURLButton draws the two fills itself and gives the
+  4 pt where they meet to the copy box.
+- [O] Clicks: empty bar space left or right of the address opens nothing (window keyed by a page click
+  first, two runs, captures); the address opens the command bar; a click on the address while the bar
+  is open closes it and it stays closed; the next click opens it. Cra: PaneToolbarView only focuses its
+  pane on empty space; `DismissingClick` keeps the closing click from reopening the bar.
+- [O] Developer bar (AX descriptions, left to right): Site Settings (28 pt), `contentPanelTextField`
+  from 40 pt to 7 pt before Copy Link (530 of 923 pt), Copy Link | Capture Window, Capture | Toggle
+  Console, Toggle Network Panel, Inspect Element | Extensions Menu, pinned extensions, Split View Menu.
+  Buttons 28 pt edge to edge; rules 1 pt: copy, 14, rule, 13, Capture Window; Capture, 8, rule, 8,
+  Console; Inspect, 7, rule, 8, Extensions. Glyphs: terminal, globe, crosshair.
+- [S] ArcCore names Chrome's commands (`DevTools_ToggleConsole`, `DevTools_InspectElement`,
+  `enterInspectElementMode`, `showPanel`): Chrome's ToggleDevToolsWindow closes docked DevTools on
+  Console (only Inspect forces them open). Cra runs the same (DevToolsToggle.Command) and asks the
+  frontend for the panel or the picker once it reports `loadCompleted`, as DevToolsWindow::DoAction does.
+- [O] Sidebar: a Today tab on a developer-mode host (example.com) shows the host under its title; one on
+  another host (httpbin.org) shows nothing.
+
 ## Live sidebar blur (1 Nov 2026, issue #37)
 
 Arc's sidebar blur is `NSVisualEffectView` only (no `CABackdropLayer` in Arc's or ArcCore's strings). AppKit's
@@ -1962,6 +2039,24 @@ CEF still draws the first page of a new renderer transparent (chromiumembedded/c
 canvas, an unstyled page (no background, no color-scheme) showed black text on black until its load ended
 (4 s with a slow image). The page now reports its background on every frame while it is parsed
 (kLoadingBackgroundProbe; frames wait for render-blocking stylesheets), so it turns white with its first paint.
+
+### The toolbar on a tab switch (Arc 1.171, 2 Nov 2026, issue #84, app-only recordings at 100 fps)
+
+New tabs (⌘T + a file:// URL) in a fresh main window, macOS Dark, test pages with a 1 s busy-wait in `<head>`;
+Cra's runs switch tabs with `cra://debug?selectTab=` in a CRA_TEST_BACKGROUND copy.
+
+- [O] A page Arc has never shown: bar #FDFDFD over a #000000 page until the page paints, and still white about
+  16 frames after it. Then it cross-fades white → the page's colour in 14–16 frames, ease in and out. A page
+  whose load is held open (an image that never answers) keeps the white bar after it has painted, theme-color
+  or not.
+- [O] The colour it settles on was the page's background: `html{background:#203040}` with
+  `<meta name="theme-color" content="#602040">` gave a #203040 bar (#1C2E3E captured). Cra's probe still prefers
+  theme-color (one test page; not changed in #84).
+- [O] Little Arc's bar is the space's colour whatever the page (#1A0C20 in Victor's space on all four pages).
+- Cra 0.1.25 retargeted the pane card before `browsers.show` created the tab's page, so a restored, slept or
+  handed-over tab showed a white bar for 3–5 frames before its remembered colour (Arc: the remembered colour
+  at once), on tab and space switches alike. Now the bar takes ToolbarColor (CraCore): the page's report,
+  else TabData.themeColor, else white, and fades to a new report over 0.18 s (14–15 frames).
 
 ## Sidebar toggle and the command bar's leading glyph (Arc 1.171, 1 Nov 2026, issue #50, live captures at 2x)
 
@@ -2063,3 +2158,227 @@ curves fitted per frame. "p" = Library reveal progress, 0 = space, 1 = Library o
   mid-swipe flashed a system panel). The Spaces page follows Arc: sidebar = window − 56 pt, live on resize; cards scroll
   sideways under two fingers (over card lists too) and Shift+wheel; a swipe that starts with the cards at their
   end leaves the Library; the brush's theme editor sits flush with the card's right edge.
+
+## Hidden sidebar with two windows (Arc 1.171, 2 Nov 2026, issue #82, live Arc, HID pointer, window-id captures)
+
+Two new Arc windows, both with View ▸ Hide Sidebar and a tab selected, captured per window with
+`screencapture -l` (each window's own pixels, even where another window covers it).
+- [O] Stacked at the same frame, the pointer at the shared left edge: only the front (key) window's sidebar
+  comes out; the back window stays hidden and stays behind.
+- [O] The front window moved 400 pt right, so the back window's edge is uncovered and on top under the pointer:
+  the back (non-key) window does not reveal. The same motion at the key window's edge reveals it. So Arc
+  reveals only in the key window, not in whichever window is under the pointer.
+- [O] A pointer jump into the strip did not reveal; moving inside it did (a few points up or down). Cra
+  reveals on arrival.
+- [U] An inactive Arc (another app frontmost); hidden-sidebar windows of other apps over Arc's edge.
+- Cra: `FloatingSidebarController.isKey` gates both reveal paths (the 30 Hz poll and the shell's tracking
+  area): this window, or one of its child windows (page, DevTools, the floating panel), must be key.
+
+## Moving a tab to another space (Arc 1.171, 2 Nov 2026, issue #86)
+- [O AX] No key binding: Arc's menu bar has no move-to-space item (Spaces: New Space…, Edit Theme…, Rename Space,
+  Change Profile, Next/Previous Space ⌥⌘→/←, one item per space ⌃1…, Manage Spaces…; Tabs has none either), and
+  the binary's `moveToSpace` / `moveToSpaceTabContextMenuOption` are analytics names, not key-binding actions.
+- [O] Command bar: typing "move" on a Today tab lists "Move to Today in <space chip>" for each other space, with no
+  shortcut glyph (strings also have "Move to Pinned in <space>"). Choosing it closes the bar, takes the row out of
+  the old list, then plays the ordinary space switch (list slides, theme cross-fades, ~300 ms): the window follows
+  the tab, which sits at the top of the new space's Today, selected, page unchanged. Recording `arc-move.mov`
+  (scratch, 40 fps), not kept.
+- Reported by Anoninz on #86, not captured here: the sidebar's right-click Move to ▸ <space> on the open tab
+  follows too (the row leaves, Arc switches to that space and selects the tab).
+- [O] What the space the tab left selects afterwards: nothing (measured for #105, see "The tab shown after ⌘W").
+- [U] What Move to ▸ does on a tab that isn't open: other sessions were driving Arc at the time and a posted ⌃2
+  never reached the window.
+- Cra: `SidebarStore.moveTabAndFollow` for the command bar's Move Tab to <space> and the new Move Tab to Space N
+  (⌃⌘1–9, Cra's own: ⌘ added to Go to Space N; neither Arc nor macOS binds ⌃⌘ + a digit). A pane brings its split.
+  The sidebar menu's Move to Space follows when it moves the open tab or its split; another tab moves on its own. The window that follows leaves nothing selected in
+  the old space; another window that had it open there opens the next tab, picked as on close.
+
+## Sending a Little Arc's page to a space (Arc 1.171, 2 Nov 2026, issue #92)
+
+Victor's Arc, a second window of my own (File ▸ New Window over AX, switched to JYSK through the Spaces menu while
+Arc was frontmost, closed afterwards), Little Arcs opened with `open -a Arc https://example.com/?cra92…`, the spaces
+popover driven by AX (the chevron is `openInSpaceExpander`, the rows are AXButtons named after the space).
+
+- [O AX] Window A on Victor (used last), window B on JYSK. Picking JYSK in the Little Arc's popover closed the Little
+  Arc and opened the page in **window B**, which came forward and became main; window A kept Victor.
+- [O AX] No shortcut for it: Tabs ▸ "Open Little Arc or Peek in…" is ⌘O (the target space), Spaces lists the spaces
+  under ⌃1…; a ⌃2 posted to Arc's pid while the Little Arc was key changed nothing.
+- Offline copy (cra-88's fake home, no network, spaces Alpha/Beta/Gamma, up to three windows W1–W3, Little Arcs
+  from File ▸ New Little Arc Window; the popover rows are AXButtons `d='<space>'` in their own window, present only
+  while it is open; the real chevron is the second `openInSpaceExpander`, `d=''`):
+  - [O AX] "Open in <space> ⌘O" names the focused space of the window used last, read when the Little Arc takes focus:
+    W1 switched Alpha → Beta while the Little Arc sat behind it, the button still said Alpha until the Little Arc was
+    focused again, then Beta. Using W2 (Gamma) after opening the Little Arc from W1 (Alpha) made it say Gamma.
+  - [O AX] ⌘O and a click on that button open the page there: in W1's new space, and in W2 after W2 was used.
+  - [O AX] No window shows the picked space: the window used last switches to it and takes the page.
+  - [O AX] Two windows show it: the one used last if it is one of them, else the frontmost of them (W1 and W2 on Beta,
+    W3 on Alpha used last: whichever of W1/W2 was raised later took the page, both ways round).
+  - [O AX] Only a minimized window shows it: Arc unminimizes that window and opens the page there.
+- Cra: `SpaceWindow` (CraCore) picks the window: the one in use if it shows the space, else the frontmost one that
+  does, else the one in use, which switches. It applies to ⌘O, the popover, the command bar's Move to <space> and
+  Move Tab to Space N (⌃⌘1–9, #86), which in a Little Window sends its page (#92, Cra's own like ⌃⌘N itself). The
+  Little Window's target follows the window used last when it takes focus (`refreshTarget`), as Arc's does.
+
+## ⌘Return in the command bar and closed folders that keep their tab (Arc 1.171, 2 Nov 2026, issue #85)
+
+Victor's Arc, a window of my own (File ▸ New Window over AX, closed afterwards), keys posted to Arc's pid while it
+was frontmost, 1x region captures and 100 fps recordings; test tabs archived afterwards.
+
+- [O] ⌘Return in the URL editor (⌘L, a page open) or the new-tab bar (⌘T): the highlighted row opens in a new tab at
+  the top of Today, the current tab stays in front and the bar stays open with what was typed; each ⌘Return opens
+  one more (two ⌘Returns, two tabs). A "Switch to Tab" row opens its address again as a new tab rather than switching;
+  a search row opens the search. The tabs are saved read (`isUnread` false). Cra: the field editor reports ⌘Return as
+  `noop:`, never `insertNewline:` (KeyChord.isCommandReturn), CommandBarController.commitInBackground,
+  MainWindowController.openInBackground.
+- [O] Arc only says so when the sidebar is hidden: "New Tab Created" (`backgroundTabCreated`, Toasts.ShinyToastView;
+  "New Tab Created in %@" exists for another space). With the sidebar out, only the new row appears in Today. The toast:
+  138 × 42 pt at 1x, 8 pt below the top of the page area (below the toolbar; with the inline URL editor open, below
+  its input row) and 9 pt in from its right edge; 14 pt medium black text, 12 pt either side; ~10 pt corners; a
+  1 pt outline at ~69 % of the fill; fill 220/226/184 at the top to 208/218/163 at the bottom over a dark page on a
+  yellow/green theme (`ShinyToastBackgroundBasedPalette`). It springs in from its top centre (width 0.41 → 1.04 at
+  ~0.2 s → 1.0 by ~0.4 s, i.e. ≈0.3 s response, damping 0.67), stays ~4.85 s and shrinks into its top while fading in
+  ~80 ms. Another ⌘Return while it is up restarts its time (gone 4.77 s after the last one) and bumps it,
+  width 1 → 1.044 (~40 ms) → 1 by ~0.2 s, rather than springing in again. On the default theme in dark mode
+  (JYSK space) it is dark with white text: 43/24/102 → 33/19/79, outline 26/15/62, i.e. the same hue at
+  saturation 0.76, brightness 0.40 → 0.31 (outline 0.24); the light one is saturation 0.19 → 0.25, brightness
+  0.89 → 0.85 (outline 0.61) in the theme's hue. Cra: ShinyToast.
+- [O static] It is Arc's one toast (Toasts.ShinyToastView, `ToastContent`): the same component carries
+  "Copied Current URL" (`copyTabURL`), "Cannot Add New Pane" (`maxNumberPanes`), "Screenshot Copied to Clipboard",
+  "Pinned Tab to …", zoom changes, undo and more; some kinds add an SF Symbol (`quote.bubble.fill`,
+  `checkmark.shield.fill`, `xmark.octagon.fill` sit next to their strings). Cra shows its confirmations with
+  ShinyToast (MainWindowController.showToast), not Dia's nav-bar status. [U] Whether the copy and pane-limit
+  toasts carry a symbol, and where they sit with the sidebar out: the live check was cut short (Victor in a call).
+- [O] Return on a "Switch to Tab" row for a pinned tab two closed folders down (Netfinder ▸ Endpoints ▸ tab): no folder
+  opens. The tab is listed one level under the outermost closed folder (its row slides in, ~0.15 s), Endpoints stays
+  hidden, and the folder's glyph gets three dots (2 pt, 4 pt pitch). StorableWindows.json keeps it per window as
+  `expandedItems: [folder, {"peeked": {"_0": [tab ids]}}]`; the tab stays listed after another tab is picked. The bar
+  lists only the window's space's tabs; a typed URL puts the typed row first and the "Switch to Tab" row second.
+  Arc also has Tabs ▸ Reveal Tab in Sidebar (`revealTabInSidebar`). Cra: FolderPeek (CraCore),
+  WindowPrefs.peekedFolders, SidebarStore.peekedTabs/setExpanded, FolderGlyphView's dots.
+- [O] Real clicks (cliclick, Victor idle) on a peeked folder never open it: with the peeked tab open it stays
+  closed with the tab listed (two clicks), with another tab open it closes for good and drops the peek and the
+  dots. A folder without a peek opens as usual. Arc's window state then has no entry for it. So a click on a
+  closed folder that keeps tabs in sight means "close", keeping only the open tab (as the 29 Oct folder-peek
+  notes found). Cra: FolderPeek.clickOpens.
+
+## Secure DNS (Arc 1.171, 2 Nov 2026, issue #110, live net log)
+- [O] Arc leaves Chromium's default. Victor's Arc `Local State` has no `dns_over_https` key, and a net log of Arc
+  started with `--log-net-log` (in the background, no clicks) shows `secure_dns_mode: 1` (automatic) with
+  `doh_config.servers: []` in every DNS config event: the system resolver, encrypted only when it is a known DoH
+  server. No Arc policy is installed. The binary's `dns.google` templates are Chromium's own provider list.
+- [O] An Arc with `"mode": "secure"` and `https://dns.google/dns-query{?dns}` (the #110 report) is what Chromium
+  writes when Google is picked in arc://settings/security, not something Arc seeds.
+- Cra: no change to the default, so a work network's own DNS keeps resolving its internal names. CEF builds the
+  same provider list as Chrome (OS default, custom, DNS4EU, Cloudflare, CleanBrowsing, OpenDNS, Google) in
+  chrome://settings/security; a choice persists in Cra's `Chromium/Local State` across restarts. `cra.log` says
+  what is in effect at launch and after each change (`secure dns: automatic, no provider (system resolver)`, `secure
+  via dns.google`, `off`), and Export Diagnostics' summary has a `Secure DNS:` line (`SecureDNS` in CraCore, hosts
+  only).
+
+## Shift + wheel switches spaces (Arc 1.171, 2 Nov 2026, issue #93, live Arc, HID wheel events)
+
+Victor's Arc (2 spaces, Victor and JYSK), the pointer over the sidebar's list, line-unit wheel events posted at the HID
+tap with a real Shift key held around them; the space read from each window's `sidebarSpaceName` AX frames.
+- [O probe] macOS turns Shift + vertical wheel into a horizontal wheel before the app sees it: `scrollingDeltaX` =
+  the posted lines (1.0 per line, point delta 8), `scrollingDeltaY` 0, not precise, no phases, Shift in the flags.
+  A sideways wheel without Shift arrives the same way (point delta 10 per line) without the flag.
+- [O static] `PageSwipeController.nonGesturalScrollState {cumulativeDistance, lastEventTime, lastTriggerTime}`.
+- [O] Over the sidebar both Shift + wheel and a sideways wheel page between spaces. Negative `scrollingDeltaX` = the
+  next space, positive = the previous one (as two fingers moving right go back). No wrap at the last space; before
+  the first space the Library comes in (its Spaces page here), and the opposite flick takes it out again, over the
+  rail as over the cards (cards that fit have nothing to scroll). Over the page: nothing. Vertical wheel: nothing.
+- [O] Distance: one 1-line event never switches; one 2-, 3- or 6-line event always does. Two 1-line events switch
+  35 ms apart (4/4), 45 ms apart half the time (1/2 + borderline runs at 50 ms), 65, 80, 150 ms apart never
+  (0/6); eight notches 100 ms apart never. So quick events add up and a gap of ~45 ms forgets them.
+- [O] Cooldown: 3-line events every ~22 ms switched once for bursts up to 0.245 s long, twice for 0.254–0.306 s:
+  one switch per 0.25 s. Ten 1-line events 30 ms apart (first switch at the 2nd event) switched once, so what
+  arrives during the cooldown is dropped.
+- [O 120 fps] The switch animates like a space change: the header slides in and the tint follows, ~0.15–0.2 s.
+- Cra: `WheelSpaceSwitch` (CraCore) with distance > 1 line, pause 45 ms, cooldown 0.25 s; the window controller's
+  scroll monitor feeds it non-precise horizontal wheels over the sidebar (docked or floating, not incognito). A
+  step focuses the space on Cra's usual space-change spring (Dia's 0.4 s, slower than Arc's here), or slides the
+  Library in or out like its button. On the Spaces page the cards take the wheel first (10 pt per line, as in Arc)
+  and the wheel leaves the Library only at their end.
+
+### Extension action icons, badges and tooltips (Arc 1.171, 2 Nov 2026, issue #106, offline Arc + probe)
+- [O live] Offline Arc (fake home with the Storable*.json files minus both sync states, `--load-extension` with
+  a probe, pinned through the fake profile's `extensions.pinned_extensions`). Probe: red top-level `icons`, blue
+  `action.default_icon`, then `setIcon` (green disc), `setTitle` and `setBadgeText` on alarms.
+- Icon: the pinned button and the Site Control Center tile show the action's `default_icon` (blue), not the
+  top-level `icons`, and follow `setIcon` at once. The menu bar's Extensions menu keeps the manifest's action icon
+  (blue) after `setIcon`. Drawn 16 pt (32 px) in the top bar.
+- Tooltip: none on a pinned extension button after 8 s of hover (Back shows "Go back ⌘[" within 3 s), so
+  `setTitle` shows nowhere there. The Site Control Center tile's tooltip is the extension's name.
+- Badge: Chromium's IconWithBadgeImageSource at half size, its 28 pt icon area centred on the 16 pt icon. "7" is
+  7 × 7 pt and "42" 8 × 7 pt, right-aligned 1 pt in from the icon's bottom right. "1234" is 14 × 7 pt, centred
+  (20+ in Chromium's units). A 0.5 pt ring is cut out of the icon around the badge. Text is white or Google
+  Grey 900 by contrast unless `setBadgeTextColor` set one. A transparent `setBadgeTextColor` is refused and keeps
+  the old colour. With no colour set, the badge is #282828 in dark mode (Chromium's neutral container; light mode
+  not seen). The tile in the Site Control Center carries the same badge; the menu doesn't. Text widths match SF
+  bold at optical size 22–26 (CoreText's own 9 pt instance makes "42" a pixel wider).
+- Custom icons: Arc has none, so Cra's toolbar icon styles (#9) stay toolbar-only.
+- Cra: `extensions-action-updates.patch` reports icon, title, badge text (or the declarativeNetRequest count), badge
+  and text colour. `ExtensionBadge` (CraCore) lays the badge out; `ExtensionStore.badged` draws it into the icon.
+  Captured side by side with the same probe, Cra matches Arc's five states to the pixel (text ±1 px antialiasing).
+
+## Extensions per profile, options pages and the proxy (Arc 1.171, 2 Nov 2026, issue #107)
+
+- [O static] Pinned extensions are per profile: Arc's `arc::BrowserContext` (one per Chromium profile) has
+  `getPinnedExtensionOrder` / `setPinnedExtensionOrder:`, `browserContext:didChangePinnedExtensionOrder:` and
+  `arc::BrowserContext::Extensions::Delegate::DidPinnedExtensionOrderChange`, over Chromium's
+  `extensions.pinned_extensions` pref. This Mac's Arc has only the Default profile (two pins), so two lists were not
+  compared live. Cra: `PinnedExtensions` (pinned-extensions.json), where the old single list serves every profile until
+  one pins or unpins something of its own.
+- [O] Arc has no per-space extension switch. A space gets the extensions of the profile it is bound to, and an
+  extension is turned off for one profile in that profile's arc://extensions. Cra does the same with
+  chrome://extensions opened from a space on that profile (Extensions ▸ Manage Extensions…). Verified on a test copy:
+  an `Extensions/` extension turned off in a Work profile left that profile's toolbar and proxy, and kept running
+  in Default.
+- [O live] Options page across spaces: offline Arc (fake home, see "One space") with this Mac's two spaces and an
+  unpacked probe (`--load-extension` + `--disable-features=DisableLoadExtensionCommandLineSwitch`) whose service
+  worker calls `chrome.runtime.openOptionsPage()` when a tab opens `…#cra-opts`, driven by Arc's AppleScript (`tell
+  space "…" to focus`, `make new tab`). The options page opened in space 1. Asked again from space 2, Arc went back
+  to space 1 and selected that tab, with no second options tab. Arc has no options-page code of its own
+  (`runtime.openOptionsPage` → Chromium's `ShowSingletonTabOverwritingNTP`). Cra keeps that, per profile: another
+  profile's copy of the page is never reused (`ExtensionPagePlacement`).
+- [O] Two extensions setting the proxy: Chromium applies the latest `last_update_time` among the enabled ones
+  (ExtensionPrefValueMap::GetEffectivePrefValueController; on a tie, the later ID). The other gets
+  `levelOfControl: "controlled_by_other_extensions"`, which CEF reports correctly (checked with two probes).
+  `--load-extension` folders are reinstalled on every launch, but the winner stayed the same over three launches.
+  `ForceWebRequestProxyForTest` makes `MayHaveProxies()` always true, so a proxy extension enabled later does not
+  reset the URL loader factories. Cra logs the winner and the overridden ones per profile when they change, and
+  Export Diagnostics' summary.txt has a "Proxy:" section.
+
+## The tab shown after ⌘W (Arc 1.171, 2 Nov 2026, issue #105, offline Arc driven through its menus)
+Offline Arc as in "One space": one space with pinned S and P2 and Today C, B, A, D (A, B, C saved with
+`activeTabBeforeCreationID` and `referrerID` = S, unread), the selected tab and the window's
+`itemLastActiveDates` set in StorableWindows.json, then Tabs ▸ Next/Previous Tab and File ▸ Archive Tab (Close
+Tab on a pinned tab) pressed over AX, a window capture after each step. Setting AXSelected on a row
+doesn't pick a tab, and the selection saved in StorableWindows.json wasn't always honoured; navigate instead.
+- [O] Arc goes back to the tab shown just before the closed one, if its page is still loaded: D → A, close A → D
+  (not S, the tab A was opened from, loaded or not); S → P2 → close P2 hands back to S only while S is loaded.
+- [O] Only that one tab counts. D → A → B, close B → A, close A → C (the neighbour above), not D: Arc doesn't
+  walk further back. A previous tab without a page doesn't count either: one restored from `itemLastActiveDates`
+  that hasn't loaded since launch, or a pinned tab closed with ⌘W (Arc never reloads it on a later close).
+- [O] Otherwise a Today tab hands over to its neighbour, the one above first (B → C, D → A), the one below at
+  the top (C → A), loaded or not. The last Today tab hands over to nothing, with pinned tabs still in the
+  sidebar. A pinned tab hands over to nothing (no neighbour), even with Today pages loaded.
+- [O] "Neighbour" means the Today rows on screen: with a closed folder above it (tabs X, Y inside), closing D hands
+  over to nothing; with the folder open (`AXDisclosing` on its row over AX), to Y, the row above inside it.
+- [O] A favorite closes like a pinned tab: back to the previous tab while it is loaded (F1 after D → D), else nothing.
+  Tabs ▸ Next Tab runs through the favorites first.
+- [O] The tab a close hands over to loses its unread mark, as when it is picked.
+- [O] Splits (a `splitView` item needs `layoutOrientation`, `focusItemID` and `itemWidthFactors`, as Arc saves it;
+  without them Arc moves the split into a pinned "Recently recovered" folder): a split row as the neighbour opens the
+  split on its focused pane. Closing a pane keeps the other one and the tab shown before the split (D → split, close
+  L → R, close R → D, not the neighbour C). Closing a pinned split hands over to nothing even with the tab shown
+  before still loaded (D → pinned split, Close Tab → nothing; twice).
+- [O] Previous tabs are per window: window 1 A → B, window 2 D → C, close C in window 2 → D (not B).
+- [O] A space switch counts as showing another tab: space 1 B, space 2 Y → X, Previous Space (B), Next Space (X),
+  close X → W (the neighbour above), not Y. Closing never switches spaces.
+- [O] Command bar "Move to Today in <space>" on the open tab: the window follows, and the space it left has nothing
+  selected when you come back (C → B, move B, Previous Space → nothing; not C, not the neighbour A).
+- [?] Not measured: Move to ▸ on a tab open in another window.
+- Cra: CloseSuccessor (CraCore) with SidebarStore's per-window `previousTab` (not saved; set in `updateWindow`
+  whenever what the window shows changes) and `hasPage` (a window's browser manager has the page). A tab put to sleep has no page, like Arc's unloaded tabs.
+  `activeTabBeforeCreationID` is still saved and imported but no longer picks the next tab.

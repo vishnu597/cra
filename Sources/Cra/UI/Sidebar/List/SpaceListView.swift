@@ -248,17 +248,25 @@ final class SpaceListView: NSView, NSDraggingSource {
             var row = Row(key: .item(item.id), content: .newTab(active: false), decor: decor(item.id), itemID: item.id, parent: parent, index: index, depth: depth)
             if item.isFolder {
                 let expanded = store.isExpanded(item.id)
+                let peeked = expanded ? [] : store.peekedTabs(in: item.id)
                 let glyph = palette.folderColors(item.folderIcon)
                 row.content = .folder(FolderRowModel(
                     id: item.id, depth: depth, title: item.title ?? "Folder", renameText: item.title ?? "",
-                    editing: renaming == item.id, expanded: expanded, live: item.isLiveFolder,
+                    editing: renaming == item.id, expanded: expanded, peeked: !peeked.isEmpty, live: item.isLiveFolder,
                     tint: NSColor(glyph.tint), fill: NSColor(glyph.fill),
                     tabCount: expanded ? 0 : store.tabs(under: item.id).count,
                     liveBusy: refreshing.contains(item.id), liveError: item.liveFolder.flatMap(LiveFolderText.warning)?.help,
                     liveSignInURL: item.liveFolder.flatMap(LiveFolderText.warning)?.signInURL,
                     liveHelp: LiveFolderText.refreshHelp(item.liveFolder)))
                 out.append(row)
-                guard expanded else { return }
+                guard expanded else {
+                    // Arc keeps the open tab of a closed folder in sight, one level in (FolderPeek).
+                    for t in peeked {
+                        let index = t.parentID.flatMap { store.item($0)?.children.firstIndex(of: t.id) } ?? 0
+                        add(t, depth: depth + 1, pinned: pinned, parent: t.parentID ?? item.id, index: index)
+                    }
+                    return
+                }
                 let kids = item.children
                 for c in store.children(of: item.id) {
                     add(c, depth: depth + 1, pinned: pinned, parent: item.id, index: kids.firstIndex(of: c.id) ?? 0)
@@ -270,9 +278,10 @@ final class SpaceListView: NSView, NSDraggingSource {
                 let selected = store.isSelected(item.id, window: window)
                 let navigatedAway = pinned && tab.url != tab.savedURL && !tab.savedURL.isEmpty
                 let (img, flip) = icon(tab.iconKey)
+                let subtitle = tab.sidebarSubtitle(navigatedAway: navigatedAway, developerMode: store.settings.isDeveloperMode(url: tab.url))
                 row.content = .tab(TabRowModel(
                     id: item.id, depth: depth, pinned: pinned, title: item.displayTitle, customTitle: item.title != nil,
-                    renameText: item.title ?? item.displayTitle, subtitle: Self.subtitle(tab, navigatedAway: navigatedAway),
+                    renameText: item.title ?? item.displayTitle, subtitle: subtitle,
                     icon: img, flipIcon: flip, githubMark: tab.liveItemURL != nil && tab.customIconKey == nil,
                     editing: renaming == item.id, selected: selected,
                     highlighted: picks.isEmpty ? selected && !placeholder : picks.contains(item.id),
@@ -320,15 +329,6 @@ final class SpaceListView: NSView, NSDraggingSource {
         return Built(rows: out, pinnedCount: pinnedCount, palette: palette,
                      highlightPinned: section == .pinned && !pinnedItems.isEmpty, highlightToday: section == .today,
                      line: drop?.line)
-    }
-
-    /// Arc shows the host under a pinned tab only when it has left the pinned site (navigating
-    /// within the same host shows nothing); a live folder's pull request shows its author.
-    private static func subtitle(_ tab: TabData, navigatedAway: Bool) -> String? {
-        if let author = tab.liveSubtitle, URL(string: tab.url)?.host == "github.com" { return author }
-        guard navigatedAway, let host = URL(string: tab.url)?.host, let saved = URL(string: tab.savedURL)?.host,
-              host.replacingOccurrences(of: "www.", with: "") != saved.replacingOccurrences(of: "www.", with: "") else { return nil }
-        return host.replacingOccurrences(of: "www.", with: "")
     }
 
     /// A line inside the open live folder when there are no pull requests to show, or GitHub
@@ -500,22 +500,28 @@ final class SpaceListView: NSView, NSDraggingSource {
     /// SpaceSectionView's stacks: 3 pt on top, pinned rows, the 18 pt divider, then Today; rows
     /// 1 pt apart and 10 pt in from the sides. Arc 1.171 (31 Oct): every pinned row takes 41 pt,
     /// the first one too, so the first sits 1 pt lower than Today's; nothing pinned takes none.
+    /// With Today empty the divider takes no room either: Arc 1.171 (2 Nov) puts New Tab one
+    /// pinned row (41 pt) under the last pinned tab, and Cra's line left an 18 pt gap there
+    /// (reported on X, 2 Nov 2026, with the pinned tabs collapsed).
     private func layoutRows() {
         let width = rowsWidth
         let inner = max(0, width - 20)
         var y: CGFloat = 3
         let pinnedTop = y
+        var afterLine = false
         for i in 0..<rows.count {
             let isDivider = rows[i].key == .divider
             if i == pinnedCount {
                 pinnedFrame = NSRect(x: 10, y: pinnedTop, width: inner, height: y - pinnedTop)
             }
             if isDivider {
-                rows[i].frame = NSRect(x: 0, y: y, width: width, height: 18)
-                y += 18
+                afterLine = rows[i].content == .divider(hasToday: true)
+                let h: CGFloat = afterLine ? 18 : 0
+                rows[i].frame = NSRect(x: 0, y: y, width: width, height: h)
+                y += h
                 continue
             }
-            if i != pinnedCount + 1 { y += CraMetrics.rowSpacing }
+            if !(afterLine && i == pinnedCount + 1) { y += CraMetrics.rowSpacing }
             let h: CGFloat
             if case .liveStatus(let m) = rows[i].content { h = LiveStatusRowView.height(m, width: inner) } else { h = CraMetrics.rowHeight }
             rows[i].frame = NSRect(x: 10, y: y, width: inner, height: h)
@@ -866,6 +872,8 @@ final class SpaceListView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         autoscroller.stop()
         ui.draggingID = nil
+        // The drag switched spaces; picks don't outlive leaving their space.
+        if store.focusedSpaceID(window: ui.windowID) != spaceID { ui.clearPicks() }
         if ui.listDrop != nil { ui.listDrop = nil }
     }
 

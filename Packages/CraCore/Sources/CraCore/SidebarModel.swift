@@ -86,6 +86,18 @@ public struct TabData: Codable, Equatable {
         self.savedTitle = title
         self.faviconKey = URL(string: url)?.host
     }
+
+    /// The line under the tab's title in the sidebar. A live folder's pull request shows its
+    /// author. Arc 1.170 shows the host under every tab of a site in developer mode (GitHub #88),
+    /// and under a pinned tab only once it has left the pinned site (navigating within the same
+    /// host shows nothing).
+    public func sidebarSubtitle(navigatedAway: Bool, developerMode: Bool) -> String? {
+        if let liveSubtitle, URL(string: url)?.host == "github.com" { return liveSubtitle }
+        guard let host = URL(string: url)?.host?.replacingOccurrences(of: "www.", with: "") else { return nil }
+        if developerMode { return host }
+        guard navigatedAway, let saved = URL(string: savedURL)?.host, host != saved.replacingOccurrences(of: "www.", with: "") else { return nil }
+        return host
+    }
 }
 
 /// Arc's SidebarSplitViewData: a split is a sidebar item whose children are
@@ -407,6 +419,9 @@ public struct AppSettings: Codable, Equatable {
     /// Cra 0.1.0 saved `showToolbar` as on for everyone; settings without this mark
     /// take the toolbar from Arc's own preference once (off without Arc).
     public var toolbarDefaultMigrated: Bool = true
+    /// Arc's "Show Full URL" on the toolbar address's menu (toolbarShowFullURLsEnabledPreference):
+    /// the normal bar shows the host and the dimmer path. Off like Arc, which shows the host only.
+    public var toolbarShowsFullURL: Bool = false
     public var hasSeenImportPrompt: Bool = false
     /// Arc's per-site Developer Mode (⌃D): the toolbar shows the full URL in
     /// monospace with the developer icons, and the nav buttons move to the sidebar.
@@ -460,6 +475,13 @@ public struct AppSettings: Codable, Equatable {
     /// GitHub #24, not in Arc: the page fills the window with no margin and no rounded
     /// card, like a traditional browser. Off by default.
     public var edgeToEdgeContent: Bool = false
+    /// GitHub #91, Settings ▸ Performance: Cra records its own performance on this Mac (stalls,
+    /// CPU and memory per process, tab timings) for Help ▸ Export Diagnostics. On by default in
+    /// early releases; nothing leaves the Mac. Changing the default needs no migration.
+    public var perfRecording: Bool = AppSettings.perfRecordingDefault
+    public static let perfRecordingDefault = true
+    /// Settings ▸ Performance ▸ "Hide site names": every site in the diagnostics zip becomes site-N.
+    public var perfHidesSiteNames: Bool = false
 
     public init() {}
 
@@ -512,6 +534,8 @@ public struct WindowPrefs: Codable, Equatable {
     public var sidebarWidth: Double = 328
     public var expandedFolders: Set<UUID> = []
     public var collapsedPinnedSpaces: Set<UUID> = []
+    /// Closed folders that keep tabs in sight (FolderPeek): folder → its peeked tabs.
+    public var peekedFolders: [UUID: [UUID]] = [:]
     /// Open browser windows, restored at launch. Never empty.
     public var windows: [WindowSession] = [WindowSession()]
 
@@ -525,10 +549,11 @@ public struct WindowPrefs: Codable, Equatable {
     public var littleWindowSize: String?
 
     public init(sidebarWidth: Double = 328, expandedFolders: Set<UUID> = [], collapsedPinnedSpaces: Set<UUID> = [],
-                windows: [WindowSession] = [WindowSession()], littleWindowSize: String? = nil) {
+                peekedFolders: [UUID: [UUID]] = [:], windows: [WindowSession] = [WindowSession()], littleWindowSize: String? = nil) {
         self.sidebarWidth = sidebarWidth
         self.expandedFolders = expandedFolders
         self.collapsedPinnedSpaces = collapsedPinnedSpaces
+        self.peekedFolders = peekedFolders
         self.windows = windows
         self.littleWindowSize = littleWindowSize
     }
@@ -583,6 +608,7 @@ extension AppSettings {
         if toolbarDefaultMigrated {
             showToolbar = try c.decodeIfPresent(Bool.self, forKey: .showToolbar) ?? false
         }
+        toolbarShowsFullURL = try c.decodeIfPresent(Bool.self, forKey: .toolbarShowsFullURL) ?? false
         hasSeenImportPrompt = try c.decodeIfPresent(Bool.self, forKey: .hasSeenImportPrompt) ?? false
         developerHosts = try c.decodeIfPresent(Set<String>.self, forKey: .developerHosts) ?? []
         chromeEngine = try c.decodeIfPresent(Bool.self, forKey: .chromeEngine) ?? true
@@ -609,6 +635,8 @@ extension AppSettings {
         searchSuggestions = try c.decodeIfPresent(Bool.self, forKey: .searchSuggestions) ?? true
         showSpaceHeaderOnSingleSpace = try c.decodeIfPresent(Bool.self, forKey: .showSpaceHeaderOnSingleSpace) ?? true
         edgeToEdgeContent = try c.decodeIfPresent(Bool.self, forKey: .edgeToEdgeContent) ?? false
+        perfRecording = try c.decodeIfPresent(Bool.self, forKey: .perfRecording) ?? Self.perfRecordingDefault
+        perfHidesSiteNames = try c.decodeIfPresent(Bool.self, forKey: .perfHidesSiteNames) ?? false
     }
 }
 
@@ -621,6 +649,7 @@ extension WindowPrefs {
         sidebarWidth = try c.decodeIfPresent(Double.self, forKey: .sidebarWidth) ?? 328
         expandedFolders = try c.decodeIfPresent(Set<UUID>.self, forKey: .expandedFolders) ?? []
         collapsedPinnedSpaces = try c.decodeIfPresent(Set<UUID>.self, forKey: .collapsedPinnedSpaces) ?? []
+        peekedFolders = (try? c.decodeIfPresent([UUID: [UUID]].self, forKey: .peekedFolders)) ?? [:]
         if let saved = try? c.decodeIfPresent([WindowSession].self, forKey: .windows), !saved.isEmpty {
             windows = saved
         } else {

@@ -39,7 +39,9 @@ struct SidebarStoreArchiveTests {
         #expect(f.store.selectedTabID == b.id)
         let p2 = f.store.createTab(url: "https://p2.test/", pinned: true, select: false)
         f.store.archiveTab(b.id, reason: .manual)
-        #expect(f.store.selectedTabID == p2.id, "with Today empty, the first tab in the space")
+        // Upstream #105 (CloseSuccessor, Arc 1.171): the last Today tab hands over to nothing, not
+        // to a pinned tab.
+        #expect(f.store.selectedTabID == nil && f.store.item(p2.id) != nil, "with Today empty, nothing")
     }
 
     @Test func anEmptyPaneLeavesNothingInTheLibrary() {

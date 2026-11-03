@@ -4,8 +4,10 @@ import UniformTypeIdentifiers
 
 /// Help ▸ Export Diagnostics…: a zip a user can attach to an issue or send by mail. Holds
 /// Cra's and Chromium's logs (this launch and the last), the on-screen pages' state, the GPU
-/// report and recent crash reports. Addresses are cut to their host and the home folder to
-/// `~`; no history, cookies, passwords or page content leave the Mac.
+/// report, recent crash reports and the performance recorder's perf.json (GitHub #91).
+/// Addresses are cut to their host and the home folder to `~`; with Settings ▸ Performance ▸
+/// "Hide site names" the hosts become site-1, site-2… in every file. No history, cookies,
+/// passwords or page content leave the Mac.
 @MainActor
 enum Diagnostics {
     /// Asks where to save, unless `destination` is given (cra://debug?exportDiagnostics=<path>).
@@ -13,8 +15,10 @@ enum Diagnostics {
         CraLog.note("diagnostics export started")
         collectPages(windows: windows, store: store) { pages in
             CraCEFRuntime.sendBrowserDevToolsMethod("SystemInfo.getInfo", params: "{}") { gpu, error in
-                DispatchQueue.main.async {
-                    save(pages: pages, gpu: gpu ?? "{\"error\": \"\(error ?? "no answer")\"}", store: store, to: destination)
+                // The profile's size is measured off the main thread.
+                PerfRecorder.exportFiles { perf, perfSites in
+                    save(pages: pages, gpu: gpu ?? "{\"error\": \"\(error ?? "no answer")\"}", perf: perf, perfSites: perfSites,
+                         store: store, to: destination)
                 }
             }
         }
@@ -25,7 +29,7 @@ enum Diagnostics {
         var pending: [(String, CraBrowser)] = []
         for (n, w) in windows.enumerated() {
             let m = w.browsers!
-            var s = "Window \(n + 1)\(w.window?.isKeyWindow == true ? " (key)" : ""): \(m.runtimes.count) live pages, frame \(w.window.map { NSStringFromRect($0.frame) } ?? "-")\n"
+            var s = "Window \(n + 1)\(w.window?.isKeyWindow == true ? " (key)" : ""): \(m.runtimes.count) live pages, frame \(w.window.map { NSStringFromRect($0.frame) } ?? "-"), display \(PageProbe.refreshRate(w.window?.screen))\n"
             for id in m.visibleTabIDs {
                 let item = store.item(id)
                 let incognito = store.isIncognito(item: id)
@@ -49,7 +53,8 @@ enum Diagnostics {
         }
     }
 
-    private static func save(pages: String, gpu: String, store: SidebarStore, to chosen: URL?) {
+    private static func save(pages: String, gpu: String, perf: [(name: String, text: String)], perfSites: Set<String>,
+                             store: SidebarStore, to chosen: URL?) {
         let stamp: String = {
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
@@ -64,14 +69,19 @@ enum Diagnostics {
         let folder = staging.appendingPathComponent(name, isDirectory: true)
         try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
         let home = NSHomeDirectory()
+        var sites = store.settings.perfHidesSiteNames ? SiteNames(hosts: knownSites(store).union(perfSites)) : nil
         func write(_ text: String, _ file: String) {
-            try? Data(DiagnosticsRedaction.redact(text, home: home).utf8).write(to: folder.appendingPathComponent(file))
+            var out = DiagnosticsRedaction.redact(text, home: home)
+            if sites != nil { out = sites!.apply(out) }
+            try? Data(out.utf8).write(to: folder.appendingPathComponent(file))
         }
 
         CraLog.flush()
         write(summary(store: store), "summary.txt")
         write(pages, "pages.txt")
         write(gpu, "gpu.json")
+        if perf.contains(where: { $0.name.hasPrefix("perf/") }) { try? fm.createDirectory(at: folder.appendingPathComponent("perf"), withIntermediateDirectories: true) }
+        for (name, text) in perf { write(text, name) }
         for (url, file) in [(CraLog.file, "cra.log"), (CraLog.previousFile, "cra.previous.log"),
                             (AppPaths.log, "chromium.log"), (CraLog.chromiumPreviousFile, "chromium.previous.log")] {
             if let data = try? Data(contentsOf: url) { write(String(decoding: data, as: UTF8.self), file) }
@@ -109,10 +119,22 @@ enum Diagnostics {
         if chosen == nil { NSWorkspace.shared.activateFileViewerSelecting([destination]) }
     }
 
+    /// Every site the zip can name: the log's, the sidebar's, the history's and the archive's
+    /// (Chromium's log names the sites of the same tabs).
+    private static func knownSites(_ store: SidebarStore) -> Set<String> {
+        var hosts = CraLog.sitesSeen
+        let urls = store.allTabs().compactMap { $0.tab?.url } + store.history.values.map(\.url)
+            + store.archive.compactMap { $0.item.tab?.url }
+        for u in urls { if let h = SiteNames.siteHost(of: u) { hosts.insert(h) } }
+        // The proxy servers extensions set (summary.txt's Proxy section, cra.log).
+        for c in ExtensionStore.shared.proxyControllers.values.joined() { hosts.formUnion(c.hosts) }
+        return hosts
+    }
+
     private static func askWhere(_ fileName: String) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Export Diagnostics"
-        panel.message = "Cra's logs, the state of the pages on screen and recent crash reports. Site names only: no addresses, history, cookies or passwords."
+        panel.message = "Cra's logs, its performance record, the state of the pages on screen and recent crash reports. Site names only: no addresses, history, cookies or passwords."
         panel.nameFieldStringValue = fileName
         panel.allowedContentTypes = [.zip]
         panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
@@ -127,15 +149,25 @@ enum Diagnostics {
         sysctlbyname("hw.model", nil, &size, nil, 0)
         var model = [CChar](repeating: 0, count: max(size, 1))
         sysctlbyname("hw.model", &model, &size, nil, 0)
-        let screens = NSScreen.screens.map { "\(Int($0.frame.width))x\(Int($0.frame.height))@\(Int($0.backingScaleFactor))x" }
+        let displays = NSScreen.screens.map { screen in
+            let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+            return DisplayDiagnostics(width: Int(screen.frame.width), height: Int(screen.frame.height), scale: Int(screen.backingScaleFactor),
+                                      maximumHz: screen.maximumFramesPerSecond,
+                                      minimumHz: DisplayDiagnostics.hz(interval: screen.maximumRefreshInterval),
+                                      builtIn: CGDisplayIsBuiltin(id) != 0, main: screen == NSScreen.screens.first)
+        }
+        // Chromium switches part of its window tracking off under Stage Manager (crbug 448103577).
+        let stageManager = UserDefaults.standard.persistentDomain(forName: "com.apple.WindowManager")?["GloballyEnabled"] as? Bool ?? false
         var lines = [
             "Cra \(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))",
             "Chromium \(CraCEFRuntime.chromiumVersion()), CEF \(CraCEFRuntime.cefVersion())",
             "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion), \(String(cString: model)), \(ProcessInfo.processInfo.physicalMemory >> 30) GB, \(ProcessInfo.processInfo.activeProcessorCount) cores",
-            "Displays: \(screens.joined(separator: ", "))",
+            DisplayDiagnostics.summary(displays),
+            "Stage Manager: \(stageManager ? "on" : "off")",
             "Running from: \(Bundle.main.bundlePath)",
             "Up for: \(Int(ProcessInfo.processInfo.systemUptime / 60)) min (Mac), \(Int(-(NSRunningApplication.current.launchDate ?? Date()).timeIntervalSinceNow / 60)) min (Cra)",
             "Embedded pages: \(EmbeddedPages.isEnabled), Chrome-style hosting: \(CraCEFRuntime.chromeHosting())",
+            "Secure DNS: \(CraCEFRuntime.secureDNSMode().map { SecureDNS(mode: $0, templates: CraCEFRuntime.secureDNSTemplates() ?? "").line } ?? "unknown")",
             "",
             "Spaces: \(store.spaces.count), profiles: \(store.profiles.count), tabs: \(store.allTabs().count)",
         ]
@@ -156,6 +188,14 @@ enum Diagnostics {
             let permissions = ((manifest?["permissions"] as? [Any]) ?? []).compactMap { $0 as? String }
                 .filter { $0.hasPrefix("webRequest") || $0.hasPrefix("declarativeNetRequest") || $0 == "proxy" }
             lines.append("  \(e.name) \(e.version) [\(e.extensionID)]\(e.managedByChrome ? " web store" : "")\(permissions.isEmpty ? "" : " " + permissions.joined(separator: ","))")
+        }
+        // Two extensions that set the proxy collide quietly (GitHub #107): the one in use and the
+        // ones it overrides, per profile.
+        lines += ["", "Proxy:"]
+        let proxies = ExtensionStore.shared.proxyControllers
+        if proxies.isEmpty { lines.append("  not set by an extension") }
+        for profile in proxies.keys.sorted() {
+            lines.append("  \(profile): " + ExtensionStore.proxyLine(proxies[profile] ?? []))
         }
         return lines.joined(separator: "\n") + "\n"
     }

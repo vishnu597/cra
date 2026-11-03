@@ -18,7 +18,7 @@ final class PaneToolbarView: NSView {
 
     private struct Model: Equatable {
         typealias Kind = ToolbarComposition.Kind
-        struct Ext: Equatable { let id: String; let name: String; let icon: NSImage? }
+        struct Ext: Equatable { let id: String; let name: String; let icon: NSImage?; let badge: ExtensionBadge? }
         var kind = Kind.noTab
         var inSplit = false
         var focusedPane = true
@@ -28,7 +28,6 @@ final class PaneToolbarView: NSView {
         var url = ""
         var host = ""
         var path = ""
-        var status: ToolbarStatus?
         var sidebarVisible = true
         var pinned: [Ext] = []
         var hasExtensions = false
@@ -59,6 +58,8 @@ final class PaneToolbarView: NSView {
     private let placeholderLabel = NSTextField.sidebarLabel(size: 13)
     private let hairline = NSView()
     private let devDivider = NSView()
+    /// Arc's rule between the developer buttons and the extensions.
+    private let devTrailingDivider = NSView()
     private let stripes = DeveloperStripesView()
     /// Arc lifts the whole developer bar ~9% toward white while its address field is edited.
     private let editVeil = NSView()
@@ -73,15 +74,18 @@ final class PaneToolbarView: NSView {
         wantsLayer = true
         hairline.wantsLayer = true
         devDivider.wantsLayer = true
+        devTrailingDivider.wantsLayer = true
         stripes.isHidden = true
         addSubview(stripes)
         placeholderLabel.stringValue = "Search or Enter URL…"
         urlButton.action = { [weak self] in self?.editURL() }
+        urlButton.onCopy = { [weak self] in self?.copyURL() }
+        urlButton.menuProvider = { [weak self] in self?.addressMenu() }
         urlButton.onCommit = { [weak self] in self?.actions.loadTyped($0) }
         urlButton.onEditingChange = { [weak self] in self?.editVeil.isHidden = !$0 }
         editVeil.wantsLayer = true
         editVeil.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
-        for v in [hairline, editVeil, devDivider, urlButton, placeholderLabel] as [NSView] {
+        for v in [hairline, editVeil, devDivider, devTrailingDivider, urlButton, placeholderLabel] as [NSView] {
             v.isHidden = true
             addSubview(v)
         }
@@ -127,7 +131,6 @@ final class PaneToolbarView: NSView {
         m.canGoBack = nav.canGoBack
         m.canGoForward = nav.canGoForward
         m.isLoading = nav.isLoading
-        m.status = m.focusedPane ? ui.toolbarStatus : nil
         m.sidebarVisible = store.window(ui.windowID).sidebarVisible
         if let item, item.isEmptyTab {
             m.kind = .emptyPane
@@ -137,20 +140,25 @@ final class PaneToolbarView: NSView {
             m.url = t.url
             let human = SuggestionEngine.humanURL(t.url)
             m.host = AppSettings.siteKey(for: t.url) ?? human
-            m.path = human.hasPrefix(m.host) ? String(human.dropFirst(m.host.count)) : ""
+            // Arc shows the host only unless "Show Full URL" is on (#88).
+            m.path = store.settings.toolbarShowsFullURL && human.hasPrefix(m.host) ? String(human.dropFirst(m.host.count)) : ""
         }
         let extensions = ExtensionStore.shared
-        let entries = extensions.entries(inProfile: item.map { store.profileDirectoryName(item: $0.id) }
-                                         ?? store.profileDirectoryName(space: store.focusedSpaceID(window: ui.windowID)))
+        let profile = item.map { store.profileDirectoryName(item: $0.id) }
+            ?? store.profileDirectoryName(space: store.focusedSpaceID(window: ui.windowID))
+        let entries = extensions.entries(inProfile: profile)
         m.hasExtensions = !entries.isEmpty
-        m.pinned = extensions.pinnedIDs.compactMap { id in
-            entries.first { $0.extensionID == id }.map { Model.Ext(id: id, name: $0.name, icon: extensions.toolbarIcon(for: $0)) }
+        m.pinned = extensions.pinnedIDs(inProfile: profile).compactMap { id in
+            entries.first { $0.extensionID == id }.map {
+                Model.Ext(id: id, name: $0.name, icon: extensions.toolbarIcon(for: $0, profile: profile, tab: m.tabID),
+                          badge: extensions.badge(for: $0, profile: profile, tab: m.tabID))
+            }
         }
-        // Arc's toolbar colour: the page's theme-color when it declares one, else white until the
-        // page reports one (MainWindowController.browserManagerDidUpdate uses the same rule).
+        // Arc's toolbar colour (ToolbarColor): the page's report, else the tab's last colour, else
+        // white (MainWindowController.toolbarColors uses the same rule for the card behind the bar).
+        // The tab's own colour counts until its page is live: retarget builds this before it is.
         let onCard = m.kind == .normal || m.kind == .developer
-        let theme = nav.themeColor
-        let cardHex = theme != "none" && !theme.isEmpty && HexColor.components(theme) != nil ? theme : nil
+        let cardHex = ToolbarColor.hex(reported: nav.themeColor, remembered: item?.tab?.themeColor)
         let light = (cardHex.flatMap(HexColor.luminance) ?? 1) > 0.6
         if onCard {
             m.fill = cardHex.map { NSColor(hex: $0) } ?? .white
@@ -211,6 +219,17 @@ final class PaneToolbarView: NSView {
 
     private func apply(old: Model) {
         let m = model
+        // A tab's bar fades to the colour its page reports, like Arc's (white to the page's colour over
+        // 14-16 frames at 100 fps, ease in and out, measured for GitHub #84). A tab switch is instant.
+        if m.kind == .normal, old.kind == .normal, m.tabID != nil, m.tabID == old.tabID, m.fill != old.fill, let layer {
+            let fade = CABasicAnimation(keyPath: "backgroundColor")
+            fade.fromValue = layer.presentation()?.backgroundColor ?? old.fill.cgColor
+            fade.duration = 0.18
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(fade, forKey: "barFade")
+        } else {
+            layer?.removeAnimation(forKey: "barFade")
+        }
         layer?.backgroundColor = m.fill.cgColor
         stripes.isHidden = !m.stripes
         // The card under the bar takes its colour and height (Arc's developer bar is 40 pt, 32 otherwise).
@@ -238,12 +257,18 @@ final class PaneToolbarView: NSView {
                 return glyph("copy", "link", help: "Copy URL (⇧⌘C)", width: 28) { $0.actions.performAction("copyURL") }
             case .divider:
                 return devDivider
-            case .devTools:
-                return glyph("devtools", "terminal", help: "Developer Tools (⌥⌘I)", width: 28) { $0.actions.performAction("devTools") }
+            case .console:
+                return glyph("console", "terminal", help: "Toggle Console (⌥⌘J)", width: 28) { $0.actions.performAction("jsConsole") }
+            case .network:
+                return glyph("network", "globe", help: "Toggle Network Panel", width: 28) { $0.actions.performAction("networkPanel") }
+            case .inspect:
+                return glyph("inspect", "scope", help: "Inspect Element (⌥⌘C)", width: 28) { $0.actions.performAction("inspectElement") }
             case .pinnedExtension(let id):
                 let e = m.pinned.first { $0.id == id }
                 let b = button("ext:" + id) { ToolbarGlyphButton() }
-                b.configure(symbol: nil, image: e?.icon, help: e?.name ?? "", enabled: true, width: 34, iconSize: 18, tint: m.fgDim, hover: m.hover)
+                // Arc: the 16 pt action icon with its badge, and no tooltip (Arc 1.171, #106).
+                b.configure(symbol: nil, image: ExtensionStore.shared.badged(e?.icon, e?.badge, tint: m.fgDim), help: "", enabled: true,
+                            width: 34, iconSize: 16, tint: m.fgDim, hover: m.hover)
                 b.action = { [weak self] in self?.actions.runExtension(id) }
                 b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
                 return b
@@ -263,12 +288,14 @@ final class PaneToolbarView: NSView {
         let l = bar.left.compactMap { view($0) as? ToolbarGlyphButton }
         let r = bar.right.map(view)
         devDivider.layer?.backgroundColor = m.dividerColor.cgColor
+        devTrailingDivider.layer?.backgroundColor = m.dividerColor.cgColor
         let used = Set((l as [NSView] + r).map(ObjectIdentifier.init))
         for (k, b) in buttons where !used.contains(ObjectIdentifier(b)) {
             b.removeFromSuperview()
             buttons[k] = nil
         }
         devDivider.isHidden = !r.contains { $0 === devDivider }
+        devTrailingDivider.isHidden = devDivider.isHidden || r.last === buttons["inspect"]
         left = l
         right = r
 
@@ -279,8 +306,8 @@ final class PaneToolbarView: NSView {
             placeholderLabel.isHidden = true
             // Arc's developer URL has no hover fill (it edits in place on a click).
             let urlHover = m.kind == .developer ? NSColor.clear : NSColor.white.withAlphaComponent(0.08)
-            urlButton.show(host: m.host, path: m.path, url: m.url, developer: m.kind == .developer, status: m.status,
-                           fg: m.fg, fgDim: m.fgDim, hover: urlHover, animated: old.status?.id != m.status?.id && window != nil)
+            urlButton.show(host: m.host, path: m.path, url: m.url, developer: m.kind == .developer,
+                           fg: m.fg, fgDim: m.fgDim, hover: urlHover, copyHover: m.hover)
             urlButton.selection = m.selection
         case .noTab, .emptyPane:
             urlButton.isHidden = true
@@ -311,13 +338,14 @@ final class PaneToolbarView: NSView {
         }
         let leftEnd = left.isEmpty ? 0 : x
         // Right group, from the trailing edge: pinned extensions … Split View 6 pt in; a split pane's
-        // close 4 pt in; developer copy · divider · DevTools spaced like the HStack around them.
+        // close 4 pt in; developer copy | Console, Network, Inspect | spaced as in Arc 1.170 (#88).
         var rx = w - (m.inSplit ? 4 : (right.isEmpty ? 0 : 6))
         var trailing = right
         var devGroup: [NSView] = []
-        if m.kind == .developer, let i = trailing.firstIndex(where: { $0 === devDivider }) {
-            devGroup = Array(trailing[(i - 1)...(i + 1)])
-            trailing.removeSubrange((i - 1)...(i + 1))
+        if m.kind == .developer, let i = trailing.firstIndex(where: { $0 === devDivider }),
+           let end = trailing.firstIndex(where: { $0 === buttons["inspect"] }) {
+            devGroup = Array(trailing[(i - 1)...end])
+            trailing.removeSubrange((i - 1)...end)
         }
         for v in trailing.reversed() {
             let bw = (v as? ToolbarGlyphButton)?.width ?? 26
@@ -325,12 +353,18 @@ final class PaneToolbarView: NSView {
             v.frame = NSRect(x: rx, y: (h - bh) / 2, width: bw, height: bh)
         }
         if !devGroup.isEmpty {
-            if !trailing.isEmpty { rx -= 6 }
+            // Arc: Inspect, 7 pt, a rule, 8 pt, Extensions; copy, 14 pt, a rule, 13 pt, then the
+            // next group (Arc's Capture buttons, which Cra doesn't have).
+            if !trailing.isEmpty {
+                rx -= 8 + 1
+                devTrailingDivider.frame = NSRect(x: rx, y: (h - 14) / 2, width: 1, height: 14)
+                rx -= 7
+            }
             for v in devGroup.reversed() {
                 if v === devDivider {
-                    rx -= 6 + 5 + 1
+                    rx -= 13 + 1
                     v.frame = NSRect(x: rx, y: (h - 14) / 2, width: 1, height: 14)
-                    rx -= 5 + 6
+                    rx -= 14
                 } else {
                     let bw = (v as? ToolbarGlyphButton)?.width ?? 26
                     rx -= bw
@@ -349,10 +383,10 @@ final class PaneToolbarView: NSView {
             let ux = a + (b - a - uw) / 2
             urlButton.frame = NSRect(x: ux, y: (h - 28) / 2, width: uw, height: 28)
         case .developer:
-            // The URL fills half the room after its 8 pt lead; a Spacer(min 8) takes the rest.
+            // Arc's address field (contentPanelTextField) runs from its 8 pt lead to 7 pt before
+            // Copy Link (Arc 1.170, #88); it has no hover, so only clicks and long URLs see its width.
             let start = a + 8
-            let room = max(0, b - start - 6 - 8)
-            urlButton.frame = NSRect(x: start, y: (h - 28) / 2, width: room / 2 + 8, height: 28)
+            urlButton.frame = NSRect(x: start, y: (h - 28) / 2, width: max(0, rightStart - 7 - start), height: 28)
         case .noTab, .emptyPane:
             let s = placeholderLabel.intrinsicContentSize
             let pw = min(ceil(placeholderLabel.attributedStringValue.size().width), max(0, b - a))
@@ -379,32 +413,58 @@ final class PaneToolbarView: NSView {
         if let id = paneTabID { actions.editPaneURL(id) } else { actions.openCommandBar(model.kind == .noTab ? .newTab : .editURL) }
     }
 
+    private func copyURL() {
+        if let id = paneTabID { actions.focusPane(id) }
+        actions.performAction("copyURL")
+    }
+
+    /// Arc's menu on the toolbar address: Copy URL, and Show Full URL / Hide Full URL for the
+    /// normal bar (the developer bar always shows it).
+    private func addressMenu() -> NSMenu? {
+        guard model.kind == .normal || model.kind == .developer else { return nil }
+        let menu = NSMenu()
+        menu.addItem(ToolbarMenuAction.item("Copy URL", shortcut: "copyURL", { [weak self] in self?.copyURL() }))
+        if model.kind == .normal {
+            let full = store.settings.toolbarShowsFullURL
+            menu.addItem(ToolbarMenuAction.item(full ? "Hide Full URL" : "Show Full URL", { [weak self] in
+                self?.store.settings.toolbarShowsFullURL.toggle()
+            }))
+        }
+        return menu
+    }
+
     private func showSplitMenu(from view: NSView?) {
         guard let id = paneTabID, let view else { return }
         let menu = NSMenu()
-        let items: [(String, () -> Void)?] = [
-            ("Separate Tab from Split", { [weak self] in self?.actions.separatePane(id) }),
-            ("Flip Split View Orientation", { [weak self] in self?.actions.performAction("flipSplitOrientation") }),
+        let items: [(String, String, () -> Void)?] = [
+            ("Separate Tab from Split", "separateFromSplit", { [weak self] in self?.actions.separatePane(id) }),
+            ("Flip Split View Orientation", "flipSplitOrientation", { [weak self] in self?.actions.performAction("flipSplitOrientation") }),
             nil,
-            ("Copy Link", { [weak self] in self?.actions.performAction("copyURL") }),
+            ("Copy Link", "copyURL", { [weak self] in self?.actions.performAction("copyURL") }),
             nil,
-            ("Close this Split Pane", { [weak self] in self?.actions.closePane(id) }),
+            ("Close this Split Pane", "closeSplitPane", { [weak self] in self?.actions.closePane(id) }),
         ]
         for entry in items {
-            guard let (title, run) = entry else { menu.addItem(.separator()); continue }
-            menu.addItem(ToolbarMenuAction.item(title, run))
+            guard let (title, shortcut, run) = entry else { menu.addItem(.separator()); continue }
+            menu.addItem(ToolbarMenuAction.item(title, shortcut: shortcut, run))
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
     }
 
-    // A click anywhere on the bar edits the URL (a pane's click also focuses it); a drag moves
-    // the window, as on Arc's toolbar.
+    // Arc 1.170 opens the command bar from the address only (ToolbarURLButton) or the no-tab
+    // placeholder; a click on the bar's empty space just focuses its pane (GitHub #88), and a
+    // drag moves the window.
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { takesClickFromChildWindow }
     override func mouseDown(with event: NSEvent) { press.begin(event) }
     override func mouseDragged(with event: NSEvent) { press.drag(event) }
     override func mouseUp(with event: NSEvent) {
-        if press.finish() { editURL() }
+        guard press.finish() else { return }
+        if !placeholderLabel.isHidden, placeholderLabel.frame.contains(convert(event.locationInWindow, from: nil)) {
+            editURL()
+        } else if let id = paneTabID {
+            actions.focusPane(id)
+        }
     }
 }
 
@@ -413,11 +473,13 @@ private final class ToolbarMenuAction: NSObject {
     init(_ run: @escaping () -> Void) { self.run = run }
     @objc func fire() { run() }
 
-    static func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+    /// `shortcut` names the KeyBindings command whose keys the row shows (#89).
+    @MainActor static func item(_ title: String, shortcut: String? = nil, _ run: @escaping () -> Void) -> NSMenuItem {
         let a = ToolbarMenuAction(run)
         let item = NSMenuItem(title: title, action: #selector(fire), keyEquivalent: "")
         item.target = a
         item.representedObject = a
+        if let shortcut { item.showShortcut(of: shortcut) }
         return item
     }
 }
@@ -529,10 +591,13 @@ final class ToolbarGlyphButton: NSView {
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?() }
 }
 
-/// The URL in the middle of the bar: link glyph, host bright and path dimmer (the full URL in
-/// monospace after a lock in developer mode), or the nav-bar status in its place.
+/// The URL in the middle of the bar: Arc's Copy Current URL glyph and the host (the dimmer path
+/// after it with Show Full URL; the full URL in monospace after a lock in developer mode).
 final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     var action: () -> Void = {}
+    /// The link glyph's own click (Copy Current URL) and the address's right-click menu.
+    var onCopy: () -> Void = {}
+    var menuProvider: (() -> NSMenu?)?
     /// Developer mode's in-place address field: the text Return submits, and editing starting/ending.
     var onCommit: (String) -> Void = { _ in }
     var onEditingChange: (Bool) -> Void = { _ in }
@@ -543,28 +608,46 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     private var url = ""
     private var ink = NSColor.white
     private var press = WindowDragGesture()
+    private var contextClick = false
     private let content = NSView()
     private let icon = NSImageView()
     private let label = NSTextField.sidebarLabel(size: 13)
     private let tip: ArcTooltipAnchorView
+    private let copyTip: ArcTooltipAnchorView
     private var developer = false
     private var hover = NSColor.white.withAlphaComponent(0.08)
-    private var hovering = false { didSet { refreshFill() } }
+    private var copyHover = NSColor.white.withAlphaComponent(0.1)
+    /// Arc's normal bar (1.171, #88): the glyph is a 24 pt button of its own and the host has its
+    /// own pill, 24 pt tall, starting 20 pt in with the text 7 pt inside it. Each has its own hover;
+    /// the pointer picks one where they meet. The developer bar is one piece.
+    private var split = false
+    private enum Region { case none, copy, address }
+    private var region = Region.none { didSet { if region != oldValue { refreshFill() } } }
+    private let copyFill = NSView()
+    private let addressFill = NSView()
+    private static let copyBox: CGFloat = 24, pillStart: CGFloat = 20, textStart: CGFloat = 27, pillPad: CGFloat = 7
 
     override init(frame: NSRect) {
         tip = ArcTooltipAnchorView(frame: .zero)
+        copyTip = ArcTooltipAnchorView(frame: .zero)
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerCurve = .continuous
+        for f in [copyFill, addressFill] {
+            f.wantsLayer = true
+            f.layer?.cornerRadius = 7
+            f.layer?.cornerCurve = .continuous
+            addSubview(f)
+        }
         icon.imageScaling = .scaleNone
         content.wantsLayer = true
         content.addSubview(icon)
         content.addSubview(label)
         addSubview(content)
         tip.followsCursor = true
-        tip.frame = bounds
-        tip.autoresizingMask = [.width, .height]
         addSubview(tip)
+        (copyTip.text, copyTip.keys) = ArcTooltipLabel.split("Copy URL (⇧⌘C)")
+        addSubview(copyTip)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -581,33 +664,26 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
 
     /// The text's natural width plus padding; the bar centres and clips the button to it.
     var idealWidth: CGFloat {
-        ceil(10 + iconWidth + 7 + label.attributedStringValue.size().width + 10)
+        let text = label.attributedStringValue.size().width
+        return ceil(split ? Self.textStart + text + Self.pillPad : 10 + iconWidth + 7 + text + 10)
     }
 
     /// The glyph's own width, as SwiftUI lays an Image out; developer mode boxes it at 14 pt.
     private var iconWidth: CGFloat { developer ? 14 : ceil(icon.image?.size.width ?? 12) }
 
-    func show(host: String, path: String, url: String, developer: Bool, status: ToolbarStatus?, fg: NSColor, fgDim: NSColor, hover: NSColor,
-              animated: Bool) {
+    func show(host: String, path: String, url: String, developer: Bool, fg: NSColor, fgDim: NSColor, hover: NSColor,
+              copyHover: NSColor) {
         self.developer = developer
         self.hover = hover
+        self.copyHover = copyHover
+        split = !developer
+        copyTip.isHidden = !split
         self.url = url
         ink = fg
         field?.textColor = fg
         refreshFill()
         tip.text = url
-        if animated {
-            // SwiftUI's .transition(.opacity) on the status swap.
-            let fade = CATransition()
-            fade.type = .fade
-            fade.duration = 0.15
-            content.layer?.add(fade, forKey: "fade")
-        }
-        if let status {
-            icon.image = SidebarSymbols.image(status.symbol, size: 12, weight: .medium)
-            icon.contentTintColor = fgDim
-            label.attributedStringValue = NSAttributedString(string: status.text, attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: fgDim])
-        } else if developer {
+        if developer {
             icon.image = SidebarSymbols.image(url.hasPrefix("https://") ? "lock.fill" : "globe", size: 11, weight: .semibold)
             icon.contentTintColor = fgDim
             label.attributedStringValue = NSAttributedString(string: url, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: fg])
@@ -627,6 +703,19 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
         super.layout()
         content.frame = bounds
         let h = bounds.height
+        if split {
+            let box = Self.copyBox, y = (h - box) / 2
+            copyFill.frame = NSRect(x: 0, y: y, width: box, height: box)
+            addressFill.frame = NSRect(x: Self.pillStart, y: y, width: max(0, bounds.width - Self.pillStart), height: box)
+            icon.frame = NSRect(x: 0, y: 0, width: box, height: h)
+            let lh = label.intrinsicContentSize.height
+            label.frame = NSRect(x: Self.textStart - SidebarText.inset, y: (h - lh) / 2,
+                                 width: max(0, bounds.width - Self.textStart - Self.pillPad) + 2 * SidebarText.inset, height: lh)
+            copyTip.frame = NSRect(x: 0, y: 0, width: Self.pillStart, height: h)
+            tip.frame = NSRect(x: Self.pillStart, y: 0, width: max(0, bounds.width - Self.pillStart), height: h)
+            return
+        }
+        tip.frame = bounds
         let pad: CGFloat = developer ? 6 : 10
         let iconW = iconWidth
         let gap: CGFloat = developer ? 12 : 7
@@ -702,23 +791,43 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     func controlTextDidEndEditing(_ obj: Notification) { endEditing(commit: false) }
 
     private func refreshFill() {
-        layer?.backgroundColor = (hovering ? hover : .clear).cgColor
+        layer?.backgroundColor = (!split && region != .none ? hover : .clear).cgColor
+        copyFill.layer?.backgroundColor = (split && region == .copy ? copyHover : .clear).cgColor
+        addressFill.layer?.backgroundColor = (split && region == .address ? hover : .clear).cgColor
+    }
+
+    private func region(at event: NSEvent) -> Region {
+        let p = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(p) else { return .none }
+        return split && p.x < Self.pillStart ? .copy : .address
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for t in trackingAreas where t.owner === self { removeTrackingArea(t) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
-    // Part of the bar: a click edits the URL, a drag moves the window like the rest of it.
-    override func mouseDown(with event: NSEvent) { press.begin(event) }
-    override func mouseDragged(with event: NSEvent) { press.drag(event) }
-    override func mouseUp(with event: NSEvent) {
-        if press.finish(), bounds.contains(convert(event.locationInWindow, from: nil)) { action() }
+    override func mouseEntered(with event: NSEvent) { region = region(at: event) }
+    override func mouseMoved(with event: NSEvent) { region = region(at: event) }
+    override func mouseExited(with event: NSEvent) { region = .none }
+    // Part of the bar: a click edits the URL (or copies it from the glyph), a drag moves the window
+    // like the rest of it.
+    override func mouseDown(with event: NSEvent) {
+        contextClick = event.modifierFlags.contains(.control)
+        if contextClick { if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }; return }
+        press.begin(event)
     }
+    override func mouseDragged(with event: NSEvent) { if !contextClick { press.drag(event) } }
+    override func mouseUp(with event: NSEvent) {
+        guard !contextClick, press.finish() else { return }
+        switch region(at: event) {
+        case .copy: onCopy()
+        case .address: action()
+        case .none: break
+        }
+    }
+    override func menu(for event: NSEvent) -> NSMenu? { field == nil ? menuProvider?() : nil }
 }
 
 /// Arc's developer-bar stripes (GitHub #42), measured on Arc 1.170 at 2x: white 2% bands at 45°

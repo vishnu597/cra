@@ -45,6 +45,23 @@ struct SidebarModelTests {
         #expect(tab.iconKey == "picked")
     }
 
+    /// The line under a tab's title (GitHub #88): a developer-mode site shows its host on every
+    /// tab, a pinned tab shows it once it has left its site, a pull request shows its author.
+    @Test func sidebarSubtitle() {
+        var tab = TabData(url: "https://www.youtube.com/watch?v=1", title: "Video")
+        #expect(tab.sidebarSubtitle(navigatedAway: false, developerMode: false) == nil)
+        #expect(tab.sidebarSubtitle(navigatedAway: false, developerMode: true) == "youtube.com", "developer mode: the host, without www.")
+        tab.savedURL = "https://youtube.com/"
+        #expect(tab.sidebarSubtitle(navigatedAway: true, developerMode: false) == nil, "still on the pinned site")
+        tab.savedURL = "https://example.com/"
+        #expect(tab.sidebarSubtitle(navigatedAway: true, developerMode: false) == "youtube.com", "left the pinned site")
+        #expect(tab.sidebarSubtitle(navigatedAway: false, developerMode: false) == nil)
+        var pull = TabData(url: "https://github.com/o/r/pull/1")
+        pull.liveSubtitle = "octocat"
+        #expect(pull.sidebarSubtitle(navigatedAway: false, developerMode: true) == "octocat", "a pull request's author wins")
+        #expect(TabData(url: "notes").sidebarSubtitle(navigatedAway: false, developerMode: true) == nil, "no host, no line")
+    }
+
     @Test func containerKindsRoundTripAndNeedAKind() throws {
         for kind in [ContainerKind.favorites(spaceID: Self.space), .pinned(spaceID: Self.space), .today(spaceID: Self.space)] {
             #expect(try JSONDecoder().decode(ContainerKind.self, from: JSONEncoder().encode(kind)) == kind)
@@ -101,6 +118,16 @@ struct SidebarModelTests {
         #expect(settings.developerHosts.isEmpty)
         settings.toggleDeveloperMode(url: "notes")
         #expect(settings.developerHosts.isEmpty, "no host, nothing to toggle")
+    }
+
+    @Test func toolbarShowsTheHostOnlyUnlessAsked() throws {
+        #expect(!AppSettings().toolbarShowsFullURL, "Arc's default: the host only")
+        let decode = { (json: String) in try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8)) }
+        #expect(try !decode("{}").toolbarShowsFullURL, "settings from before the option keep Arc's default")
+        #expect(try decode(#"{"toolbarShowsFullURL": true}"#).toolbarShowsFullURL)
+        var settings = AppSettings()
+        settings.toolbarShowsFullURL = true
+        #expect(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings)).toolbarShowsFullURL)
     }
 
     @Test func littleWindowSwitchIsTheDefaultDestination() {
