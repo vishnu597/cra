@@ -15,6 +15,7 @@ enum WinCommands {
         CommandBarCommand(id: "reload", name: "Refresh the Page", triggers: ["refresh", "reload"], shortcut: "Ctrl+R"),
         CommandBarCommand(id: "hardReload", name: "Force Refresh the Page", shortcut: "Ctrl+Shift+R"),
         CommandBarCommand(id: "pinTab", name: "Pin/Unpin Tab", triggers: ["pin", "unpin"], shortcut: "Ctrl+D"),
+        CommandBarCommand(id: "find", name: "Find…", triggers: ["find", "search page"], shortcut: "Ctrl+F"),
     ]
 }
 
