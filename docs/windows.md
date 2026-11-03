@@ -92,4 +92,12 @@ it floats over the page, with inline completion, Tab scopes and Ctrl+Return. Fin
 (Ctrl+F, Ctrl+G, F3) floats the same way at the page's top right, and the downloads list
 (CraCore's DownloadHistory, downloads.json) opens from the sidebar footer's downloads button.
 Next: favicons in the bar, the sidebar and the downloads list.
+
+Phase 2 (Arc parity) has started. Split view: the selected tab's split shows its panes side by
+side or stacked, laid out by CraCore's `SplitPaneLayout` like the Mac's. The gaps between them
+are the window's own client area, which `HostWindow` paints in the space's colour and where it
+takes the divider drags (a double-click makes the panes equal). Ctrl+Shift+= adds a pane,
+Ctrl+Shift+- closes one, a click into a pane focuses it, and the split's sidebar row has Arc's
+split menu.
+
 The parity checklist and phases are in the porting plan.

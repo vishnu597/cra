@@ -10,6 +10,10 @@ protocol SidebarActions: AnyObject {
     func closeTab(_ id: UUID)
     /// "+ New Tab": the command bar, making a new tab.
     func beginNewTab()
+    /// A split row's "Add Tab…": an empty pane after its panes, the command bar asking for its page.
+    func addPane(toSplit id: UUID)
+    /// A pane's "Close": the pane's tab goes and the split keeps the others.
+    func closeSplitPane(_ id: UUID)
 }
 
 /// Arc's sidebar on the shared SidebarStore: favorites as tiles, the space's name, its pinned
@@ -142,10 +146,12 @@ final class SidebarView {
         } else if item.isSplit {
             let titles = store.children(of: item.id).map(\.displayTitle).joined(separator: " | ")
             let selected = store.selectedTabID.map { store.splitContaining($0)?.id == item.id } ?? false
-            let first = store.paneTabIDs(for: item.children.first ?? item.id).first
+            // A click opens the split on the pane last focused in it (Arc: focusItemID).
+            let panes = store.paneTabIDs(for: item.children.first ?? item.id)
+            let focus = item.split?.focusTabID.flatMap { panes.contains($0) ? $0 : nil } ?? panes.first
             appendRow(icon: "⧉", title: titles, depth: depth, selected: selected, unread: false, closable: nil,
-                      menu: first.flatMap { store.item($0) }.map(tabMenu)) { [weak self] in
-                if let first { self?.select(first) }
+                      menu: splitMenu(item, open: selected)) { [weak self] in
+                if let focus { self?.select(focus) }
             }
         } else if item.isTab {
             let closable = item.id
@@ -266,6 +272,37 @@ final class SidebarView {
         }
         menu.items.append(MenuFlyoutSeparator())
         menu.items.append(UI.menuItem(pinned ? "Close (Unload)" : "Close Tab") { [weak self] in self?.actions?.closeTab(id) })
+        return menu
+    }
+
+    /// Arc 1.171's split menu where the Windows app has the feature (SidebarMenus.split on the Mac).
+    private func splitMenu(_ split: SidebarItem, open: Bool) -> MenuFlyout {
+        let id = split.id
+        let menu = MenuFlyout()
+        let panes = store.children(of: id).filter(\.isTab)
+        menu.items.append(UI.menuItem("Separate All Tabs") { [weak self] in self?.store.separateAll(id) })
+        // Arc greys it out while the split is closed (no pane to add next to).
+        let add = UI.menuItem("Add Tab…") { [weak self] in self?.actions?.addPane(toSplit: id) }
+        add.isEnabled = open && panes.count < SplitPaneLayout.Constants.maximumPanes
+        menu.items.append(add)
+        let vertical = split.split?.orientation == .vertical
+        menu.items.append(UI.menuItem(vertical ? "Convert to Horizontal Split View" : "Convert to Vertical Split View") { [weak self] in
+            self?.store.flipSplitOrientation(id)
+        })
+        menu.items.append(MenuFlyoutSeparator())
+        for pane in panes {
+            let options = MenuFlyoutSubItem()
+            options.text = pane.displayTitle
+            let paneID = pane.id
+            options.items.append(UI.menuItem("Separate from Split View") { [weak self] in self?.store.separateFromSplit(paneID) })
+            options.items.append(UI.menuItem("Close") { [weak self] in self?.actions?.closeSplitPane(paneID) })
+            menu.items.append(options)
+        }
+        menu.items.append(MenuFlyoutSeparator())
+        menu.items.append(UI.menuItem("Archive Item") { [weak self] in
+            guard let self else { return }
+            for pane in panes { self.store.archiveTab(pane.id, reason: .manual) }
+        })
         return menu
     }
 

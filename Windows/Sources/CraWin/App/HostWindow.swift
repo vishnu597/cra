@@ -35,7 +35,19 @@ final class HostWindow {
     /// that when the window becomes active (at launch, Alt+Tab back, a dialog or the command bar
     /// going away). Give it to what should have it, or keys go nowhere.
     var onFocus: (() -> Void)?
+    /// The window's own client area shows wherever no page and no XAML covers it: between split
+    /// panes and in an empty pane. It is painted in this colour.
+    var background: HostColor = HostColor(r: 28, g: 36, b: 43) { didSet { if background != oldValue { invalidate() } } }
+    /// A rounded bar drawn on that area (a split divider being dragged), in `pillColor`.
+    var pill: PixelRect? { didSet { if pill != oldValue { invalidate() } } }
+    var pillColor = HostColor(r: 0, g: 0, b: 0)
+    /// The mouse on that area, in physical pixels relative to the client area. A press captures
+    /// the mouse, so moves and the release come here until it is let go.
+    var onMouse: ((HostMouseEvent) -> Void)?
+    /// The pointer's shape over that area at a client point; nil leaves the arrow.
+    var cursor: ((Int32, Int32) -> HostCursor?)?
     private var closed = false
+    private var lastPress: (time: Int32, x: Int32, y: Int32)?
     /// The window procedure below is a C function and can't capture its window. Kept after the
     /// window object goes: Windows still sends the window messages while destroying it.
     nonisolated(unsafe) private static var hooks: [UInt: Hook] = [:]
@@ -64,7 +76,7 @@ final class HostWindow {
         }
         try appWindow.resize(SizeInt32(width: Int32(width * scale), height: Int32(height * scale)))
         layout()
-        watchFocus()
+        hookWindowProcedure()
         try appWindow.show()
     }
 
@@ -94,19 +106,108 @@ final class HostWindow {
         _ = SetFocus(window)
     }
 
-    /// Hears WM_SETFOCUS ahead of AppWindow's own window procedure, which ignores it.
-    private func watchFocus() {
+    /// Hears messages ahead of AppWindow's own window procedure: WM_SETFOCUS, which it ignores,
+    /// and the painting and mouse of the client area the pages and XAML leave uncovered.
+    private func hookWindowProcedure() {
         guard let window = HWND(bitPattern: hwnd) else { return }
+        // Painting the uncovered area must not paint over the pages.
+        let style = GetWindowLongPtrW(window, GWL_STYLE)
+        _ = SetWindowLongPtrW(window, GWL_STYLE, style | LONG_PTR(Self.clipChildren))
         let proc: WNDPROC = { hwnd, message, wParam, lParam in
             guard let hook = HostWindow.hooks[UInt(bitPattern: hwnd)], let previous = hook.previous else {
                 return DefWindowProcW(hwnd, message, wParam, lParam)
             }
+            if let window = hook.window, let handled = window.handle(message, wParam, lParam) { return handled }
             let result = CallWindowProcW(previous, hwnd, message, wParam, lParam)
             if message == UINT(WM_SETFOCUS) { hook.window?.onFocus?() }
             return result
         }
         let previous = SetWindowLongPtrW(window, GWLP_WNDPROC, unsafeBitCast(proc, to: LONG_PTR.self))
         Self.hooks[hwnd] = Hook(previous: unsafeBitCast(previous, to: WNDPROC?.self), window: self)
+    }
+
+    // Message numbers and constants, spelled out: WinSDK imports some as macros Swift can't see.
+    private static let wmSetCursor: UINT = 0x0020, wmPaint: UINT = 0x000F, wmEraseBackground: UINT = 0x0014
+    private static let wmMouseMove: UINT = 0x0200, wmLeftDown: UINT = 0x0201, wmLeftUp: UINT = 0x0202
+    private static let wmCaptureChanged: UINT = 0x0215
+    private static let clipChildren: UInt32 = 0x0200_0000  // WS_CLIPCHILDREN
+    private static let hitClient = 1  // HTCLIENT
+    private static let doubleClickWidth: Int32 = 36, doubleClickHeight: Int32 = 37  // SM_CXDOUBLECLK, SM_CYDOUBLECLK
+
+    /// The result for a message this window answers itself; nil passes it on to AppWindow's.
+    private func handle(_ message: UINT, _ wParam: WPARAM, _ lParam: LPARAM) -> LRESULT? {
+        switch message {
+        case Self.wmEraseBackground:
+            return 1  // WM_PAINT fills it, without a flash of the class background first
+        case Self.wmPaint:
+            paint()
+            return 0
+        case Self.wmSetCursor:
+            // Over a page or the XAML, wParam is that child window: it keeps its own pointer.
+            guard UInt(wParam) == hwnd, Int(lParam & 0xFFFF) == Self.hitClient, let window = HWND(bitPattern: hwnd) else { return nil }
+            var p = POINT()
+            _ = GetCursorPos(&p)
+            _ = ScreenToClient(window, &p)
+            guard let shape = cursor?(p.x, p.y) else { return nil }
+            _ = SetCursor(LoadCursorW(nil, UnsafePointer<WCHAR>(bitPattern: shape.rawValue)))
+            return 1
+        case Self.wmLeftDown:
+            let (x, y) = Self.point(lParam)
+            let time = GetMessageTime()
+            var clicks = 1
+            if let last = lastPress, UInt32(bitPattern: time &- last.time) <= GetDoubleClickTime(),
+               abs(x - last.x) <= GetSystemMetrics(Self.doubleClickWidth) / 2, abs(y - last.y) <= GetSystemMetrics(Self.doubleClickHeight) / 2 {
+                clicks = 2
+            }
+            lastPress = clicks == 2 ? nil : (time, x, y)
+            if let window = HWND(bitPattern: hwnd) { _ = SetCapture(window) }
+            onMouse?(.down(x: x, y: y, clicks: clicks))
+            return 0
+        case Self.wmMouseMove:
+            let (x, y) = Self.point(lParam)
+            onMouse?(.move(x: x, y: y))
+            return nil
+        case Self.wmLeftUp:
+            let (x, y) = Self.point(lParam)
+            onMouse?(.up(x: x, y: y))
+            _ = ReleaseCapture()
+            return 0
+        case Self.wmCaptureChanged:
+            // Taken away mid-drag (Alt+Tab, a menu): the drag ends where it is.
+            onMouse?(.cancelled)
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    /// The client point a mouse message carries (signed: a captured drag goes past the edges).
+    private static func point(_ lParam: LPARAM) -> (Int32, Int32) {
+        (Int32(Int16(truncatingIfNeeded: lParam & 0xFFFF)), Int32(Int16(truncatingIfNeeded: (lParam >> 16) & 0xFFFF)))
+    }
+
+    private func paint() {
+        guard let window = HWND(bitPattern: hwnd) else { return }
+        var ps = PAINTSTRUCT()
+        guard let dc = BeginPaint(window, &ps) else { return }
+        if let brush = CreateSolidBrush(background.colorRef) {
+            _ = FillRect(dc, &ps.rcPaint, brush)
+            _ = DeleteObject(UnsafeMutableRawPointer(brush))
+        }
+        if let pill, pill.width > 0, pill.height > 0, let brush = CreateSolidBrush(pillColor.colorRef) {
+            let round = min(pill.width, pill.height)
+            if let region = CreateRoundRectRgn(pill.x, pill.y, pill.x + pill.width + 1, pill.y + pill.height + 1, round, round) {
+                _ = FillRgn(dc, region, brush)
+                _ = DeleteObject(UnsafeMutableRawPointer(region))
+            }
+            _ = DeleteObject(UnsafeMutableRawPointer(brush))
+        }
+        _ = EndPaint(window, &ps)
+    }
+
+    private func invalidate() {
+        guard !closed, let window = HWND(bitPattern: hwnd) else { return }
+        _ = InvalidateRect(window, nil, false)
     }
 
     func close() {
@@ -123,4 +224,34 @@ final class HostWindow {
         try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: frame.x, height: frame.height))
         onLayout?(frame)
     }
+}
+
+/// An opaque colour for the window's own painting.
+struct HostColor: Equatable {
+    var r: UInt8, g: UInt8, b: UInt8
+
+    /// GDI's COLORREF, 0x00BBGGRR.
+    var colorRef: COLORREF { COLORREF(r) | COLORREF(g) << 8 | COLORREF(b) << 16 }
+
+    /// This colour with `other` laid over it at `alpha`.
+    func blended(with other: HostColor, alpha: Double) -> HostColor {
+        func mix(_ a: UInt8, _ b: UInt8) -> UInt8 { UInt8((Double(a) * (1 - alpha) + Double(b) * alpha).rounded()) }
+        return HostColor(r: mix(r, other.r), g: mix(g, other.g), b: mix(b, other.b))
+    }
+}
+
+/// The left button on the window's own client area (HostWindow.onMouse).
+enum HostMouseEvent {
+    case down(x: Int32, y: Int32, clicks: Int)
+    case move(x: Int32, y: Int32)
+    case up(x: Int32, y: Int32)
+    /// The mouse capture was taken away before the release.
+    case cancelled
+}
+
+/// System pointers, by their IDC_ resource numbers.
+enum HostCursor: UInt {
+    case resizeLeftRight = 32644  // IDC_SIZEWE
+    case resizeUpDown = 32645  // IDC_SIZENS
+    case hand = 32649  // IDC_HAND
 }
