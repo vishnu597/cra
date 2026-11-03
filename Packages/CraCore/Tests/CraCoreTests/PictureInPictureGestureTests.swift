@@ -1,5 +1,8 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import CraCore
+import Foundation
 import Testing
 
 /// A press on the Picture in Picture window: click, move or aspect-locked resize (issue #134).

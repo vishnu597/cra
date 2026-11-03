@@ -1,4 +1,8 @@
+// CGFloat, CGPoint and CGRect come from Foundation off Apple platforms (Windows, Linux).
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
+import Foundation
 
 /// What a press on the Picture in Picture window does (issue #134): a drag from its middle moves
 /// the window, a drag from an edge or corner resizes it with the video's aspect ratio, and a
