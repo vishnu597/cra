@@ -69,6 +69,15 @@ final class BrowserWindow {
         sidebar = SidebarView(store: store, actions: self)
         downloads = DownloadsTray(history: .shared, dispatcher: dispatcher)
         sidebar.attachDownloads(button: downloads.button, list: downloads.list)
+        downloads.pointer = { [weak self] in
+            guard let self, let window = self.window, let host = HWND(bitPattern: self.hwnd) else { return nil }
+            var p = POINT(x: Int32.min, y: Int32.min)
+            _ = GetCursorPos(&p)
+            guard p.x != Int32.min else { return nil }
+            _ = ScreenToClient(host, &p)
+            // The XAML island starts at the client area's top left.
+            return (Double(p.x) / window.scale, Double(p.y) / window.scale)
+        }
         window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
         window.title = "Cra"
         hwnd = window.hwnd
@@ -481,12 +490,20 @@ final class BrowserWindow {
         findVisible = false
         findBar.reset()
         shownPage?.stopFinding(clearSelection: true)
-        let hadFront = UInt(bitPattern: GetForegroundWindow()) == findWindow?.hwnd
+        let front = UInt(bitPattern: GetForegroundWindow())
+        let ours = front == findWindow?.hwnd || front == hwnd
         findWindow?.hide()
-        guard !closing else { return }
-        // Typing goes back to the page, unless another app came to the front meanwhile.
-        if hadFront, let window = HWND(bitPattern: hwnd) { _ = SetForegroundWindow(window) }
-        focusContent()
+        guard !closing, ours else { return }
+        // Typing goes back to the page, unless another app came to the front meanwhile. Again
+        // once the click on ✕ is done with: XAML handing the press back to its button left the
+        // hidden bar's window in front, with the keyboard.
+        let restore = { [weak self] in
+            guard let self, !self.findVisible, let window = HWND(bitPattern: self.hwnd) else { return }
+            _ = SetForegroundWindow(window)
+            self.focusContent()
+        }
+        restore()
+        _ = try? dispatcher.tryEnqueue(restore)
     }
 
     /// Ctrl+G, Ctrl+Shift+G, F3: the next or previous match; opens the bar first.

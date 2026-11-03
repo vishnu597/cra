@@ -52,6 +52,10 @@ int cra_cef_live_browser_count(void);
 const char *cra_cef_chromium_version(void);
 const char *cra_cef_version(void);
 
+/// An Explorer window on the file's folder with the file selected (Finder's "Show in Finder").
+/// Reuses a window already open on that folder, as Explorer's own "Open file location" does.
+void cra_shell_show_in_folder(const char *path);
+
 // MARK: - Browser callbacks
 
 typedef enum CraDownloadState {

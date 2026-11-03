@@ -29,6 +29,8 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
+#include "include/cef_request_context.h"
+#include "include/cef_values.h"
 #include "include/cef_version.h"
 #include "include/wrapper/cef_helpers.h"
 
@@ -93,6 +95,19 @@ const char kThemeProbe[] =
 
 /// Settings for every page Cra makes. Cra draws its own status bubble.
 void CraPageSettings(CefBrowserSettings &settings) { settings.chrome_status_bubble = STATE_DISABLED; }
+
+/// Cra shows downloads itself, the way Arc does. Chrome's download bubble ("10Mb.dat · Done")
+/// still pops up at the page's top left when a download finishes: Chrome's "Show downloads
+/// when they're done" setting, off as on the Mac (HideDownloadBubble in CraCEF.mm).
+void HideDownloadBubble(CefRefPtr<CefRequestContext> context) {
+    if (!context) return;
+    CefRefPtr<CefValue> off = CefValue::Create();
+    off->SetBool(false);
+    CefString error;
+    if (!context->SetPreference("download_bubble.partial_view_enabled", off, error)) {
+        fprintf(stderr, "CraCEFWin: download_bubble.partial_view_enabled: %s\n", error.ToString().c_str());
+    }
+}
 
 std::wstring DownloadsFolder() {
     PWSTR path = nullptr;
@@ -612,6 +627,7 @@ public:
     void OnContextInitialized() override {
         CEF_REQUIRE_UI_THREAD();
         g_contextInitialized = true;
+        HideDownloadBubble(CefRequestContext::GetGlobalContext());
         std::vector<CraBrowser *> pending;
         pending.swap(g_pendingCreation);
         for (CraBrowser *b : pending) {
@@ -892,4 +908,13 @@ extern "C" void cra_browser_close(CraBrowser *b) {
         b->Finish();  // no page was ever made
     }
     // Otherwise CreateBrowser is in flight: OnAfterCreated closes it.
+}
+
+extern "C" void cra_shell_show_in_folder(const char *path) {
+    if (!path || !*path) return;
+    std::wstring file = Wide(path);
+    PIDLIST_ABSOLUTE item = ILCreateFromPathW(file.c_str());
+    if (!item) return;
+    SHOpenFolderAndSelectItems(item, 0, nullptr, 0);
+    ILFree(item);
 }

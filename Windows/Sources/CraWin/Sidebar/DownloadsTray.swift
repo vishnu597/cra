@@ -1,3 +1,4 @@
+import CraCEFWin
 import CraCore
 import Foundation
 import Observation
@@ -29,10 +30,16 @@ final class DownloadsTray {
     private let progress = TextBlock()
     private var rows: [Row] = []
     private var isOpen = false
-    private var buttonHovered = false
-    private var listHovered = false
+    /// The pointer in the XAML's coordinates (DIPs from the sidebar's top left), nil when it
+    /// can't be read. XAML's PointerEntered and PointerExited come and go as the rows redraw
+    /// under a still pointer, so the list asks where the pointer is instead.
+    var pointer: () -> (x: Double, y: Double)? = { nil }
+    /// Waits out the hover (0.2 s to open, 0.07 s to close), then checks every 0.07 s while the
+    /// list is up; the ages tick once a second.
     private var hoverTimer: WinAppSDK.DispatcherQueueTimer?
-    private var ticker: WinAppSDK.DispatcherQueueTimer?
+    private var hoverStarted: Date?
+    private var awayChecks = 0
+    private var lastAges = Date.distantPast
     private var palette = SidebarPalette(SpaceTheme.presets[0])
     private var fill: Brush = UI.clear
 
@@ -50,18 +57,17 @@ final class DownloadsTray {
         content.children.append(progress)
         button = UI.button(content, padding: Thickness(left: 6, top: 5, right: 6, bottom: 5)) {}
         button.verticalAlignment = .center
-        try? ToolTipService.setToolTip(button, "Downloads")
+        button.horizontalAlignment = .left
+        // No tooltip: it would cover the pointer and end the hover.
         list.orientation = .vertical
         list.spacing = 16
         list.verticalAlignment = .bottom
         list.padding = Thickness(left: 0, top: 12, right: 0, bottom: 2)
         list.visibility = .collapsed
-        // A click opens it too (touch, or a pointer that came in too fast for the hover).
+        // A click opens it at once (touch, or a pointer quicker than the hover).
         button.click.addHandler { [weak self] _, _ in self?.setOpen(true) }
-        button.pointerEntered.addHandler { [weak self] _, _ in self?.hover(button: true) }
-        button.pointerExited.addHandler { [weak self] _, _ in self?.hover(button: false) }
-        list.pointerEntered.addHandler { [weak self] _, _ in self?.hover(list: true) }
-        list.pointerExited.addHandler { [weak self] _, _ in self?.hover(list: false) }
+        button.pointerEntered.addHandler { [weak self] _, _ in self?.startWatching() }
+        list.pointerEntered.addHandler { [weak self] _, _ in self?.startWatching() }
         observe()
     }
 
@@ -84,18 +90,7 @@ final class DownloadsTray {
             // Inside the change: draw once it is done.
             onMain { _ = try? self?.dispatcher.tryEnqueue { self?.observe() } }
         }
-        while rows.count < recent.count {
-            let row = Row()
-            row.apply(palette)
-            rows.append(row)
-            list.children.append(row.root)
-        }
-        while rows.count > recent.count {
-            rows.removeLast()
-            list.children.removeAtEnd()
-        }
-        let now = Date()
-        for (row, item) in zip(rows, recent) { row.show(item, now: now) }
+        show(recent)
         // The button says how far the running downloads are (Arc throws the file at its Library
         // button instead; the list has the detail).
         if running.isEmpty {
@@ -108,41 +103,82 @@ final class DownloadsTray {
         if recent.isEmpty, isOpen { setOpen(false) }
     }
 
-    private func refreshAges() {
+    /// One row per listed download. Also on the ticks: a file deleted since drops out, which
+    /// nothing observable reports.
+    private func show(_ recent: [DownloadHistory.Listed]) {
+        while rows.count < recent.count {
+            let row = Row()
+            row.apply(palette)
+            rows.append(row)
+            list.children.append(row.root)
+        }
+        while rows.count > recent.count {
+            rows.removeLast()
+            list.children.removeAtEnd()
+        }
         let now = Date()
-        for (row, item) in zip(rows, history.recent) { row.show(item, now: now) }
+        for (row, item) in zip(rows, recent) { row.show(item, now: now) }
     }
 
-    private func hover(button: Bool? = nil, list: Bool? = nil) {
-        if let button { buttonHovered = button }
-        if let list { listHovered = list }
-        let open = (buttonHovered || listHovered) && !history.recent.isEmpty
-        try? hoverTimer?.stop()
-        guard open != isOpen else { return }
+    // MARK: Hover
+
+    private func startWatching() {
+        if hoverStarted == nil { hoverStarted = Date() }
+        guard hoverTimer == nil else { return }
         hoverTimer = try? dispatcher.createTimer()
-        hoverTimer?.interval = TimeSpan(duration: open ? 200 * 10_000 : 70 * 10_000)
-        hoverTimer?.isRepeating = false
-        hoverTimer?.tick.addHandler { [weak self] _, _ in self?.setOpen(open) }
+        hoverTimer?.interval = TimeSpan(duration: 70 * 10_000)
+        hoverTimer?.isRepeating = true
+        hoverTimer?.tick.addHandler { [weak self] _, _ in self?.check() }
         try? hoverTimer?.start()
     }
 
-    private func setOpen(_ open: Bool) {
+    private func stopWatching() {
         try? hoverTimer?.stop()
+        hoverTimer = nil
+        hoverStarted = nil
+    }
+
+    private func check() {
+        let over = isOver(button) || (isOpen && isOver(list))
+        if over {
+            awayChecks = 0
+            if !isOpen, let started = hoverStarted, Date().timeIntervalSince(started) >= 0.2 { setOpen(true) }
+        } else {
+            hoverStarted = nil
+            // Away for a whole check (0.07 s): closed.
+            awayChecks += 1
+            if awayChecks >= 1 {
+                if isOpen { setOpen(false) }
+                stopWatching()
+                return
+            }
+        }
+        if isOpen, Date().timeIntervalSince(lastAges) >= 1 {
+            lastAges = Date()
+            show(history.recent)
+            if history.recent.isEmpty { setOpen(false) }
+        }
+    }
+
+    private func isOver(_ element: FrameworkElement) -> Bool {
+        guard element.visibility == .visible, let p = pointer(),
+              let transform = try? element.transformToVisual(nil),
+              let origin = try? transform.transformPoint(WindowsFoundation.Point(x: 0, y: 0)) else { return false }
+        let x = p.x - Double(origin.x), y = p.y - Double(origin.y)
+        return x >= 0 && y >= 0 && x < element.actualWidth && y < element.actualHeight
+    }
+
+    private func setOpen(_ open: Bool) {
         let open = open && !history.recent.isEmpty
         guard open != isOpen else { return }
         isOpen = open
         list.visibility = open ? .visible : .collapsed
-        // The ages tick while the list is up.
         if open {
-            refreshAges()
-            ticker = try? dispatcher.createTimer()
-            ticker?.interval = TimeSpan(duration: 10_000_000)
-            ticker?.isRepeating = true
-            ticker?.tick.addHandler { [weak self] _, _ in self?.refreshAges() }
-            try? ticker?.start()
-        } else {
-            try? ticker?.stop()
-            ticker = nil
+            lastAges = Date()
+            show(history.recent)
+            // Kept open while the pointer is over the button or the list.
+            awayChecks = 0
+            startWatching()
         }
     }
 
@@ -214,8 +250,9 @@ final class DownloadsTray {
 enum Shell {
     static func open(_ path: String) { run("open", path, nil) }
 
-    /// An Explorer window on the file's folder, the file selected.
-    static func showInFolder(_ path: String) { run("open", "explorer.exe", "/select,\"\(path)\"") }
+    /// An Explorer window on the file's folder, the file selected (explorer /select didn't
+    /// select it in a window already open on the folder).
+    static func showInFolder(_ path: String) { cra_shell_show_in_folder(path) }
 
     private static func run(_ verb: String, _ file: String, _ parameters: String?) {
         verb.withCString(encodedAs: UTF16.self) { verb in

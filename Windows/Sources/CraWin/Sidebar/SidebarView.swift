@@ -22,7 +22,8 @@ final class SidebarView {
     private let header = Grid()
     private let list = StackPanel()
     private let spacesBar = StackPanel()
-    /// The downloads button on the left (Arc's Library button), the spaces in the middle.
+    /// The downloads button on the left (Arc's Library button) over the same cell as the spaces,
+    /// so they stay centred whatever the button shows.
     private let footer = Grid()
     private let store: SidebarStore
     private weak var actions: SidebarActions?
@@ -47,10 +48,8 @@ final class SidebarView {
         spacesBar.orientation = .horizontal
         spacesBar.spacing = 2
         spacesBar.horizontalAlignment = .center
-        for width in [UI.auto, UI.star] { footer.columnDefinitions.append(UI.column(width)) }
         footer.margin = Thickness(left: 0, top: 8, right: 0, bottom: 0)
         footer.children.append(spacesBar)
-        try? Grid.setColumn(spacesBar, 1)
         let parts: [FrameworkElement] = [favorites, header, scroll, footer]
         for (i, part) in parts.enumerated() {
             root.children.append(part)
@@ -74,7 +73,6 @@ final class SidebarView {
     /// The downloads button goes in the footer, its list over the bottom of the tab list.
     func attachDownloads(button: FrameworkElement, list tray: FrameworkElement) {
         footer.children.append(button)
-        try? Grid.setColumn(button, 0)
         root.children.append(tray)
         try? Grid.setRow(tray, 2)
     }
