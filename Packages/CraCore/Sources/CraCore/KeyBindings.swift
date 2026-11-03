@@ -131,6 +131,11 @@ public enum ShortcutsList {
     public struct Group: Equatable, Sendable {
         public let title: String
         public let actions: [KeyAction]
+
+        public init(title: String, actions: [KeyAction]) {
+            self.title = title
+            self.actions = actions
+        }
     }
 
     public static let sections: [(MenuSection, String)] = [
