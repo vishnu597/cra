@@ -29,6 +29,8 @@
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
+#include "include/cef_command_handler.h"
+#include "include/cef_id_mappers.h"
 #include "include/cef_request_context.h"
 #include "include/cef_values.h"
 #include "include/cef_version.h"
@@ -283,7 +285,8 @@ class CraClient : public CefClient,
                   public CefDownloadHandler,
                   public CefFocusHandler,
                   public CefPermissionHandler,
-                  public CefFindHandler {
+                  public CefFindHandler,
+                  public CefCommandHandler {
 public:
     explicit CraClient(CraBrowser *owner) : owner_(owner) {}
     void Detach() { owner_ = nullptr; }
@@ -297,6 +300,7 @@ public:
     CefRefPtr<CefFocusHandler> GetFocusHandler() override { return this; }
     CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
     CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+    CefRefPtr<CefCommandHandler> GetCommandHandler() override { return this; }
 
     // Life span -----------------------------------------------------------
 
@@ -493,6 +497,34 @@ public:
         if (!o || event.type != KEYEVENT_RAWKEYDOWN || !o->callbacks.unhandled_key_event) return false;
         CraKeyEvent e = KeyEvent(event, os_event);
         return o->callbacks.unhandled_key_event(o->callbacks.context, &e) != 0;
+    }
+
+    // Chrome commands -----------------------------------------------------
+
+    /// Chrome's own tab and window commands, which a page's Chrome-style browser runs for a key
+    /// Cra leaves alone (Ctrl+T once the user moves New Tab elsewhere, Ctrl+N, Ctrl+H...): each
+    /// would open a bare Chromium window beside Cra's. Cra has its own versions, so they stop
+    /// here. Find, print, zoom, DevTools and the edit commands keep Chrome's behaviour.
+    bool OnChromeCommand(CefRefPtr<CefBrowser> browser, int command_id, cef_window_open_disposition_t disposition) override {
+        static const std::set<int> blocked = [] {
+            std::set<int> ids;
+            for (const char *name : {"IDC_NEW_TAB", "IDC_NEW_WINDOW", "IDC_NEW_INCOGNITO_WINDOW", "IDC_RESTORE_TAB",
+                                     "IDC_CLOSE_TAB", "IDC_CLOSE_WINDOW", "IDC_EXIT", "IDC_SELECT_NEXT_TAB",
+                                     "IDC_SELECT_PREVIOUS_TAB", "IDC_SELECT_TAB_0", "IDC_SELECT_TAB_1", "IDC_SELECT_TAB_2",
+                                     "IDC_SELECT_TAB_3", "IDC_SELECT_TAB_4", "IDC_SELECT_TAB_5", "IDC_SELECT_TAB_6",
+                                     "IDC_SELECT_TAB_7", "IDC_SELECT_LAST_TAB", "IDC_MOVE_TAB_NEXT", "IDC_MOVE_TAB_PREVIOUS",
+                                     "IDC_DUPLICATE_TAB", "IDC_PIN_TARGET_TAB", "IDC_SHOW_HISTORY", "IDC_SHOW_DOWNLOADS",
+                                     "IDC_SHOW_BOOKMARK_MANAGER", "IDC_BOOKMARK_THIS_TAB", "IDC_BOOKMARK_ALL_TABS",
+                                     "IDC_SHOW_BOOKMARK_BAR", "IDC_OPTIONS", "IDC_CLEAR_BROWSING_DATA", "IDC_FOCUS_LOCATION",
+                                     "IDC_FOCUS_SEARCH", "IDC_FOCUS_TOOLBAR", "IDC_FOCUS_BOOKMARKS", "IDC_SHOW_APP_MENU",
+                                     "IDC_MANAGE_EXTENSIONS", "IDC_TASK_MANAGER", "IDC_HELP_PAGE_VIA_KEYBOARD",
+                                     "IDC_FEEDBACK", "IDC_SHOW_AVATAR_MENU", "IDC_TOGGLE_FULLSCREEN_TOOLBAR"}) {
+                int id = cef_id_for_command_id_name(name);
+                if (id > 0) ids.insert(id);  // a name this Chromium lacks maps to -1
+            }
+            return ids;
+        }();
+        return blocked.count(command_id) > 0;
     }
 
     // Downloads -----------------------------------------------------------

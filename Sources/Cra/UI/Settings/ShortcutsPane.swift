@@ -13,12 +13,8 @@ struct ShortcutsPane: View {
 
     /// Dia's selected shortcut row (sampled 95,144,229 in dark mode; it is not the accent colour).
     private static let selectionFill = Color(.sRGB, red: 95 / 255, green: 144 / 255, blue: 229 / 255, opacity: 1)
-    private static let listWidth: CGFloat = 272
-    private static let rowHeight: CGFloat = 36
-    private static let sections: [(MenuSection, String)] = [
-        (.app, "Cra"), (.file, "File"), (.edit, "Edit"), (.view, "View"), (.spaces, "Spaces"),
-        (.tabs, "Tabs"), (.archive, "Archive"), (.window, "Window"),
-    ]
+    private static let listWidth = SettingsMetrics.shortcutsListWidth
+    private static let rowHeight = SettingsMetrics.shortcutsRowHeight
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,21 +53,8 @@ struct ShortcutsPane: View {
 
     // MARK: List
 
-    private var visible: [(title: String, actions: [KeyAction])] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return Self.sections.compactMap { section, title in
-            let acts = bindings.actions(in: section).filter { a in
-                (q.isEmpty || a.name.lowercased().contains(q))
-                    && (!customizedOnly || bindings.isOverridden(a.id))
-                    && (!conflictingOnly || !conflicts(of: a).isEmpty)
-            }
-            return acts.isEmpty ? nil : (title, acts)
-        }
-    }
-
-    private func conflicts(of a: KeyAction) -> [KeyAction] {
-        guard let s = a.primary else { return [] }
-        return bindings.actions.filter { $0.id != a.id && $0.shortcuts.contains(s) }
+    private var visible: [ShortcutsList.Group] {
+        ShortcutsList.groups(in: bindings, query: query, customizedOnly: customizedOnly, conflictingOnly: conflictingOnly)
     }
 
     private var list: some View {
@@ -134,10 +117,8 @@ struct ShortcutsPane: View {
                     .font(.system(size: 15)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 ShortcutRecorder(action: a)
-                let c = conflicts(of: a)
-                if !c.isEmpty {
-                    Text((c.count == 1 ? "This shortcut conflicts with another shortcut: " : "This shortcut conflicts with other shortcuts: ")
-                         + c.map(\.name).joined(separator: ", "))
+                if let note = ShortcutsList.conflictNote(bindings.conflicts(of: a)) {
+                    Text(note)
                         .font(.system(size: 11)).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -232,86 +213,4 @@ struct SettingsSearchField: NSViewRepresentable {
             text.wrappedValue = f.stringValue
         }
     }
-}
-
-/// One-line descriptions for the detail column (Dia: "Create a new tab.").
-enum ShortcutDescriptions {
-    static func text(for a: KeyAction) -> String {
-        if let t = table[a.id] { return t }
-        if a.id.hasPrefix("item"), let n = a.id.dropFirst(4).first { return "Switch to the \(n). tab in the sidebar." }
-        if a.id.hasPrefix("space"), let n = a.id.dropFirst(5).first { return "Switch to the \(n). space." }
-        if a.id.hasPrefix("moveTabToSpace"), let n = a.id.dropFirst(14).first { return "Move the current tab, or a Little Window's page, to the \(n). space and switch to it." }
-        return a.name + "."
-    }
-
-    private static let table: [String: String] = [
-        "newTab": "Create a new tab.",
-        "newWindow": "Open a new window.",
-        "newIncognitoWindow": "Open a window that keeps no history, cookies or tabs once closed.",
-        "newLittleWindow": "Open a small, disposable window for a quick look.",
-        "reopenClosedTab": "Bring back the tab you closed last.",
-        "editURL": "Open the command bar to search or enter a URL.",
-        "newFolder": "Create a folder in the sidebar.",
-        "newGitHubLiveFolder": "Add a folder that fills itself with your open pull requests and review requests.",
-        "newSpace": "Create a new space.",
-        "closeWindow": "Close the current window.",
-        "closeTab": "Close the current tab.",
-        "capturePage": "Take a screenshot of the page.",
-        "print": "Print the page.",
-        "copyURL": "Copy the page’s URL.",
-        "copyURLMarkdown": "Copy the page’s title and URL as a Markdown link.",
-        "find": "Search for text on the page.",
-        "findNext": "Jump to the next match.",
-        "findPrevious": "Jump to the previous match.",
-        "toggleSidebar": "Show or hide the sidebar.",
-        "toggleToolbar": "Show or hide the toolbar above the page.",
-        "stop": "Stop loading the page.",
-        "reload": "Reload the page.",
-        "hardReload": "Reload the page, ignoring cached content.",
-        "clearCache": "Clear the browser cache and reload the page.",
-        "clearCookies": "Clear this site’s cookies and reload the page.",
-        "toggleDeveloperMode": "Show the full URL and developer tools for this site.",
-        "resetZoom": "Return the page to its actual size.",
-        "zoomIn": "Make the page larger.",
-        "zoomOut": "Make the page smaller.",
-        "viewSource": "Show the page’s source.",
-        "devTools": "Open the developer tools.",
-        "inspectElement": "Open the developer tools on the Elements panel.",
-        "jsConsole": "Open the developer tools on the Console panel.",
-        "pictureInPicture": "Pop the playing video out into a floating window.",
-        "addSplitView": "Open another page beside this one.",
-        "closeSplitPane": "Close the focused split pane.",
-        "separateFromSplit": "Move the page out of the split view into its own tab.",
-        "flipSplitOrientation": "Switch the split view between side by side and stacked.",
-        "nextSplitPane": "Focus the next split pane.",
-        "previousSplitPane": "Focus the previous split pane.",
-        "nextSpace": "Switch to the next space.",
-        "previousSpace": "Switch to the previous space.",
-        "editSpace": "Change the space’s name, emoji and theme.",
-        "deleteSpace": "Delete the current space.",
-        "manageSpaces": "Open the Library’s Spaces page: every space side by side, to reorder or edit them.",
-        "pinTab": "Pin the tab or unpin it.",
-        "nextTab": "Switch to the next tab.",
-        "previousTab": "Switch to the previous tab.",
-        "recentTab": "Open the tab switcher and cycle through recent tabs, like ⌘Tab for apps.",
-        "recentTabBackward": "Cycle backwards through recent tabs in the tab switcher.",
-        "clearToday": "Archive all of today’s tabs.",
-        "favoriteTab": "Add the tab to the favorites grid.",
-        "renameTab": "Give the tab a name of your own.",
-        "duplicateTab": "Open a copy of the tab.",
-        "resetTab": "Return a pinned tab to its original URL.",
-        "muteTab": "Mute or unmute the tab.",
-        "goBack": "Go back a page.",
-        "goForward": "Go forward a page.",
-        "viewArchive": "Open the archive of closed tabs.",
-        "openLibrary": "Open the Library.",
-        "viewDownloads": "Show your downloads.",
-        "promoteLittleWindow": "Move the Little Window’s page into a space.",
-        "closeLittleWindows": "Close all Little Windows.",
-        "settings": "Open Settings.",
-        "setDefaultBrowser": "Make Cra the default browser.",
-        "importData": "Bring tabs, spaces and extensions over from Arc or Dia.",
-        "rebuildArcProfiles": "Put spaces imported from Arc back on their Arc profiles, with their sign-ins and extensions.",
-        "clearBrowsingData": "Delete history, cookies and cached files with Chrome’s dialog.",
-    ]
 }

@@ -79,7 +79,8 @@ final class BrowserWindow {
     init(store: SidebarStore, dispatcher: WinAppSDK.DispatcherQueue) throws {
         self.store = store
         self.dispatcher = dispatcher
-        engine = SuggestionEngine(store: store, commands: { WinCommands.all }, load: WinSuggestLoader.load)
+        engine = SuggestionEngine(store: store, commands: { WinKeyBindings.shared.barCommands(display: \.windowsDisplay) },
+                                  load: WinSuggestLoader.load)
         commandBar = CommandBarView(engine: engine, store: store)
         sidebar = SidebarView(store: store, actions: self)
         downloads = DownloadsTray(history: .shared, dispatcher: dispatcher)
@@ -444,25 +445,39 @@ final class BrowserWindow {
         }
     }
 
-    /// A command row (WinCommands).
-    private func perform(_ id: String) {
+    /// An action by its id (KeyBindingDefaults.windows): a command row or a shortcut. False
+    /// for an id the Windows app doesn't perform yet.
+    @discardableResult
+    private func perform(_ id: String) -> Bool {
         switch id {
         case "find": showFindBar()
+        case "findNext": findNext(forward: true)
+        case "findPrevious": findNext(forward: false)
         case "settings": openSettings()
         case "newTab": beginNewTab()
+        case "editURL": openCommandBar(.editURL)
         case "reopenClosedTab": reopenClosedTab()
         case "closeTab": closeCurrentTab()
         case "reload": reload(ignoringCache: false)
         case "hardReload": reload(ignoringCache: true)
         case "pinTab": if let t = store.selectedTabID { store.togglePinned(t) }
+        case "nextTab": cycleTab(1)
+        case "previousTab": cycleTab(-1)
+        case "nextSpace": store.focusSpace(offset: 1)
+        case "previousSpace": store.focusSpace(offset: -1)
+        case "goBack": shownPage?.goBack()
+        case "goForward": shownPage?.goForward()
         case "addSplitView": addSplitPane()
         case "closeSplitPane": if let t = store.selectedTabID { closeSplitPane(t) }
         case "separateFromSplit": if let t = store.selectedTabID { separatePane(t) }
         case "flipSplitOrientation": if let t = store.selectedTabID, let split = store.splitContaining(t) { store.flipSplitOrientation(split.id) }
         case "nextSplitPane": cycleSplitPane(1)
         case "previousSplitPane": cycleSplitPane(-1)
-        default: break
+        default:
+            guard id.hasPrefix("item"), let n = Int(id.dropFirst(4)), (1...9).contains(n) else { return false }
+            selectTab(number: n)
         }
+        return true
     }
 
     // MARK: Commands
@@ -585,57 +600,12 @@ final class BrowserWindow {
 
     // MARK: Keys
 
-    /// Shortcuts Cra keeps from the page (Arc's, with Ctrl in place of Cmd).
+    /// Shortcuts Cra keeps from the page: Windows' table with the user's own keys (Settings ▸
+    /// Shortcuts, keybindings.json).
     private func handleShortcut(_ key: KeyPress) -> Bool {
-        let vkTab: Int32 = 0x09, vkLeft: Int32 = 0x25, vkRight: Int32 = 0x27, vkF3: Int32 = 0x72, vkF5: Int32 = 0x74
-        let vkPlus: Int32 = 0xBB, vkMinus: Int32 = 0xBD, vkComma: Int32 = 0xBC  // the =, - and , keys
-        let letter = { (c: Character) in Int32(c.asciiValue ?? 0) }
-        if key.control && key.alt {
-            switch key.keyCode {
-            case vkLeft: store.focusSpace(offset: -1)
-            case vkRight: store.focusSpace(offset: 1)
-            default: return false
-            }
-            return true
-        }
-        if key.control {
-            switch key.keyCode {
-            case letter("T") where key.shift: reopenClosedTab()
-            case letter("T"): beginNewTab()
-            case letter("W"): closeCurrentTab()
-            case letter("L"): openCommandBar(.editURL)
-            case letter("F"): showFindBar()
-            case letter("G"): findNext(forward: !key.shift)
-            case letter("R"): reload(ignoringCache: key.shift)
-            case letter("D"): if let id = store.selectedTabID { store.togglePinned(id) }
-            // Arc's View ▸ Add Split View ⌃⇧= and Close this Split Pane ⌃⇧-; without Shift they
-            // stay the page's zoom.
-            case vkPlus where key.shift: addSplitPane()
-            case vkMinus where key.shift: if let id = store.selectedTabID { closeSplitPane(id) }
-            case vkComma where !key.shift: openSettings()
-            case vkTab: cycleTab(key.shift ? -1 : 1)
-            case letter("1")...letter("9"): selectTab(number: Int(key.keyCode - letter("0")))
-            default: return false
-            }
-            return true
-        }
-        if key.alt {
-            switch key.keyCode {
-            case vkLeft: shownPage?.goBack()
-            case vkRight: shownPage?.goForward()
-            default: return false
-            }
-            return true
-        }
-        if key.keyCode == vkF3 {
-            findNext(forward: !key.shift)
-            return true
-        }
-        if key.keyCode == vkF5 {
-            reload(ignoringCache: key.control)
-            return true
-        }
-        return false
+        guard let chord = KeyChord(windowsVirtualKey: key.keyCode, control: key.control, shift: key.shift, alt: key.alt),
+              let action = WinKeyBindings.shared.action(matching: chord) else { return false }
+        return perform(action.id)
     }
 
     private func reload(ignoringCache: Bool) {

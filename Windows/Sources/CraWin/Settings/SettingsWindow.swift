@@ -231,6 +231,9 @@ final class SettingsWindow {
         let built: SettingsPaneContent
         switch pane {
         case .tabs: built = SettingsPanes.tabs(store: store, palette: palette)
+        case .shortcuts:
+            let view = ShortcutsPaneView(bindings: WinKeyBindings.shared, palette: palette)
+            built = SettingsPaneContent(element: view.root) { view.render() }
         default: built = SettingsPanes.general(palette: palette)
         }
         scroll.content = built.element
