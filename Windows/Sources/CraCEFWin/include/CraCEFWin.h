@@ -56,6 +56,29 @@ const char *cra_cef_version(void);
 /// Reuses a window already open on that folder, as Explorer's own "Open file location" does.
 void cra_shell_show_in_folder(const char *path);
 
+/// Hides Chrome's download-started animation (a download glyph that would fly from the page's
+/// top left to the toolbar Cra hides) for the next two seconds. Call when a download starts.
+void cra_hide_download_started_animation(void);
+
+// MARK: - Images
+
+/// A decoded image: premultiplied BGRA, top-down, `width * 4` bytes a row (a XAML
+/// WriteableBitmap's layout). Free with cra_image_free.
+typedef struct CraImage {
+    int32_t width;
+    int32_t height;
+    uint8_t *pixels;
+} CraImage;
+
+/// PNG, ICO, JPEG, GIF or BMP bytes. `side` > 0 scales the image to `side` × `side`; 0 keeps
+/// its size, shrunk to fit 256 × 256. 1 on success. Any thread.
+int cra_image_decode(const uint8_t *bytes, size_t length, int side, CraImage *out);
+/// Explorer's picture of a file, fitting `side` × `side` pixels: a preview of a picture or a
+/// document when it has one, else its icon; for a path that doesn't exist (yet), the icon of
+/// its file type. 1 on success. Any thread, and slow for a big file: not the UI thread.
+int cra_shell_file_image(const char *path, int side, CraImage *out);
+void cra_image_free(CraImage *image);
+
 // MARK: - Browser callbacks
 
 typedef enum CraDownloadState {

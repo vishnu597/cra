@@ -41,7 +41,8 @@ let package = Package(
     ],
     targets: [
         // C++ bridge to CEF with a plain C surface (include/CraCEFWin.h), the Windows
-        // counterpart of Sources/CraCEF.
+        // counterpart of Sources/CraCEF, and the few Win32 helpers the shell needs (images
+        // from WIC and Explorer, hiding Chrome's download animation).
         .target(
             name: "CraCEFWin",
             path: "Sources/CraCEFWin",
@@ -53,7 +54,9 @@ let package = Package(
                 .linkedLibrary("libcef"),
                 .linkedLibrary("user32"),
                 .linkedLibrary("shell32"),  // SHGetKnownFolderPath (the Downloads folder)
-                .linkedLibrary("ole32"),  // CoTaskMemFree
+                .linkedLibrary("ole32"),  // CoTaskMemFree, CoCreateInstance
+                .linkedLibrary("gdi32"),  // GetDIBits (file thumbnails)
+                .linkedLibrary("windowscodecs"),  // WIC (favicons, file thumbnails)
             ]
         ),
         // Every Chromium subprocess (renderer, GPU, utility) runs this executable.
