@@ -65,6 +65,10 @@ final class BrowserWindow {
             self?.shownPage?.frame = frame
             self?.placeCommandBar()
         }
+        window.onFocus = { [weak self] in
+            guard let self, !self.closing, !self.commandBar.isOpen else { return }
+            self.focusContent()
+        }
         makeCommandBar()
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
         window.shouldClose = { [weak self] in
@@ -247,6 +251,11 @@ final class BrowserWindow {
         address.foreground = url.isEmpty ? sidebar.secondaryTextColor : sidebar.textColor
     }
 
+    /// Keys to the page shown, else the sidebar.
+    private func focusContent() {
+        if let page = shownPage { page.setFocused(true) } else { focusSidebar() }
+    }
+
     /// Keys to the sidebar's XAML, so its shortcuts work with no page to take them.
     private func focusSidebar() {
         window.focusXAML()
@@ -263,8 +272,11 @@ final class BrowserWindow {
         commandBar.onClose = { [weak self] in
             guard let self else { return }
             self.commandWindow?.hide()
-            // Back to the page, unless another window took the front.
-            if !self.commandBarDeactivated { self.shownPage?.setFocused(true) }
+            // Back to the page, unless another window took the front. Hiding the bar doesn't
+            // always hand the front back to this window by itself.
+            guard !self.commandBarDeactivated else { return }
+            if let window = HWND(bitPattern: self.hwnd) { _ = SetForegroundWindow(window) }
+            self.focusContent()
         }
         do {
             commandWindow = try CommandBarWindow(owner: window, content: commandBar.root)

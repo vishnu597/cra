@@ -49,9 +49,15 @@ final class CommandBarView {
     // The field, as CommandTextField's coordinator keeps it.
     private var lastTyped = ""
     private var pendingCompletion: String?
-    /// The text this code put in the field last: TextChanged comes after the change, for
-    /// programmatic ones too, and those are not typing.
+    /// The text this code put in the field last, and how many of its changes TextChanged has
+    /// still to report: the event comes after the change, for programmatic ones too, and those
+    /// are not typing. (Typing the next letter of a completion makes the same text the code
+    /// set, so the text alone can't tell them apart.)
     private var setText: String?
+    private var pendingSets = 0
+    /// Where the pointer last was over the rows: rows coming and going under a pointer that
+    /// hasn't moved don't take the highlight from the keyboard.
+    private var lastPointer = (x: -1.0, y: -1.0)
 
     private let field = TextBox()
     private let glyph = FontIcon()
@@ -85,6 +91,7 @@ final class CommandBarView {
         selectedIndex = 0
         previewing = false
         pendingCompletion = nil
+        pendingSets = 0
         lastTyped = query
         result = engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID)
         isOpen = true
@@ -111,7 +118,12 @@ final class CommandBarView {
 
     private func textChanged() {
         let text = field.text
-        guard isOpen, text != setText else { return }
+        guard isOpen else { return }
+        if pendingSets > 0, text == setText {
+            pendingSets -= 1
+            return
+        }
+        pendingSets = 0
         setText = nil
         let deleting = text.count < lastTyped.count || (pendingCompletion != nil && text == lastTyped)
         lastTyped = text
@@ -170,8 +182,7 @@ final class CommandBarView {
         guard c.lowercased().hasPrefix(typed.lowercased()), c.count > typed.count else { return }
         let remainder = String(c.dropFirst(typed.count))
         pendingCompletion = c
-        setText = typed + remainder
-        field.text = typed + remainder
+        setField(typed + remainder)
         try? field.select(Int32(typed.utf16.count), Int32(remainder.utf16.count))
         render()
     }
@@ -180,9 +191,16 @@ final class CommandBarView {
 
     /// Puts `text` in the field, all selected (a prefill) or with the caret after it.
     private func showText(_ text: String, selected: Bool) {
-        setText = text
-        field.text = text
+        setField(text)
         if selected { try? field.selectAll() } else { try? field.select(Int32(text.utf16.count), 0) }
+    }
+
+    /// Changes the field's text from code (no TextChanged comes when it is the same).
+    private func setField(_ text: String) {
+        guard field.text != text else { return }
+        setText = text
+        pendingSets += 1
+        field.text = text
     }
 
     /// Shows the arrowed-to row's text, or (nil) puts back what was typed.
@@ -374,9 +392,18 @@ final class CommandBarView {
         rowsPanel.padding = Thickness(left: 10, top: 10, right: 10, bottom: 10)
         for i in 0..<SuggestionEngine.maxRows {
             let row = Row()
-            row.root.pointerPressed.addHandler { [weak self] _, _ in self?.commit(row: i) }
-            row.root.pointerEntered.addHandler { [weak self] _, _ in
-                guard let self, self.selectedIndex != i, self.result.items.indices.contains(i) else { return }
+            // On release, once XAML is done with the press: committing on the press left the
+            // hidden bar's window in front, with the keyboard.
+            row.root.pointerReleased.addHandler { [weak self] _, args in
+                args?.handled = true
+                self?.commit(row: i)
+            }
+            row.root.pointerMoved.addHandler { [weak self] _, args in
+                guard let self, let args, let point = try? args.getCurrentPoint(nil) else { return }
+                let at = (x: Double(point.position.x), y: Double(point.position.y))
+                guard at != self.lastPointer else { return }
+                self.lastPointer = at
+                guard self.selectedIndex != i, self.result.items.indices.contains(i) else { return }
                 self.selectedIndex = i
                 self.render()
             }

@@ -29,7 +29,18 @@ final class HostWindow {
     var shouldClose: (() -> Bool)?
     /// The window is going away.
     var onClose: (() -> Void)?
+    /// The keyboard came to the window itself rather than a page or the sidebar: Windows does
+    /// that when the window becomes active (at launch, Alt+Tab back, a dialog or the command bar
+    /// going away). Give it to what should have it, or keys go nowhere.
+    var onFocus: (() -> Void)?
     private var closed = false
+    /// The window procedure below is a C function and can't capture its window. Kept after the
+    /// window object goes: Windows still sends the window messages while destroying it.
+    nonisolated(unsafe) private static var hooks: [UInt: Hook] = [:]
+    private struct Hook {
+        let previous: WNDPROC?
+        weak var window: HostWindow?
+    }
 
     init(content: UIElement, sidebarWidth: Double, width: Double = 1280, height: Double = 820) throws {
         appWindow = try AppWindow.create()
@@ -50,6 +61,7 @@ final class HostWindow {
         }
         try appWindow.resize(SizeInt32(width: Int32(width * scale), height: Int32(height * scale)))
         layout()
+        watchFocus()
         try appWindow.show()
     }
 
@@ -77,6 +89,21 @@ final class HostWindow {
     func focusXAML() {
         guard let bridge = xaml.siteBridge, let window = HWND(bitPattern: UInt(bridge.windowId.value)) else { return }
         _ = SetFocus(window)
+    }
+
+    /// Hears WM_SETFOCUS ahead of AppWindow's own window procedure, which ignores it.
+    private func watchFocus() {
+        guard let window = HWND(bitPattern: hwnd) else { return }
+        let proc: WNDPROC = { hwnd, message, wParam, lParam in
+            guard let hook = HostWindow.hooks[UInt(bitPattern: hwnd)], let previous = hook.previous else {
+                return DefWindowProcW(hwnd, message, wParam, lParam)
+            }
+            let result = CallWindowProcW(previous, hwnd, message, wParam, lParam)
+            if message == UINT(WM_SETFOCUS) { hook.window?.onFocus?() }
+            return result
+        }
+        let previous = SetWindowLongPtrW(window, GWLP_WNDPROC, unsafeBitCast(proc, to: LONG_PTR.self))
+        Self.hooks[hwnd] = Hook(previous: unsafeBitCast(previous, to: WNDPROC?.self), window: self)
     }
 
     func close() {

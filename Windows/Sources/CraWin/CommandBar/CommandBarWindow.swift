@@ -40,11 +40,23 @@ final class CommandBarWindow {
 
     var isVisible: Bool { appWindow.isVisible }
 
-    /// Places the bar: `origin` its top left on screen, `size` its client area, in physical pixels.
+    /// Places the bar: `origin` its client area's top left on screen, `size` that area, in
+    /// physical pixels.
     func place(origin: PointInt32, size: SizeInt32) {
-        try? appWindow.move(origin)
         try? appWindow.resizeClient(size)
-        try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: size.width, height: size.height))
+        // resizeClient sizes the frame as if the window had a title bar, leaving the client area
+        // a title bar taller (an unpainted strip under the rows): take the difference off.
+        var client = appWindow.clientSize
+        if client.width != size.width || client.height != size.height {
+            let outer = appWindow.size
+            try? appWindow.resize(SizeInt32(width: outer.width - (client.width - size.width),
+                                            height: outer.height - (client.height - size.height)))
+            client = appWindow.clientSize
+        }
+        // The frame has invisible resize borders left and right; the client area is what's centred.
+        let border = max(0, (appWindow.size.width - client.width) / 2)
+        try? appWindow.move(PointInt32(x: origin.x - border, y: origin.y))
+        try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: client.width, height: client.height))
     }
 
     /// Shows the bar in front and gives its XAML the keyboard; `focus` then focuses the field.
