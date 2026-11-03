@@ -131,12 +131,16 @@ final class SettingsWindow {
         row.padding = Thickness(left: 10, top: 0, right: 10, bottom: 0)
         row.verticalAlignment = .center
 
+        // A Border draws the capsule (a Grid's corner radius left its fill square, seen on a PC).
+        let capsule = Border()
         let pill = Grid()
         let half = Double(SettingsMetrics.navPillSize.width) / 2, height = Double(SettingsMetrics.navPillSize.height)
-        pill.width = Double(SettingsMetrics.navPillSize.width)
-        pill.height = height
-        pill.cornerRadius = CornerRadius(topLeft: height / 2, topRight: height / 2, bottomRight: height / 2, bottomLeft: height / 2)
-        pill.background = palette.pill
+        let r = height / 2
+        capsule.width = Double(SettingsMetrics.navPillSize.width)
+        capsule.height = height
+        capsule.cornerRadius = CornerRadius(topLeft: r, topRight: r, bottomRight: r, bottomLeft: r)
+        capsule.background = palette.pill
+        capsule.child = pill
         pill.columnDefinitions.append(UI.column(UI.star))
         pill.columnDefinitions.append(UI.column(UI.star))
         for (arrow, glyph) in [(backArrow, "\u{E76B}"), (forwardArrow, "\u{E76C}")] {
@@ -151,12 +155,14 @@ final class SettingsWindow {
         for (i, button) in [backButton!, forwardButton!].enumerated() {
             button.width = half
             button.height = height
-            button.cornerRadius = pill.cornerRadius
+            // Rounded on the capsule's side only, so a hover fills its half.
+            button.cornerRadius = i == 0 ? CornerRadius(topLeft: r, topRight: 0, bottomRight: 0, bottomLeft: r)
+                : CornerRadius(topLeft: 0, topRight: r, bottomRight: r, bottomLeft: 0)
             try? ToolTipService.setToolTip(button, i == 0 ? "Back" : "Forward")
             pill.children.append(button)
             try? Grid.setColumn(button, Int32(i))
         }
-        row.children.append(pill)
+        row.children.append(capsule)
 
         titleText.fontWeight = UWP.FontWeight(weight: 700)
         titleText.foreground = palette.text
@@ -175,8 +181,8 @@ final class SettingsWindow {
             let pane = nav.pane
             buildSidebar(selected: pane)
             titleText.text = pane.title
-            backButton.isEnabled = !nav.back.isEmpty
-            forwardButton.isEnabled = !nav.forward.isEmpty
+            // Not disabled: a disabled Button draws WinUI's grey disabled fill over the capsule.
+            // Going back or forward with no history does nothing anyway; the arrow dims.
             backArrow.opacity = nav.back.isEmpty ? 0.3 : 0.75
             forwardArrow.opacity = nav.forward.isEmpty ? 0.3 : 0.75
             if pane != shownPane { showPane(pane) }
