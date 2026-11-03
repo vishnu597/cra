@@ -243,6 +243,15 @@ extension NSMenuItem {
     }
 }
 
+extension KeyBindingRegistry {
+    /// What the command bar offers (SuggestionEngine), in menu order, with the user's shortcuts.
+    var commandBarCommands: [CommandBarCommand] {
+        actions.filter(\.inCommandBar).map {
+            CommandBarCommand(id: $0.id, name: $0.name, triggers: $0.triggers, symbol: $0.symbol, shortcut: $0.primary?.display)
+        }
+    }
+}
+
 extension Notification.Name {
     /// Posted when the user edits shortcuts; the app rebuilds its menus.
     static let craKeyBindingsChanged = Notification.Name("craKeyBindingsChanged")

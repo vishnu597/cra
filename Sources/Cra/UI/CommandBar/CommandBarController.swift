@@ -128,24 +128,8 @@ final class CommandBarController {
         let n = result.items.count
         selectedIndex = ((selectedIndex + delta) % n + n) % n
         // The top row is what was typed (plus its inline completion).
-        previewText = selectedIndex == 0 ? nil : fillText(for: result.items[selectedIndex])
+        previewText = selectedIndex == 0 ? nil : result.items[selectedIndex].fieldText(typed: query)
         previewVersion += 1
-    }
-
-    /// What the field shows for a selected row: the address for pages, the
-    /// query for searches, the name for commands.
-    private func fillText(for s: Suggestion) -> String {
-        if s.id == "typed" { return query }
-        switch s.kind {
-        case .search, .command, .switchSpace, .moveToSpace, .moveToFolder:
-            return s.title
-        case .switchToTab, .archived, .history, .navigate, .topDomain:
-            guard let url = s.url else { return s.title }
-            var t = url
-            for p in ["https://www.", "http://www.", "https://", "http://"] where t.hasPrefix(p) { t = String(t.dropFirst(p.count)); break }
-            if t.hasSuffix("/") { t.removeLast() }
-            return t
-        }
     }
 
     /// Tab on text that starts a site search's host, or on "%": scope the bar to it.
@@ -204,13 +188,7 @@ final class CommandBarController {
     }
 
     private func committed() -> (Suggestion?, String)? {
-        let selected = result.items.indices.contains(selectedIndex) ? result.items[selectedIndex] : nil
-        // No tab matched: Return has nowhere to go, and the tabs scope never searches the web.
-        if scope == .tabs, selected == nil { return nil }
-        var typed = query
-        // Enter on the typed row with an inline completion goes to the completion.
-        if selectedIndex == 0, let c = result.inlineCompletion, selected?.id == "typed" { typed = c }
-        return (selected, typed)
+        result.commit(at: selectedIndex, typed: query, scope: scope).map { ($0.row, $0.typed) }
     }
 
     func commit(_ suggestion: Suggestion) {

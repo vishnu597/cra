@@ -3,13 +3,22 @@ import Foundation
 /// The search engine's own suggestions for what is typed. Arc takes them from Chromium's
 /// omnibox ("Chromium: Search Suggestion" / "Navigate Suggest"); CEF has no omnibox, so Cra
 /// asks the engine's suggest endpoint itself. They fill the command bar up to its five rows.
+/// The request itself is the app's (`Loader`): CraCore holds what is kept and what is shown.
 @MainActor
-final class SearchSuggestions {
-    struct Item: Equatable {
-        let text: String
+public final class SearchSuggestions {
+    public struct Item: Equatable {
+        public let text: String
         /// Set for a site suggestion (Google's NAVIGATION type), nil for a search.
-        let url: String?
+        public let url: String?
+
+        public init(text: String, url: String?) {
+            self.text = text
+            self.url = url
+        }
     }
+
+    /// Fetches a suggest URL: the body of a 200 answer, nil for anything else.
+    public typealias Loader = @Sendable (URL) async -> Data?
 
     private var cache: [String: [Item]] = [:]
     /// The newest answer, kept on screen while the query's own answer loads (Chrome's omnibox
@@ -18,21 +27,17 @@ final class SearchSuggestions {
     /// The query whose answer is loading.
     private var pending: String?
     private var task: Task<Void, Never>?
+    private let load: Loader
 
-    /// No cookies: the request says nothing about who is typing beyond the text itself.
-    private let session: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 3
-        c.httpAdditionalHeaders = ["Accept-Language": SearchSuggestions.acceptLanguage]
-        return URLSession(configuration: c)
-    }()
+    public init(load: @escaping Loader) { self.load = load }
 
-    private static var acceptLanguage: String {
-        let langs = Locale.preferredLanguages.prefix(4)
-        return langs.enumerated().map { i, l in i == 0 ? l : "\(l);q=\(String(format: "%.1f", 1 - Double(i) * 0.2))" }.joined(separator: ",")
+    /// What the request's Accept-Language says: the user's languages, best first.
+    public nonisolated static func acceptLanguage(_ languages: [String] = Locale.preferredLanguages) -> String {
+        languages.prefix(4).enumerated().map { i, l in i == 0 ? l : "\(l);q=\(String(format: "%.1f", 1 - Double(i) * 0.2))" }
+            .joined(separator: ",")
     }
 
-    func items(for query: String, engine: SearchEngine) -> [Item] {
+    public func items(for query: String, engine: SearchEngine) -> [Item] {
         let q = query.lowercased()
         if let hit = cache["\(engine.rawValue)|\(q)"] { return hit }
         guard let last, pending == q else { return [] }
@@ -43,18 +48,18 @@ final class SearchSuggestions {
         return narrowed + rest.filter { !narrowed.contains($0) }
     }
 
-    func fetch(_ query: String, engine: SearchEngine, done: @escaping @MainActor () -> Void) {
+    public func fetch(_ query: String, engine: SearchEngine, done: @escaping @MainActor () -> Void) {
         task?.cancel()
         pending = nil
         let q = query.lowercased()
         let key = "\(engine.rawValue)|\(q)"
         guard cache[key] == nil, let url = engine.suggestURL(query) else { return }
         pending = q
-        task = Task { [session, weak self] in
-            let answer = try? await session.data(from: url)
+        task = Task { [load, weak self] in
+            let data = await load(url)
             guard !Task.isCancelled, let self else { return }
             self.pending = nil
-            guard let (data, response) = answer, (response as? HTTPURLResponse)?.statusCode == 200 else {
+            guard let data else {
                 // No answer: stop holding the previous one on screen.
                 done()
                 return
@@ -67,7 +72,7 @@ final class SearchSuggestions {
     }
 
     /// The command bar opened or closed.
-    func reset() {
+    public func reset() {
         task?.cancel()
         task = nil
         pending = nil
@@ -77,7 +82,7 @@ final class SearchSuggestions {
 
     /// OpenSearch suggestions: `["query", ["one", "two", …], …]`. Google's chrome client adds
     /// a fifth element whose "google:suggesttype" marks each entry QUERY, NAVIGATION, …
-    nonisolated static func parse(_ data: Data) -> [Item] {
+    public nonisolated static func parse(_ data: Data) -> [Item] {
         let json = (try? JSONSerialization.jsonObject(with: data))
             ?? String(data: data, encoding: .isoLatin1).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
         guard let a = json as? [Any], a.count > 1, let texts = a[1] as? [String] else { return [] }
