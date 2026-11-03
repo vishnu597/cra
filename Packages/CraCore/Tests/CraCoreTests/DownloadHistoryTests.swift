@@ -73,6 +73,29 @@ struct DownloadHistoryTests {
         #expect(!h.isRunning(anyOf: [7]))
     }
 
+    @Test func aPathIsListedOnceWithItsNewestDownload() {
+        let h = history()
+        h.add(path: "/d/a.dat", now: t0)
+        h.add(path: "/d/b.dat", now: t0.addingTimeInterval(1))
+        // a.dat was deleted, and a new download got its name.
+        h.add(path: "/d/a.dat", now: t0.addingTimeInterval(2))
+        #expect(h.entries.map(\.path) == ["/d/b.dat", "/d/a.dat"])
+        #expect(h.recent.map(\.name) == ["b.dat", "a.dat"])
+        #expect(h.recent.last?.date == t0.addingTimeInterval(2))
+    }
+
+    @Test func olderFilesWithAPathTwiceListItOnce() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cra-downloads-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let json = #"[{"date":"2027-01-15T08:00:00Z","id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","path":"\/d\/a.dat"},"#
+            + #"{"date":"2027-01-15T09:00:00Z","id":"7F9619FF-8B86-D011-B42D-00C04FC964FF","path":"\/d\/a.dat"}]"#
+        try Data(json.utf8).write(to: dir.appendingPathComponent("downloads.json"))
+        let h = DownloadHistory(file: JSONStore("downloads.json", in: dir), fileExists: { _ in true })
+        #expect(h.recent.count == 1)
+        #expect(h.recent.first?.date == ISO8601DateFormatter().date(from: "2027-01-15T09:00:00Z"))
+    }
+
     @Test func keepsTwoHundred() {
         let h = history()
         for i in 0..<205 { h.add(path: "/d/\(i)", now: t0) }

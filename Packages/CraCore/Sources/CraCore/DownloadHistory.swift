@@ -101,9 +101,12 @@ public final class DownloadHistory {
     }
 
     /// The hover list: newest downloads, oldest first: files still on disk, and running, failed
-    /// or cancelled ones.
+    /// or cancelled ones. A path shows once, with its newest download: Chromium reuses a name
+    /// once its file is gone, and older downloads.json files can hold both.
     public var recent: [Listed] {
-        let finished = entries.filter { fileExists($0.path) }.map(Listed.finished)
+        var seen = Set<String>()
+        let newestFirst = entries.reversed().filter { fileExists($0.path) && seen.insert($0.path).inserted }
+        let finished = newestFirst.reversed().map(Listed.finished)
         return Array((finished + live.map(Listed.live)).sorted { $0.date < $1.date }.suffix(Self.listLimit))
     }
 
@@ -165,6 +168,8 @@ public final class DownloadHistory {
     @discardableResult
     public func add(path: String, now: Date = Date()) -> Entry {
         let entry = Entry(path: path, date: now)
+        // A new file at a path replaces what was there.
+        entries.removeAll { $0.path == path }
         entries.append(entry)
         if entries.count > Self.keep { entries.removeFirst(entries.count - Self.keep) }
         file?.save(entries)
