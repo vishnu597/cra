@@ -80,6 +80,7 @@ let package = Package(
             ],
             path: "Sources/CraWin",
             linkerSettings: [
+                .linkedLibrary("advapi32"),  // the registry (WinRegistry)
                 .unsafeFlags(["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"],
                              .when(configuration: .release)),
             ]

@@ -103,4 +103,12 @@ takes the divider drags (a double-click makes the panes equal). Ctrl+Shift+= add
 Ctrl+Shift+- closes one, a click into a pane focuses it, and the split's sidebar row has Arc's
 split menu.
 
+Settings: Ctrl+, (or "Settings…" in the command bar) opens Dia's Settings window, an AppWindow
+whose XAML island covers it all (no pages in it). CraCore's `SettingsPane`, `SettingsNavigation`
+and `SettingsMetrics` give it the Mac's panes, back/forward history and measurements. It lists
+the panes whose features Windows has (`SettingsPane.windowsPanes`): General, with "Open Cra at
+login" (a value in the user's Run key, cleared from Task Manager's StartupApproved flag when
+turned on), and Tabs, with the new-tab, single-space and tab cleanup rows. It follows the
+system's light or dark mode and accent colour.
+
 The parity checklist and phases are in the porting plan.

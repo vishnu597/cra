@@ -9,27 +9,8 @@ struct SettingsActions {
     var exportDiagnostics: () -> Void = {}
 }
 
-/// The panes in Dia's Settings sidebar (Dia 1.54.2: Account, Tabs, Privacy, Profiles, Skills,
-/// Apps, Shortcuts, Advanced). Cra has no account or AI skills/apps; General
-/// (system integration) and Extensions take rows instead.
-enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, tabs, privacy, profiles, extensions, shortcuts, performance, advanced
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .general: return "General"
-        case .tabs: return "Tabs"
-        case .privacy: return "Privacy"
-        case .profiles: return "Profiles"
-        case .extensions: return "Extensions"
-        case .shortcuts: return "Shortcuts"
-        case .performance: return "Performance"
-        case .advanced: return "Advanced"
-        }
-    }
-
-    /// Dia's sidebar glyphs are SF Symbols (compared against the running Dia's icons).
+/// Dia's sidebar glyphs are SF Symbols (compared against the running Dia's icons).
+extension SettingsPane {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
@@ -41,34 +22,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .performance: return "gauge.with.dots.needle.67percent"
         case .advanced: return "gearshape.2"
         }
-    }
-}
-
-/// Selected pane plus the back/forward history behind the toolbar pill.
-@MainActor
-@Observable
-final class SettingsNavigation {
-    private(set) var pane: SettingsPane = .general
-    private(set) var back: [SettingsPane] = []
-    private(set) var forward: [SettingsPane] = []
-    /// The window is on screen: panes that refresh (Performance) stop while it is closed or covered.
-    var isOpen = false
-
-    func show(_ p: SettingsPane) {
-        guard p != pane else { return }
-        back.append(pane)
-        forward = []
-        pane = p
-    }
-    func goBack() {
-        guard let p = back.popLast() else { return }
-        forward.append(pane)
-        pane = p
-    }
-    func goForward() {
-        guard let p = forward.popLast() else { return }
-        back.append(pane)
-        pane = p
     }
 }
 
