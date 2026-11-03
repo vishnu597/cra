@@ -124,7 +124,7 @@ final class ShortcutsPaneView {
         return card
     }
 
-    private func makeDetail() -> UIElement {
+    private func makeDetail() -> FrameworkElement {
         let column = Grid()
         detail.orientation = .vertical
         detail.spacing = 14
