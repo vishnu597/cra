@@ -88,6 +88,8 @@ spaces (switch, create, delete), favorites, pinned tabs and folders, splits show
 Today tabs, archive and reopen (Ctrl+Shift+T), unread and theme colours, Arc's tab and space
 shortcuts with Ctrl in place of Cmd, and the command bar (Ctrl+T, Ctrl+L, the sidebar's address
 and + New Tab): CraCore's SuggestionEngine in a borderless window owned by the browser window, so
-it floats over the page, with inline completion, Tab scopes and Ctrl+Return. Next: favicons in
-the bar and the sidebar, then downloads and find in page.
+it floats over the page, with inline completion, Tab scopes and Ctrl+Return. Find in page
+(Ctrl+F, Ctrl+G, F3) floats the same way at the page's top right, and the downloads list
+(CraCore's DownloadHistory, downloads.json) opens from the sidebar footer's downloads button.
+Next: favicons in the bar, the sidebar and the downloads list.
 The parity checklist and phases are in the porting plan.

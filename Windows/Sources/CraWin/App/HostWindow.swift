@@ -24,6 +24,8 @@ final class HostWindow {
     var sidebarWidth: Double { didSet { layout() } }
     /// After every resize, with the page area (`contentFrame`).
     var onLayout: ((PixelRect) -> Void)?
+    /// The window moved on screen (what floats over it follows).
+    var onMove: (() -> Void)?
     /// The user asked to close (title bar, Alt+F4). Return false to keep the window open for
     /// now and call `close()` later.
     var shouldClose: (() -> Bool)?
@@ -50,6 +52,7 @@ final class HostWindow {
         xaml.content = content
         appWindow.changed.addHandler { [weak self] _, args in
             if args?.didSizeChange == true { self?.layout() }
+            if args?.didPositionChange == true { self?.onMove?() }
         }
         appWindow.closing.addHandler { [weak self] _, args in
             guard let self, let args else { return }

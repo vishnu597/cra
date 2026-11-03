@@ -22,7 +22,12 @@ final class BrowserWindow {
     /// The open tab's address; a click opens the command bar on it (Arc's URL bar in the sidebar).
     private let address = TextBlock()
     private var addressButton: Button!
-    private let status = TextBlock()
+    /// Arc's downloads list over the bottom of the sidebar, and its button in the footer.
+    private var downloads: DownloadsTray!
+    /// Downloads this window's pages started (the stall check), and the ones it has recorded.
+    private var windowDownloads: Set<UInt32> = []
+    private var finishedDownloads: Set<UInt32> = []
+    private var downloadWatchdog: WinAppSDK.DispatcherQueueTimer?
     private let permissionPanel = StackPanel()
     private let permissionText = TextBlock()
     private let dispatcher: WinAppSDK.DispatcherQueue
@@ -36,10 +41,14 @@ final class BrowserWindow {
     /// Ctrl+T, Ctrl+L: ranked by CraCore's SuggestionEngine, drawn in a window of its own over the page.
     private var engine: SuggestionEngine!
     private var commandBar: CommandBarView!
-    private var commandWindow: CommandBarWindow?
+    private var commandWindow: FloatingWindow?
     private var commandBarHeight = CommandBarView.height(forRows: 0)
     /// The bar closed because another window came to the front: that window keeps the keyboard.
     private var commandBarDeactivated = false
+    /// Ctrl+F: find in the shown page, in a window of its own at the page's top right.
+    private let findBar = FindBarView()
+    private var findWindow: FloatingWindow?
+    private var findVisible = false
     private var refreshQueued = false
     /// The window is waiting for Chromium to close its pages; then it closes for good.
     private var closing = false
@@ -58,18 +67,32 @@ final class BrowserWindow {
         engine = SuggestionEngine(store: store, commands: { WinCommands.all }, load: WinSuggestLoader.load)
         commandBar = CommandBarView(engine: engine, store: store)
         sidebar = SidebarView(store: store, actions: self)
+        downloads = DownloadsTray(history: .shared, dispatcher: dispatcher)
+        sidebar.attachDownloads(button: downloads.button, list: downloads.list)
+        downloads.pointer = { [weak self] in
+            guard let self, let window = self.window, let host = HWND(bitPattern: self.hwnd) else { return nil }
+            var p = POINT(x: Int32.min, y: Int32.min)
+            _ = GetCursorPos(&p)
+            guard p.x != Int32.min else { return nil }
+            _ = ScreenToClient(host, &p)
+            // The XAML island starts at the client area's top left.
+            return (Double(p.x) / window.scale, Double(p.y) / window.scale)
+        }
         window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
         window.title = "Cra"
         hwnd = window.hwnd
         window.onLayout = { [weak self] frame in
             self?.shownPage?.frame = frame
             self?.placeCommandBar()
+            self?.placeFindBar()
         }
+        window.onMove = { [weak self] in self?.placeFindBar() }
         window.onFocus = { [weak self] in
             guard let self, !self.closing, !self.commandBar.isOpen else { return }
             self.focusContent()
         }
         makeCommandBar()
+        makeFindBar()
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
         window.shouldClose = { [weak self] in
             guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
@@ -94,6 +117,7 @@ final class BrowserWindow {
         withObservationTracking {
             sidebar.build()
             sidebarPanel.background = sidebar.fill
+            downloads.apply(SidebarPalette(store.focusedSpace.theme), fill: sidebar.fill)
             syncPages()
             showAddress(store.selectedTab?.tab?.url ?? "")
         } onChange: { [weak self] in
@@ -158,6 +182,7 @@ final class BrowserWindow {
         guard !closing else { return }
         closing = true
         commandBar.close()
+        hideFindBar()
         let open = Array(pages.values)
         pages.removeAll()
         shownPage = nil
@@ -184,7 +209,7 @@ final class BrowserWindow {
 
     private func makeLayout() -> UIElement {
         sidebarPanel.padding = Thickness(left: 10, top: 10, right: 10, bottom: 10)
-        for height in [UI.auto, UI.auto, UI.star, UI.auto, UI.auto] { sidebarPanel.rowDefinitions.append(UI.row(height)) }
+        for height in [UI.auto, UI.auto, UI.star, UI.auto] { sidebarPanel.rowDefinitions.append(UI.row(height)) }
 
         let toolbar = StackPanel()
         toolbar.orientation = .horizontal
@@ -217,11 +242,7 @@ final class BrowserWindow {
         permissionPanel.children.append(answers)
         permissionPanel.margin = Thickness(left: 0, top: 8, right: 0, bottom: 0)
 
-        status.textWrapping = .wrap
-        status.fontSize = 12
-        status.margin = Thickness(left: 0, top: 6, right: 0, bottom: 0)
-
-        let parts: [FrameworkElement] = [toolbar, addressButton, sidebar.root, permissionPanel, status]
+        let parts: [FrameworkElement] = [toolbar, addressButton, sidebar.root, permissionPanel]
         for (i, part) in parts.enumerated() {
             sidebarPanel.children.append(part)
             try? Grid.setRow(part, Int32(i))
@@ -279,7 +300,7 @@ final class BrowserWindow {
             self.focusContent()
         }
         do {
-            commandWindow = try CommandBarWindow(owner: window, content: commandBar.root)
+            commandWindow = try FloatingWindow(owner: window, content: commandBar.root)
             commandWindow?.onDeactivate = { [weak self] in
                 guard let self, self.commandBar.isOpen else { return }
                 self.commandBarDeactivated = true
@@ -401,6 +422,7 @@ final class BrowserWindow {
     /// A command row (WinCommands).
     private func perform(_ id: String) {
         switch id {
+        case "find": showFindBar()
         case "newTab": beginNewTab()
         case "reopenClosedTab": reopenClosedTab()
         case "closeTab": closeCurrentTab()
@@ -437,11 +459,88 @@ final class BrowserWindow {
         store.reopenLastArchived()
     }
 
+    // MARK: Find in page
+
+    private func makeFindBar() {
+        findBar.onFind = { [weak self] query, forward in self?.find(query, forward: forward) }
+        findBar.onClose = { [weak self] in self?.hideFindBar() }
+        do {
+            findWindow = try FloatingWindow(owner: window, content: findBar.root)
+            findWindow?.onClose = { [weak self] in self?.hideFindBar() }
+        } catch {
+            print("The find bar's window could not be made: \(error)")
+        }
+    }
+
+    /// Ctrl+F (MainWindowController.showFindBar): the bar, its field focused.
+    private func showFindBar() {
+        guard !closing, let findWindow else { return }
+        findBar.apply(dark: store.focusedSpace.theme.isDark)
+        findVisible = true
+        placeFindBar()
+        // After the key event that asked, as with the command bar.
+        _ = try? dispatcher.tryEnqueue { [weak self] in
+            guard let self, self.findVisible else { return }
+            findWindow.show { [weak self] in self?.findBar.focusField() }
+        }
+    }
+
+    private func hideFindBar() {
+        guard findVisible else { return }
+        findVisible = false
+        findBar.reset()
+        shownPage?.stopFinding(clearSelection: true)
+        let front = UInt(bitPattern: GetForegroundWindow())
+        let ours = front == findWindow?.hwnd || front == hwnd
+        findWindow?.hide()
+        guard !closing, ours else { return }
+        // Typing goes back to the page, unless another app came to the front meanwhile. Again
+        // once the click on ✕ is done with: XAML handing the press back to its button left the
+        // hidden bar's window in front, with the keyboard.
+        let restore = { [weak self] in
+            guard let self, !self.findVisible, let window = HWND(bitPattern: self.hwnd) else { return }
+            _ = SetForegroundWindow(window)
+            self.focusContent()
+        }
+        restore()
+        _ = try? dispatcher.tryEnqueue(restore)
+    }
+
+    /// Ctrl+G, Ctrl+Shift+G, F3: the next or previous match; opens the bar first.
+    private func findNext(forward: Bool) {
+        guard findVisible else { return showFindBar() }
+        find(findBar.query, forward: forward)
+    }
+
+    /// Always a follow-up find: CEF restarts the search when the text changes, and unlike a first
+    /// request that selects a match, so the bar shows "1/3" rather than "0/3" (as on the Mac).
+    private func find(_ query: String, forward: Bool) {
+        guard let page = shownPage else { return }
+        if query.isEmpty {
+            findBar.reset()
+            page.stopFinding(clearSelection: true)
+            return
+        }
+        page.find(query, forward: forward, matchCase: false, findNext: true)
+    }
+
+    /// The top right of the page area, 10 DIPs in.
+    private func placeFindBar() {
+        guard findVisible, let findWindow, let window, let host = HWND(bitPattern: hwnd) else { return }
+        let scale = window.scale, frame = window.contentFrame
+        let width = (FindBarView.width * scale).rounded(), height = (FindBarView.height * scale).rounded()
+        let inset = (FindBarView.inset * scale).rounded()
+        var corner = POINT(x: frame.x + frame.width, y: frame.y)
+        _ = ClientToScreen(host, &corner)
+        findWindow.place(origin: PointInt32(x: corner.x - Int32(width + inset), y: corner.y + Int32(inset)),
+                         size: SizeInt32(width: Int32(width), height: Int32(height)))
+    }
+
     // MARK: Keys
 
     /// Shortcuts Cra keeps from the page (Arc's, with Ctrl in place of Cmd).
     private func handleShortcut(_ key: KeyPress) -> Bool {
-        let vkTab: Int32 = 0x09, vkLeft: Int32 = 0x25, vkRight: Int32 = 0x27, vkF5: Int32 = 0x74
+        let vkTab: Int32 = 0x09, vkLeft: Int32 = 0x25, vkRight: Int32 = 0x27, vkF3: Int32 = 0x72, vkF5: Int32 = 0x74
         let letter = { (c: Character) in Int32(c.asciiValue ?? 0) }
         if key.control && key.alt {
             switch key.keyCode {
@@ -457,6 +556,8 @@ final class BrowserWindow {
             case letter("T"): beginNewTab()
             case letter("W"): closeCurrentTab()
             case letter("L"): openCommandBar(.editURL)
+            case letter("F"): showFindBar()
+            case letter("G"): findNext(forward: !key.shift)
             case letter("R"): reload(ignoringCache: key.shift)
             case letter("D"): if let id = store.selectedTabID { store.togglePinned(id) }
             case vkTab: cycleTab(key.shift ? -1 : 1)
@@ -471,6 +572,10 @@ final class BrowserWindow {
             case vkRight: shownPage?.goForward()
             default: return false
             }
+            return true
+        }
+        if key.keyCode == vkF3 {
+            findNext(forward: !key.shift)
             return true
         }
         if key.keyCode == vkF5 {
@@ -585,14 +690,63 @@ extension BrowserWindow: WebPageDelegate {
         return handleShortcut(key)
     }
 
+    func page(_ page: WebPage, didFindMatches count: Int, activeMatch: Int) {
+        guard findVisible, page === shownPage else { return }
+        findBar.report(matches: count, active: activeMatch)
+    }
+
     func page(_ page: WebPage, didUpdateDownload download: DownloadInfo) {
-        let name = URL(fileURLWithPath: download.fullPath.isEmpty ? download.suggestedName : download.fullPath).lastPathComponent
-        status.foreground = sidebar.textColor
-        switch download.state {
-        case .inProgress: status.text = "Downloading \(name)" + (download.percent >= 0 ? " \(download.percent)%" : "")
-        case .complete: status.text = "Downloaded \(name)"
-        case .cancelled: status.text = "Cancelled \(name)"
-        case .interrupted: status.text = "\(name) failed"
+        windowDownloads.insert(download.identifier)
+        record(download)
+    }
+
+    /// Progress and failures show in the downloads list, as in Arc (it has no download toast);
+    /// a finished file joins downloads.json (MainWindowController.browserManager(download:)).
+    private func record(_ download: DownloadInfo) {
+        let path = download.fullPath
+        let name = path.isEmpty ? download.suggestedName : URL(fileURLWithPath: path).lastPathComponent
+        let history = DownloadHistory.shared
+        history.report(id: download.identifier, name: name, path: path, received: download.receivedBytes,
+                       total: download.totalBytes, percent: download.percent, complete: download.state == .complete,
+                       cancelled: download.state == .cancelled, failed: download.state == .interrupted)
+        if download.state == .complete, !path.isEmpty, finishedDownloads.insert(download.identifier).inserted {
+            history.add(path: path)
+        }
+        if download.state == .inProgress, downloadWatchdog == nil {
+            downloadWatchdog = try? dispatcher.createTimer()
+            downloadWatchdog?.interval = TimeSpan(duration: 2 * 10_000_000)
+            downloadWatchdog?.isRepeating = true
+            downloadWatchdog?.tick.addHandler { [weak self] _, _ in self?.checkStalledDownloads() }
+            try? downloadWatchdog?.start()
+        }
+    }
+
+    /// Chromium goes quiet about a download whose tab closed; the disk says how it ended
+    /// (DownloadHistory.settledStalled).
+    private func checkStalledDownloads() {
+        let history = DownloadHistory.shared
+        guard history.isRunning(anyOf: windowDownloads) else {
+            try? downloadWatchdog?.stop()
+            downloadWatchdog = nil
+            return
+        }
+        let fm = FileManager.default
+        func size(_ path: String) -> Int64? {
+            guard let value = (try? fm.attributesOfItem(atPath: path))?[.size] else { return nil }
+            if let n = value as? UInt64 { return Int64(n) }
+            if let n = value as? Int64 { return n }
+            return (value as? NSNumber)?.int64Value
+        }
+        let settled = history.settledStalled(among: windowDownloads, now: Date(), fileSize: size,
+                                             partialExists: { fm.fileExists(atPath: $0 + ".crdownload") })
+        for (t, outcome) in settled {
+            let size: Int64, state: DownloadInfo.State
+            switch outcome {
+            case .complete(let n): (size, state) = (n, .complete)
+            case .cancelled: (size, state) = (0, .cancelled)
+            }
+            record(DownloadInfo(identifier: t.id, url: "", fullPath: t.path, suggestedName: t.name, receivedBytes: size,
+                                totalBytes: t.total, percent: state == .complete ? 100 : t.percent, state: state))
         }
     }
 

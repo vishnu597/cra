@@ -5,28 +5,33 @@ import WinSDK
 import WindowsFoundation
 import WinUI
 
-/// The command bar's own window: borderless, owned by the browser window so it floats over the
-/// page (Chromium's child windows sit above anything XAML draws in the browser window itself, the
-/// reason HostWindow keeps its XAML to the sidebar). The Windows counterpart of CommandBarPanel.
+/// A borderless window owned by the browser window, so its XAML floats over the page
+/// (Chromium's child windows sit above anything XAML draws in the browser window itself, the
+/// reason HostWindow keeps its XAML to the sidebar): the command bar (CommandBarPanel on the
+/// Mac) and the find bar (FindBarPanel).
 ///
 /// Main thread only, like the XAML it holds.
-final class CommandBarWindow {
+final class FloatingWindow {
     private let appWindow: AppWindow
-    private let hwnd: UInt
+    let hwnd: UInt
     private let xaml = DesktopWindowXamlSource()
     private var poll: WinAppSDK.DispatcherQueueTimer?
     private var wasInFront = false
-    /// Another window came to the front (a click on the page or another app), or Alt+F4.
+    /// Another window came to the front (a click on the page or another app), or Alt+F4. Set,
+    /// the window watches for that while it is shown (the command bar closes); nil, it stays
+    /// up behind other windows (the find bar).
     var onDeactivate: (() -> Void)?
+    /// Alt+F4 when there's no `onDeactivate`.
+    var onClose: (() -> Void)?
 
     init(owner: HostWindow, content: UIElement) throws {
-        guard let presenter = try OverlappedPresenter.create() else { throw CommandBarWindowError.noPresenter }
+        guard let presenter = try OverlappedPresenter.create() else { throw FloatingWindowError.noPresenter }
         presenter.isResizable = false
         presenter.isMaximizable = false
         presenter.isMinimizable = false
         // A border without a title bar: Windows 11 rounds it and gives it a shadow.
         try presenter.setBorderAndTitleBar(true, false)
-        guard let window = try AppWindow.create(presenter, owner.appWindow.id) else { throw CommandBarWindowError.noWindow }
+        guard let window = try AppWindow.create(presenter, owner.appWindow.id) else { throw FloatingWindowError.noWindow }
         appWindow = window
         hwnd = UInt(window.id.value)
         appWindow.isShownInSwitchers = false
@@ -34,13 +39,13 @@ final class CommandBarWindow {
         xaml.content = content
         appWindow.closing.addHandler { [weak self] _, args in
             args?.cancel = true
-            self?.onDeactivate?()
+            if let deactivate = self?.onDeactivate { deactivate() } else { self?.onClose?() }
         }
     }
 
     var isVisible: Bool { appWindow.isVisible }
 
-    /// Places the bar: `origin` its client area's top left on screen, `size` that area, in
+    /// Places the window: `origin` its client area's top left on screen, `size` that area, in
     /// physical pixels.
     func place(origin: PointInt32, size: SizeInt32) {
         try? appWindow.resizeClient(size)
@@ -59,7 +64,7 @@ final class CommandBarWindow {
         try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: client.width, height: client.height))
     }
 
-    /// Shows the bar in front and gives its XAML the keyboard; `focus` then focuses the field.
+    /// Shows the window in front and gives its XAML the keyboard; `focus` then focuses a field.
     func show(focus: @escaping () -> Void) {
         try? appWindow.show(true)
         if let bridge = xaml.siteBridge, let window = HWND(bitPattern: UInt(bridge.windowId.value)) {
@@ -76,10 +81,11 @@ final class CommandBarWindow {
     }
 
     /// Windows has no event for another window taking the front from this one that reaches us
-    /// here (WM_ACTIVATE goes to the window procedure AppWindow owns), so the bar looks every
+    /// here (WM_ACTIVATE goes to the window procedure AppWindow owns), so the window looks every
     /// tenth of a second while it is open, which costs nothing measurable.
     private func startWatching() {
         stopWatching()
+        guard onDeactivate != nil else { return }
         poll = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.createTimer()
         poll?.interval = TimeSpan(duration: 100 * 10_000)
         poll?.isRepeating = true
@@ -103,7 +109,7 @@ final class CommandBarWindow {
     }
 }
 
-enum CommandBarWindowError: Swift.Error {
+enum FloatingWindowError: Swift.Error {
     case noPresenter
     case noWindow
 }
