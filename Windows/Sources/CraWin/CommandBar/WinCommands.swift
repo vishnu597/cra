@@ -17,6 +17,19 @@ enum WinGlyph {
         case "gear": return "\u{E713}"
         case "tab": return "\u{E7C3}"
         case "space": return "\u{E8A9}"
+        // The site control center's (the Mac's SF Symbols, in Segoe Fluent Icons).
+        case "square.and.arrow.up": return "\u{E72D}"
+        case "link": return "\u{E71B}"
+        case "camera": return "\u{E722}"
+        case "text.viewfinder": return "\u{E9A6}"
+        case "lock.fill": return "\u{E72E}"
+        case "lock.open.fill": return "\u{E785}"
+        case "ellipsis": return "\u{E712}"
+        case "slider.horizontal.3": return "\u{E9E9}"
+        case "hammer.fill": return "\u{E90F}"
+        case "shield.fill": return "\u{EA18}"
+        case "gearshape.fill": return "\u{E713}"
+        case "trash": return "\u{E74D}"
         default: return "\u{E721}"  // magnifyingglass
         }
     }

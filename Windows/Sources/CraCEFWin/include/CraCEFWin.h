@@ -60,6 +60,22 @@ void cra_shell_show_in_folder(const char *path);
 /// top left to the toolbar Cra hides) for the next two seconds. Call when a download starts.
 void cra_hide_download_started_animation(void);
 
+// MARK: - Shell
+
+/// UTF-8 text on the clipboard. 1 on success.
+int cra_clipboard_set_text(const char *text);
+/// A PNG on the clipboard, as "PNG" (what browsers and Office paste) and as a bitmap (CF_DIB,
+/// for Paint and the rest). 1 on success.
+int cra_clipboard_set_png(const uint8_t *png, size_t length);
+/// Windows' Share window for a link (`title` may be NULL), over `owner` (an HWND). 1 when it opened.
+int cra_share_link(uintptr_t owner, const char *url, const char *title);
+/// A native menu at the pointer, owned by `owner` (an HWND): `titles[i]` is item i, and NULL or
+/// "" a separator. Returns the chosen item's index plus one, 0 when none was chosen. Modal.
+int cra_popup_menu(uintptr_t owner, const char *const *titles, size_t count);
+/// Windows' Save dialog for a PNG, in Downloads, suggesting `file_name`. The chosen path goes to
+/// `out` (UTF-8, `capacity` bytes). 1 when a path was chosen. Modal.
+int cra_save_png_dialog(uintptr_t owner, const char *title, const char *file_name, char *out, size_t capacity);
+
 // MARK: - Images
 
 /// A decoded image: premultiplied BGRA, top-down, `width * 4` bytes a row (a XAML
@@ -115,7 +131,9 @@ typedef struct CraKeyEvent {
     int is_repeat;
 } CraKeyEvent;
 
-/// Permission kinds, a bitmask as on macOS.
+/// Permission kinds, a bitmask as on macOS (CraCEF.h): from 1 << 5 up, Chrome's other request
+/// types in CraCore's PermissionPrompt.requests order (clipboard, window management, local
+/// network...), so the prompt can say what a page asks for. A type CEF adds later comes as 16.
 enum {
     CraPermissionCamera = 1,
     CraPermissionMicrophone = 2,
@@ -123,6 +141,21 @@ enum {
     CraPermissionNotifications = 8,
     CraPermissionOther = 16,
 };
+
+/// The page's connection (CefSSLStatus), for the site control center's Secure badge.
+typedef struct CraSSLStatus {
+    /// The page came over a connection with a certificate (https, whatever its errors).
+    int secure_connection;
+    /// net::CertStatus bits.
+    uint32_t cert_status;
+    /// net::SSLStatus::ContentStatus bits: http content the page showed or ran.
+    uint32_t content_status;
+    /// The server sent a certificate (cra_browser_show_certificate has something to show).
+    int has_certificate;
+} CraSSLStatus;
+
+/// A DevTools protocol answer: `success` and the result (or the error) as JSON, `length` bytes.
+typedef void (*CraDevToolsResult)(void *context, int success, const char *json, size_t length);
 
 /// Every member may be NULL. `context` is passed back to each.
 typedef struct CraBrowserCallbacks {
@@ -201,6 +234,16 @@ void cra_browser_show_dev_tools(CraBrowser *browser);
 void cra_browser_close_dev_tools(CraBrowser *browser);
 void cra_browser_print(CraBrowser *browser);
 void cra_browser_view_source(CraBrowser *browser);
+/// Runs a DevTools protocol method ("Page.captureScreenshot") with `params` (a JSON object, NULL
+/// for none). `done` is called exactly once, on the main thread: with the answer, or with
+/// success 0 when the page closes first or the message could not be sent.
+void cra_browser_send_dev_tools_method(CraBrowser *browser, const char *method, const char *params, void *context,
+                                       CraDevToolsResult done);
+/// The connection of the page on screen; 0 before anything has committed.
+int cra_browser_ssl_status(CraBrowser *browser, CraSSLStatus *out);
+/// Windows' certificate dialog for the page's certificate and its issuers, owned by `owner` (an
+/// HWND). Modal: returns once it is closed. 0 when the page has no certificate.
+int cra_browser_show_certificate(CraBrowser *browser, uintptr_t owner);
 
 /// Asynchronous: `closed` fires once Chromium is done, and is the only callback that still
 /// fires after this call. The browser must not be used once `closed` has fired.

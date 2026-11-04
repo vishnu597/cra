@@ -75,6 +75,11 @@ final class FloatingWindow {
         startWatching()
     }
 
+    /// Shows the window without taking the front or the keyboard (a toast).
+    func showInactive() {
+        try? appWindow.show(false)
+    }
+
     func hide() {
         stopWatching()
         try? appWindow.hide()

@@ -9,6 +9,7 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 
 #include <climits>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_handler.h"
+#include "include/cef_devtools_message_observer.h"
 #include "include/cef_id_mappers.h"
 #include "include/cef_request_context.h"
 #include "include/cef_values.h"
@@ -118,6 +120,79 @@ std::wstring DownloadsFolder() {
     if (path) CoTaskMemFree(path);
     return out;
 }
+
+// Chrome's permission request types as the `kinds` bits (CraCEFWin.h), the table in
+// Sources/CraCEF/CraCEF.mm, so the prompt can say what a page asks for.
+const struct {
+    uint32_t cef;
+    uint32_t kind;
+} kPermissionKinds[] = {
+    {CEF_PERMISSION_TYPE_CAMERA_STREAM | CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM, CraPermissionCamera},
+    {CEF_PERMISSION_TYPE_MIC_STREAM, CraPermissionMicrophone},
+    {CEF_PERMISSION_TYPE_GEOLOCATION, CraPermissionLocation},
+    {CEF_PERMISSION_TYPE_NOTIFICATIONS, CraPermissionNotifications},
+    {CEF_PERMISSION_TYPE_CLIPBOARD, 1u << 5},
+    {CEF_PERMISSION_TYPE_WINDOW_MANAGEMENT, 1u << 6},
+    {CEF_PERMISSION_TYPE_LOCAL_NETWORK_ACCESS_DEPRECATED | CEF_PERMISSION_TYPE_LOCAL_NETWORK, 1u << 7},
+    {CEF_PERMISSION_TYPE_LOOPBACK_NETWORK, 1u << 8},
+    {CEF_PERMISSION_TYPE_STORAGE_ACCESS, 1u << 9},
+    {CEF_PERMISSION_TYPE_TOP_LEVEL_STORAGE_ACCESS, 1u << 10},
+    {CEF_PERMISSION_TYPE_LOCAL_FONTS, 1u << 11},
+    {CEF_PERMISSION_TYPE_IDLE_DETECTION, 1u << 12},
+    {CEF_PERMISSION_TYPE_MIDI_SYSEX, 1u << 13},
+    {CEF_PERMISSION_TYPE_MULTIPLE_DOWNLOADS, 1u << 14},
+    {CEF_PERMISSION_TYPE_KEYBOARD_LOCK, 1u << 15},
+    {CEF_PERMISSION_TYPE_POINTER_LOCK, 1u << 16},
+    {CEF_PERMISSION_TYPE_PROTECTED_MEDIA_IDENTIFIER, 1u << 17},
+    {CEF_PERMISSION_TYPE_REGISTER_PROTOCOL_HANDLER, 1u << 18},
+    {CEF_PERMISSION_TYPE_AR_SESSION, 1u << 19},
+    {CEF_PERMISSION_TYPE_VR_SESSION, 1u << 20},
+    {CEF_PERMISSION_TYPE_HAND_TRACKING, 1u << 21},
+    {CEF_PERMISSION_TYPE_SENSORS, 1u << 22},
+    {CEF_PERMISSION_TYPE_DISK_QUOTA, 1u << 23},
+    {CEF_PERMISSION_TYPE_IDENTITY_PROVIDER, 1u << 24},
+    {CEF_PERMISSION_TYPE_CAPTURED_SURFACE_CONTROL, 1u << 25},
+    {CEF_PERMISSION_TYPE_WEB_APP_INSTALLATION, 1u << 26},
+    {CEF_PERMISSION_TYPE_FILE_SYSTEM_ACCESS, 1u << 27},
+    {CEF_PERMISSION_TYPE_AMBIENT_LOGIN, 1u << 28},
+};
+
+uint32_t PermissionKinds(uint32_t requested) {
+    uint32_t kinds = 0;
+    for (const auto &k : kPermissionKinds) {
+        if (requested & k.cef) kinds |= k.kind;
+        requested &= ~k.cef;
+    }
+    return requested ? kinds | CraPermissionOther : kinds;
+}
+
+/// Routes DevTools protocol answers to cra_browser_send_dev_tools_method's callbacks (one
+/// observer per page, registered on first use). Refcounted apart from the page, so an answer
+/// arriving after the page is gone finds nothing to call.
+class DevToolsObserver : public CefDevToolsMessageObserver {
+public:
+    std::unordered_map<int, std::pair<void *, CraDevToolsResult>> pending;
+
+    void OnDevToolsMethodResult(CefRefPtr<CefBrowser> browser, int message_id, bool success, const void *result,
+                                size_t result_size) override {
+        auto it = pending.find(message_id);
+        if (it == pending.end()) return;
+        auto [context, done] = it->second;
+        pending.erase(it);
+        if (done) done(context, success ? 1 : 0, static_cast<const char *>(result), result_size);
+    }
+
+    /// Every caller still waiting hears that no answer is coming.
+    void FailAll() {
+        auto waiting = std::move(pending);
+        pending.clear();
+        const char error[] = "{\"message\":\"the page closed\"}";
+        for (auto &[id, call] : waiting)
+            if (call.second) call.second(call.first, 0, error, sizeof error - 1);
+    }
+
+    IMPLEMENT_REFCOUNTING(DevToolsObserver);
+};
 
 // MARK: - Message pump
 
@@ -236,6 +311,9 @@ struct CraBrowser {
     uint64_t next_permission_id = 1;
     std::unordered_map<uint64_t, CefRefPtr<CefPermissionPromptCallback>> prompt_callbacks;
     std::unordered_map<uint64_t, std::pair<CefRefPtr<CefMediaAccessCallback>, uint32_t>> media_callbacks;
+    CefRefPtr<DevToolsObserver> devtools;
+    CefRefPtr<CefRegistration> devtools_registration;
+    int next_devtools_id = 100000;  // clear of the ids Chromium's own clients use
 
     void ApplyFrame() {
         if (!browser) return;
@@ -604,18 +682,23 @@ public:
                                 CefRefPtr<CefPermissionPromptCallback> callback) override {
         CraBrowser *o = Live();
         if (!o || !o->callbacks.permission_requested) return false;
-        uint32_t kinds = 0;
-        if (requested_permissions & (CEF_PERMISSION_TYPE_CAMERA_STREAM | CEF_PERMISSION_TYPE_CAMERA_PAN_TILT_ZOOM))
-            kinds |= CraPermissionCamera;
-        if (requested_permissions & CEF_PERMISSION_TYPE_MIC_STREAM) kinds |= CraPermissionMicrophone;
-        if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kinds |= CraPermissionLocation;
-        if (requested_permissions & CEF_PERMISSION_TYPE_NOTIFICATIONS) kinds |= CraPermissionNotifications;
-        if (kinds == 0) kinds = CraPermissionOther;
+        // A page's <usermedia> or <permission> element (Meet's "Use microphone and camera") can
+        // ask again for the requests just allowed, from inside Continue. Those are decided, and
+        // a second answer hits a CHECK in Chromium (#111 on the Mac): close this one the way
+        // Chrome's close button does. CEF runs this Continue after we return.
+        if (answering_prompt_) {
+            callback->Continue(CEF_PERMISSION_RESULT_DISMISS);
+            return true;
+        }
         uint64_t id = o->next_permission_id++;
         o->prompt_callbacks[id] = callback;
-        o->callbacks.permission_requested(o->callbacks.context, id, requesting_origin.ToString().c_str(), kinds);
+        o->callbacks.permission_requested(o->callbacks.context, id, requesting_origin.ToString().c_str(),
+                                          PermissionKinds(requested_permissions));
         return true;
     }
+
+    /// True while a prompt's answer runs (UI thread only); cra_browser_answer_permission sets it.
+    static inline bool answering_prompt_ = false;
 
     // Find ----------------------------------------------------------------
 
@@ -713,6 +796,8 @@ void CraBrowser::Finish() {
     for (auto &[id, pair] : media_callbacks) pair.first->Cancel();
     prompt_callbacks.clear();
     media_callbacks.clear();
+    devtools_registration = nullptr;
+    if (devtools) devtools->FailAll();
     if (callbacks.closed) callbacks.closed(callbacks.context);
     delete this;
 }
@@ -902,8 +987,11 @@ extern "C" void cra_browser_set_audio_muted(CraBrowser *b, int muted) {
 extern "C" void cra_browser_answer_permission(CraBrowser *b, uint64_t request_id, int allowed) {
     if (!b) return;
     if (auto it = b->prompt_callbacks.find(request_id); it != b->prompt_callbacks.end()) {
-        it->second->Continue(allowed ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+        CefRefPtr<CefPermissionPromptCallback> cb = it->second;
         b->prompt_callbacks.erase(it);
+        CraClient::answering_prompt_ = true;
+        cb->Continue(allowed ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+        CraClient::answering_prompt_ = false;
     } else if (auto m = b->media_callbacks.find(request_id); m != b->media_callbacks.end()) {
         m->second.first->Continue(allowed ? m->second.second : CEF_MEDIA_PERMISSION_NONE);
         b->media_callbacks.erase(m);
@@ -929,6 +1017,100 @@ extern "C" void cra_browser_print(CraBrowser *b) {
 }
 extern "C" void cra_browser_view_source(CraBrowser *b) {
     if (b && b->browser) b->browser->GetMainFrame()->ViewSource();
+}
+
+extern "C" void cra_browser_send_dev_tools_method(CraBrowser *b, const char *method, const char *params, void *context,
+                                                  CraDevToolsResult done) {
+    auto fail = [&](const char *why) {
+        std::string error = std::string("{\"message\":\"") + why + "\"}";
+        if (done) done(context, 0, error.c_str(), error.size());
+    };
+    if (!b || !b->browser || b->close_requested || !method) return fail("no page");
+    if (!b->devtools) {
+        b->devtools = new DevToolsObserver();
+        b->devtools_registration = b->browser->GetHost()->AddDevToolsMessageObserver(b->devtools);
+    }
+    int id = ++b->next_devtools_id;
+    // Method names are plain identifiers ("Domain.method"): nothing to escape.
+    std::string message = "{\"id\":" + std::to_string(id) + ",\"method\":\"" + method +
+                          "\",\"params\":" + (params && *params ? params : "{}") + "}";
+    b->devtools->pending[id] = {context, done};
+    if (!b->browser->GetHost()->SendDevToolsMessage(message.data(), message.size())) {
+        b->devtools->pending.erase(id);
+        fail("SendDevToolsMessage failed");
+    }
+}
+
+namespace {
+
+/// The page on screen's SSL status, nil before anything has committed.
+CefRefPtr<CefSSLStatus> SSLStatus(CraBrowser *b) {
+    if (!b || !b->browser) return nullptr;
+    CefRefPtr<CefNavigationEntry> entry = b->browser->GetHost()->GetVisibleNavigationEntry();
+    return entry ? entry->GetSSLStatus() : nullptr;
+}
+
+/// The server's certificate, then its issuers, DER encoded.
+std::vector<std::vector<uint8_t>> Certificates(CefRefPtr<CefSSLStatus> ssl) {
+    std::vector<std::vector<uint8_t>> out;
+    CefRefPtr<CefX509Certificate> cert = ssl ? ssl->GetX509Certificate() : nullptr;
+    if (!cert) return out;
+    auto add = [&](CefRefPtr<CefBinaryValue> der) {
+        if (!der || !der->GetSize()) return;
+        std::vector<uint8_t> bytes(der->GetSize());
+        der->GetData(bytes.data(), bytes.size(), 0);
+        out.push_back(std::move(bytes));
+    };
+    add(cert->GetDEREncoded());
+    CefX509Certificate::IssuerChainBinaryList chain;
+    cert->GetDEREncodedIssuerChain(chain);
+    for (auto &der : chain) add(der);
+    return out;
+}
+
+}  // namespace
+
+extern "C" int cra_browser_ssl_status(CraBrowser *b, CraSSLStatus *out) {
+    if (!out) return 0;
+    *out = CraSSLStatus{};
+    CefRefPtr<CefSSLStatus> ssl = SSLStatus(b);
+    if (!ssl) return 0;
+    out->secure_connection = ssl->IsSecureConnection() ? 1 : 0;
+    out->cert_status = static_cast<uint32_t>(ssl->GetCertStatus());
+    out->content_status = static_cast<uint32_t>(ssl->GetContentStatus());
+    out->has_certificate = ssl->GetX509Certificate() ? 1 : 0;
+    return 1;
+}
+
+extern "C" int cra_browser_show_certificate(CraBrowser *b, uintptr_t owner) {
+    std::vector<std::vector<uint8_t>> ders = Certificates(SSLStatus(b));
+    if (ders.empty()) return 0;
+    // cryptui.dll's viewer, the one Explorer and Edge show; loaded when first asked for.
+    using ViewContext = BOOL(WINAPI *)(DWORD, const void *, HWND, LPCWSTR, DWORD, void *);
+    static ViewContext view = [] {
+        HMODULE ui = LoadLibraryExW(L"cryptui.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return ui ? reinterpret_cast<ViewContext>(GetProcAddress(ui, "CryptUIDlgViewContext")) : nullptr;
+    }();
+    if (!view) return 0;
+    // The issuers in the certificate's own store, so the dialog's Certification Path finds them.
+    HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, nullptr);
+    if (!store) return 0;
+    for (size_t i = 1; i < ders.size(); i++) {
+        CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, ders[i].data(),
+                                         static_cast<DWORD>(ders[i].size()), CERT_STORE_ADD_ALWAYS, nullptr);
+    }
+    PCCERT_CONTEXT leaf = nullptr;
+    int shown = 0;
+    if (CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, ders[0].data(),
+                                         static_cast<DWORD>(ders[0].size()), CERT_STORE_ADD_ALWAYS, &leaf) &&
+        leaf) {
+        const DWORD kCertificateContext = 1;  // CERT_STORE_CERTIFICATE_CONTEXT
+        view(kCertificateContext, leaf, reinterpret_cast<HWND>(owner), nullptr, 0, nullptr);
+        CertFreeCertificateContext(leaf);
+        shown = 1;
+    }
+    CertCloseStore(store, 0);
+    return shown;
 }
 
 extern "C" void cra_browser_close(CraBrowser *b) {
