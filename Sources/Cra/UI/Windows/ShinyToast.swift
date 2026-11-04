@@ -288,24 +288,11 @@ final class ShinyToast {
     /// at the bottom, outlined darker still. Fitted to one Arc theme of each kind (2 Nov 2026, sRGB):
     /// light (Victor's yellow/green) 220/226/184 → 208/218/163, outline 151/157/124; dark (the
     /// default theme in dark mode) 43/24/102 → 33/19/79, outline 26/15/62, white text.
+    /// CraCore's ToastStyle, shared with Windows.
     static func colors(_ theme: SpaceTheme) -> Colors {
-        let theme = theme.shown
-        let comps = theme.colors.compactMap(HexColor.components)
-        let n = Double(max(comps.count, 1))
-        let mean = NSColor(srgbRed: comps.reduce(0) { $0 + $1.r } / n, green: comps.reduce(0) { $0 + $1.g } / n,
-                           blue: comps.reduce(0) { $0 + $1.b } / n, alpha: 1)
-        let hue = mean.hueComponent, sat = comps.isEmpty ? 0 : mean.saturationComponent
-        func color(_ s: CGFloat, _ b: CGFloat) -> NSColor {
-            NSColor(hue: hue, saturation: s, brightness: b, alpha: 1).usingColorSpace(.sRGB) ?? .gray
-        }
-        if theme.isDark {
-            let s = min(0.76, sat * 1.9)
-            let top = color(s, 0.40)
-            return (top, color(s, 0.31), color(s, 0.24), .white)
-        }
-        let s = min(0.19, sat * 0.3)
-        let top = color(s, 0.89)
-        return (top, color(min(0.25, s * 1.3), 0.85), color(s, 0.61), .black)
+        let c = ToastStyle.colors(theme.shown)
+        func ns(_ v: RGB) -> NSColor { NSColor(srgbRed: v.r, green: v.g, blue: v.b, alpha: 1) }
+        return (ns(c.top), ns(c.bottom), ns(c.outline), ns(c.text))
     }
 }
 
