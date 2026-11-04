@@ -1546,7 +1546,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
               pageScreenRect(rt) != nil else { return }
         let b = rt.browser
         captureStarting = true
-        b.sendDevToolsMethod("Page.captureScreenshot", params: #"{"format":"png","captureBeyondViewport":false}"#) { [weak self, weak b] shot, error in
+        b.sendDevToolsMethod("Page.captureScreenshot", params: PageCapture.screenshotParams()) { [weak self, weak b] shot, error in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.captureStarting = false
@@ -1624,11 +1624,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         service.perform(withItems: [url])
     }
 
-    private static func captureFileName() -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return "Cra Capture \(f.string(from: Date())).png"
-    }
+    private static func captureFileName() -> String { PageCapture.fileName(at: Date()) }
 
     // MARK: Sidebar
 
@@ -2274,8 +2270,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         actions.capture = { [weak self] in self?.capturePage() }
         actions.captureFullPage = { [weak self] in self?.captureFullPage() }
         actions.runExtension = { [weak self] id in self?.runExtensionAction(id) }
-        actions.addExtension = { [weak self] in self?.openTab("https://chromewebstore.google.com/category/extensions") }
-        actions.manageExtensions = { [weak self] in self?.openTab("chrome://extensions") }
+        actions.addExtension = { [weak self] in self?.openTab(SiteControlCenter.addExtensionURL) }
+        actions.manageExtensions = { [weak self] in self?.openTab(SiteControlCenter.manageExtensionsURL) }
         actions.clearCache = { [weak self] in self?.currentBrowser?.clearSiteDataAndReload(cookies: false) }
         actions.clearCookies = { [weak self] in self?.currentBrowser?.clearSiteDataAndReload(cookies: true) }
         let ssl = currentBrowser?.sslStatus()
@@ -2284,8 +2280,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         })
         if ssl?.certificates.isEmpty == false { actions.showCertificate = { [weak self] in self?.showCertificate() } }
         actions.siteSettings = { [weak self] in
-            guard let origin = URL(string: url).flatMap({ u in u.host.map { "\(u.scheme ?? "https")://\($0)" } }) else { return }
-            self?.openTab("chrome://settings/content/siteDetails?site=" + (origin.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? origin))
+            if let settings = SiteControlCenter.siteSettingsURL(for: url) { self?.openTab(settings) }
         }
         siteControlCenterSpaceID = focusedSpaceID
         siteControlCenter.show(relativeTo: rect, of: content, url: url, secure: secure, dark: SystemAppearance.shared.isDark,
@@ -2324,13 +2319,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         showToast("Capture in Progress")
         // Both completions come on the main queue.
         b.sendDevToolsMethod("Page.getLayoutMetrics", params: "{}") { [weak self] result, error in
-            guard let result, let m = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any],
-                  let size = (m["cssContentSize"] ?? m["contentSize"]) as? [String: Any],
-                  let w = size["width"] as? Double, let h = size["height"] as? Double else {
+            guard let size = result.flatMap(PageCapture.contentSize(layoutMetrics:)) else {
                 MainActor.assumeIsolated { self?.finishCapture(nil, error: error) }
                 return
             }
-            let params = #"{"format":"png","captureBeyondViewport":true,"clip":{"x":0,"y":0,"width":\#(w),"height":\#(min(h, 16384)),"scale":1}}"#
+            let params = PageCapture.screenshotParams(fullPageWidth: size.width, height: size.height)
             b.sendDevToolsMethod("Page.captureScreenshot", params: params) { shot, error in
                 MainActor.assumeIsolated { self?.finishCapture(shot, error: error) }
             }
@@ -2340,8 +2333,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     /// As Arc does with a capture: the image goes on the clipboard with the shutter sound, and
     /// the toast's Save puts it in a file. Finder stays where it is (GitHub #90).
     private func finishCapture(_ shot: String?, error: String?) {
-        guard let shot, let o = try? JSONSerialization.jsonObject(with: Data(shot.utf8)) as? [String: Any],
-              let b64 = o["data"] as? String, let png = Data(base64Encoded: b64), NSImage(data: png) != nil else {
+        guard let png = shot.flatMap(PageCapture.png(screenshot:)), NSImage(data: png) != nil else {
             NSLog("Cra: capture failed: %@", error ?? "no data")
             showToast("Capture Failed")
             return
