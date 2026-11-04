@@ -5,8 +5,8 @@ import WindowsFoundation
 import WinUI
 
 /// A page's permission request (the Mac's sheet in BrowserManager): CraCore's PermissionPrompt
-/// question, "mail.google.com wants to show notifications", with Allow and Block. It floats in a
-/// window of its own at the top of the page, as the Mac's sheet drops from the window's top;
+/// question, "mail.google.com wants to show notifications" (the site named as Chrome names
+/// it), with Allow and Block. It floats in a window of its own at the top of the page, as the Mac's sheet drops from the window's top;
 /// requests from several pages wait their turn.
 @MainActor
 final class PermissionPromptView {
@@ -26,7 +26,7 @@ final class PermissionPromptView {
     /// Shows `origin`'s question for `kinds` (CraCEFWin's bits) and returns the height it
     /// needs in DIPs at `width`.
     func show(origin: String, kinds: UInt, dark: Bool) -> Double {
-        message.text = PermissionPrompt.message(origin: origin, kinds: kinds)
+        message.text = PermissionPrompt.message(origin: PermissionPrompt.displayOrigin(origin), kinds: kinds)
         root.requestedTheme = dark ? .dark : .light
         root.background = dark ? UI.brush(44, 44, 48) : UI.brush(252, 252, 253)
         message.foreground = dark ? UI.brush(255, 255, 255) : UI.brush(20, 20, 24)
