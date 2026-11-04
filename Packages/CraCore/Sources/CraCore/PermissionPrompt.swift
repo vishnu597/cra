@@ -1,3 +1,5 @@
+import Foundation
+
 /// The question Cra's permission sheet asks for a page's request. `kinds` is CraCEF's bit set:
 /// 1 camera, 2 microphone, 4 location, 8 notifications, 16 a type CraCEF can't name, and from
 /// 1 << 5 Chrome's other types. Notifications ask like the others (Arc asks too; Messenger and
