@@ -83,7 +83,7 @@ public enum ContentCapture {
 
     private static func number(_ v: Any?) -> CGFloat? {
         if let d = v as? Double { return CGFloat(d) }
-        if let n = v as? NSNumber { return CGFloat(truncating: n) }
+        if let n = v as? NSNumber { return CGFloat(n.doubleValue) }
         return nil
     }
 
