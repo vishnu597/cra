@@ -34,6 +34,25 @@ struct ChromiumLocaleTests {
         #expect(ChromiumLocale.pick(available: Self.cef, preferredLanguages: preferred) == locale)
     }
 
+    /// The matcher Linux and Windows use, where Foundation can't match localizations, gives
+    /// macOS's answers too.
+    @Test(arguments: [
+        (["zh-Hans-CN"], "zh-CN"), (["zh-Hans"], "zh-CN"), (["zh-Hant-TW"], "zh-TW"), (["zh-Hant-HK"], "zh-TW"),
+        (["zh-HK"], "zh-TW"), (["zh"], "zh-CN"), (["en-US"], "en"), (["en"], "en"), (["en-DK", "da-DK"], "en-GB"),
+        (["en-AU"], "en-GB"), (["en-GB"], "en-GB"), (["da-DK"], "da"), (["pt-PT"], "pt-PT"), (["pt"], "pt-BR"),
+        (["pt_AO"], "pt-PT"), (["es-MX"], "es-419"), (["es-ES"], "es"), (["es"], "es"), (["nb-NO"], "nb"),
+        (["no"], "nb"), (["iw"], "he"), (["is-IS", "de-DE"], "de"), (["is-IS"], "en"), ([], "en"), ([""], "en"),
+    ])
+    func portableMatcher(preferred: [String], match: String) {
+        let candidates = ["af", "da", "de", "en", "en-GB", "es", "es-419", "he", "nb", "pt-BR", "pt-PT", "zh-CN", "zh-TW"]
+        #expect(ChromiumLocale.portableMatch(candidates, preferred) == match)
+    }
+
+    @Test func portableMatcherWithoutEnglish() {
+        #expect(ChromiumLocale.portableMatch(["fr", "de"], ["is"]) == "fr")
+        #expect(ChromiumLocale.portableMatch(["fr-CA", "de"], ["fr-FR"]) == "fr-CA")
+    }
+
     @Test func noLocalesLeavesCEFsDefault() {
         #expect(ChromiumLocale.pick(available: [], preferredLanguages: ["zh-Hans-CN"]) == nil)
         #expect(ChromiumLocale.pick(available: ["Base"], preferredLanguages: ["zh-Hans-CN"]) == nil)
