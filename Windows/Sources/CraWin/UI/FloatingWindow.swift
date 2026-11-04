@@ -83,7 +83,7 @@ final class FloatingWindow {
     /// The pointer is over the window.
     var hasPointer: Bool {
         var cursor = POINT(), frame = RECT()
-        guard GetCursorPos(&cursor).boolValue, GetWindowRect(HWND(bitPattern: hwnd), &frame).boolValue else { return false }
+        guard GetCursorPos(&cursor), GetWindowRect(HWND(bitPattern: hwnd), &frame) else { return false }
         return cursor.x >= frame.left && cursor.x < frame.right && cursor.y >= frame.top && cursor.y < frame.bottom
     }
 
