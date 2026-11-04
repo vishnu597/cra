@@ -43,4 +43,13 @@ struct PermissionPromptTests {
         #expect(PermissionPrompt.message(origin: site, kinds: 0) == "https://www.messenger.com/ is asking for a browser permission")
         #expect(PermissionPrompt.message(origin: site, kinds: 8 | 16) == "https://www.messenger.com/ wants to show notifications and use another browser permission")
     }
+
+    @Test func theSiteAsChromeNamesIt() {
+        #expect(PermissionPrompt.displayOrigin("https://permission.site/") == "permission.site")
+        #expect(PermissionPrompt.displayOrigin("https://www.messenger.com") == "www.messenger.com")
+        #expect(PermissionPrompt.displayOrigin("https://example.com:8443/") == "example.com:8443")
+        #expect(PermissionPrompt.displayOrigin("http://localhost:8080/") == "http://localhost:8080")
+        #expect(PermissionPrompt.displayOrigin("file:///C:/page.html") == "file:///C:/page.html")
+        #expect(PermissionPrompt.displayOrigin("") == "")
+    }
 }
