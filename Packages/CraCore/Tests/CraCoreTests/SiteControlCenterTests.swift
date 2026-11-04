@@ -118,7 +118,8 @@ struct SiteControlCenterTests {
         #expect(M.settingsHeight(rows: 3) == 146)
         #expect(M.settingsHeight(rows: 0) == 0)
         #expect(M.height(extensions: 3, settingRows: 3) == 340)
-        #expect(M.height(extensions: nil, settingRows: 1) == 107 + 60 + 13)
+        // 107, the one-row section (60) and the space after it (13).
+        #expect(M.height(extensions: nil, settingRows: 1) == 180)
     }
 
     @Test func metrics() {
