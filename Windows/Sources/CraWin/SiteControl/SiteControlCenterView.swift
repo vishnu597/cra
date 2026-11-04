@@ -25,6 +25,23 @@ final class SiteControlCenterView {
     var actions = Actions()
     /// The window that holds the view: the More menu's owner.
     var ownerWindow: () -> UInt = { 0 }
+    /// Escape, as it closes Arc's popover.
+    var onEscape: () -> Void = {}
+    private var firstTile: Button?
+
+    init() {
+        root.previewKeyDown.addHandler { [weak self] _, args in
+            guard let self, let args, Int32(truncatingIfNeeded: args.key.rawValue) == 0x1B else { return }
+            args.handled = true
+            self.onEscape()
+        }
+    }
+
+    /// Puts the keyboard in the popover (on its first tile, without a focus ring) so Escape
+    /// reaches it.
+    func focus() {
+        _ = try? firstTile?.focus(.pointer)
+    }
 
     /// Builds the contents for the page at `url`. `dark` is Windows' own light or dark mode, as
     /// Arc's popover follows macOS rather than the space (#171).
@@ -55,6 +72,7 @@ final class SiteControlCenterView {
         row.orientation = .horizontal
         row.spacing = Double(M.gap)
         row.margin = Thickness(left: 0, top: 0, right: 0, bottom: Double(M.afterActions))
+        firstTile = nil
         for action in SiteControlCenter.Action.allCases {
             let glyph = FontIcon()
             glyph.glyph = WinGlyph.code(action.symbol)
@@ -71,6 +89,7 @@ final class SiteControlCenterView {
             Self.keepFill(b, colors.action, hover: colors.actionHover)
             try? ToolTipService.setToolTip(b, action.help)
             try? AutomationProperties.setName(b, action.help)
+            if firstTile == nil { firstTile = b }
             row.children.append(b)
         }
         return row

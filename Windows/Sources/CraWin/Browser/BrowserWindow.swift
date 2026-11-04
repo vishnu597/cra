@@ -826,6 +826,7 @@ final class BrowserWindow {
 
     private func makeSiteControlCenter() {
         siteControl.ownerWindow = { [weak self] in self?.siteControlWindow?.hwnd ?? 0 }
+        siteControl.onEscape = { [weak self] in self?.hideSiteControlCenter(refocus: true) }
         do {
             siteControlWindow = try FloatingWindow(owner: window, content: siteControl.root)
             // A click anywhere else closes it, as Arc's transient popover.
@@ -884,7 +885,7 @@ final class BrowserWindow {
         }
         _ = ClientToScreen(host, &corner)
         siteControlWindow.place(origin: PointInt32(x: corner.x, y: corner.y), size: SizeInt32(width: width, height: height))
-        siteControlWindow.show {}
+        siteControlWindow.show { [weak self] in self?.siteControl.focus() }
     }
 
     /// `refocus`: the page takes the keyboard back if the popover had it (a click elsewhere

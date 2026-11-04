@@ -8,7 +8,7 @@ import WinUI
 /// Arc's toast (the Mac's ShinyToast): a short confirmation at the top right of the page,
 /// "Copied Current URL" or "Screenshot Copied to Clipboard" with a Save button, in the space's
 /// colours (CraCore's ToastStyle). It floats in a window of its own that never takes the
-/// keyboard, and goes 4.85 s after the last message.
+/// keyboard, and goes 4.85 s after the last message, or once the pointer leaves it.
 @MainActor
 final class ToastView {
     struct Action {
@@ -17,6 +17,9 @@ final class ToastView {
     }
 
     private let root = Border()
+    /// Chromium's classic scrollbar on Windows, in DIPs.
+    private static let scrollbar = 15.0
+
     private let label = TextBlock()
     private let buttonLabel = TextBlock()
     private var button: Button!
@@ -69,7 +72,10 @@ final class ToastView {
         }
         let scale = page.scale
         let w = Int32((width * scale).rounded()), h = Int32((Double(ToastStyle.height) * scale).rounded())
-        let x = page.right - Int32((Double(ToastStyle.trailingInset) * scale).rounded()) - w
+        // Clear of Chromium's scrollbar, which on Windows takes room at the page's edge (the
+        // Mac's overlays it).
+        let inset = Double(ToastStyle.trailingInset) + Self.scrollbar
+        let x = page.right - Int32((inset * scale).rounded()) - w
         let y = page.top + Int32((Double(ToastStyle.topInset) * scale).rounded())
         window.place(origin: PointInt32(x: max(page.left, x), y: y), size: SizeInt32(width: w, height: h))
         window.showInactive()
@@ -83,12 +89,16 @@ final class ToastView {
         window?.hide()
     }
 
-    private func restartTimer() {
+    private func restartTimer(after seconds: TimeInterval = ToastStyle.visibleFor) {
         try? timer?.stop()
         timer = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.createTimer()
-        timer?.interval = TimeSpan(duration: Int64(ToastStyle.visibleFor * 10_000_000))
+        timer?.interval = TimeSpan(duration: Int64(seconds * 10_000_000))
         timer?.isRepeating = false
-        timer?.tick.addHandler { [weak self] _, _ in self?.hide() }
+        // A pointer on its way to the button keeps it up.
+        timer?.tick.addHandler { [weak self] _, _ in
+            guard let self else { return }
+            if self.window?.hasPointer == true { self.restartTimer(after: 1) } else { self.hide() }
+        }
         try? timer?.start()
     }
 
