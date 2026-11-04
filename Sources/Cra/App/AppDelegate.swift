@@ -911,7 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// unless the keyboard is in something with text to undo: a text field, or an editable
     /// element in a page (Chromium's page view reports its ui::TextInputType, 0 = none).
     private func undoClosedTab(_ event: NSEvent) -> Bool {
-        guard Shortcut("z", .command).matches(event) else { return false }
+        guard Shortcut("z", NSEvent.ModifierFlags.command).matches(event) else { return false }
         let responder = (event.window ?? NSApp.keyWindow)?.firstResponder
         if responder is NSText { return false }
         if let view = responder as? NSView, NSStringFromClass(type(of: view)) == "RenderWidgetHostViewCocoa",
