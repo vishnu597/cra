@@ -107,6 +107,20 @@ struct SiteControlCenterTests {
         #expect(PageCapture.png(screenshot: "") == nil)
     }
 
+    /// The Mac popover's arithmetic (SiteControlCenterView.build).
+    @Test func heights() {
+        typealias M = SiteControlCenter.Metrics
+        #expect(M.height(extensions: nil, settingRows: 0) == 107)
+        // Three extensions and "+" fill one row of the grid; four need a second.
+        #expect(M.extensionsHeight(extensions: 3) == 59)
+        #expect(M.extensionsHeight(extensions: 4) == 99)
+        #expect(M.extensionsHeight(extensions: 0) == 59)
+        #expect(M.settingsHeight(rows: 3) == 146)
+        #expect(M.settingsHeight(rows: 0) == 0)
+        #expect(M.height(extensions: 3, settingRows: 3) == 340)
+        #expect(M.height(extensions: nil, settingRows: 1) == 107 + 60 + 13)
+    }
+
     @Test func metrics() {
         #expect(SiteControlCenter.Metrics.width == 236)
         // Four tiles and three gaps fill the column inside its insets.

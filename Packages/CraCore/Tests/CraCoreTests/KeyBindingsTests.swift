@@ -52,6 +52,10 @@ struct KeyBindingsTests {
         #expect(win["goBack"]?.shortcuts == [Self.chord(KeyChord.left, .option)])
         #expect(win["reload"]?.shortcuts.map(\.windowsDisplay) == ["Ctrl+R", "F5"])
         #expect(win["item9"]?.primary?.windowsDisplay == "Ctrl+9")
+        #expect(win["copyURL"]?.primary?.windowsDisplay == "Ctrl+Shift+C")
+        #expect(win["copyURLMarkdown"]?.primary?.windowsDisplay == "Ctrl+Alt+Shift+C")
+        #expect(win["capturePage"]?.primary?.windowsDisplay == "Ctrl+Shift+2")
+        #expect(win["clearCookies"]?.shortcuts == [])
     }
 
     @Test func everyActionHasADescription() {

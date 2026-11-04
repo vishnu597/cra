@@ -25,6 +25,33 @@ public enum SiteControlCenter {
         public static let settingRowGap: CGFloat = 10
         /// The connection pill and the More button.
         public static let footer: CGFloat = 32
+        /// The vertical spacing, top to bottom: above the actions, after them, after the
+        /// extensions, after the settings, and after the divider (1 pt) above the footer.
+        public static let top: CGFloat = 9
+        public static let afterActions: CGFloat = 11
+        public static let afterExtensions: CGFloat = 15
+        public static let afterSettings: CGFloat = 13
+        public static let afterDivider: CGFloat = 12
+
+        /// The extensions grid's height: `extensions` tiles and the "+" tile, four to a row.
+        public static func extensionsHeight(extensions: Int) -> CGFloat {
+            let rows = CGFloat((extensions + 1 + 3) / 4)
+            return sectionHeader + rows * tile.height + (rows - 1) * gap
+        }
+
+        /// The Settings section's height with `rows` switches; 0 leaves the section out.
+        public static func settingsHeight(rows: Int) -> CGFloat {
+            rows == 0 ? 0 : sectionHeader + CGFloat(rows) * settingRow.height + CGFloat(rows - 1) * settingRowGap
+        }
+
+        /// The whole popover's height. `extensions` nil leaves out the Extensions section
+        /// (Windows, until Cra runs extensions there).
+        public static func height(extensions: Int?, settingRows: Int) -> CGFloat {
+            var h = top + tile.height + afterActions
+            if let extensions { h += extensionsHeight(extensions: extensions) + afterExtensions }
+            if settingRows > 0 { h += settingsHeight(rows: settingRows) + afterSettings }
+            return h + 1 + afterDivider + footer + inset
+        }
     }
 
     /// The raised buttons along the top, in Arc's order.
