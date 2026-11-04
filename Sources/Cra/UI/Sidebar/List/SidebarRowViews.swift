@@ -407,6 +407,13 @@ final class FolderGlyphView: NSView {
     private let frontPanel = CAShapeLayer()
     private let frontShade = CAGradientLayer()
     private let frontShadeMask = CAShapeLayer()
+    /// The back panel shows only outside the front one. Theme folders are opaque (FolderTones), so
+    /// the front hides the back's outline anyway; the White and Black icon styles fill with
+    /// translucent tones, and without this an open folder showed the back's edges through the
+    /// front. The mask is the front panel's shape cut out of a larger square, turned with the
+    /// front's own transform so it moves with it.
+    private let backHolder = CALayer()
+    private let frontHole = CAShapeLayer()
     private let mark = NSImageView()
     /// Arc's peeked folder (FolderPeek): three 2 pt dots on a 4 pt pitch in the closed body.
     private let dots = CAShapeLayer()
@@ -427,11 +434,16 @@ final class FolderGlyphView: NSView {
         back.addSublayer(backShade)
         front.addSublayer(frontPanel)
         front.addSublayer(frontShade)
-        for l in [back, front] as [CALayer] {
+        for l in [back, front, frontHole] as [CALayer] {
             // Hinged on the bottom-left corner.
             l.anchorPoint = CGPoint(x: 0, y: 1)
-            icon.addSublayer(l)
         }
+        frontHole.fillRule = .evenOdd
+        frontHole.fillColor = NSColor.black.cgColor
+        backHolder.addSublayer(back)
+        backHolder.mask = frontHole
+        icon.addSublayer(backHolder)
+        icon.addSublayer(front)
         layer?.addSublayer(icon)
         layer?.addSublayer(dots)
         mark.image = GitHubMark.image
@@ -445,13 +457,12 @@ final class FolderGlyphView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func show(expanded: Bool, peeked: Bool = false, live: Bool, tint: NSColor, fillColor: NSColor, animated: Bool = false) {
+    func show(expanded: Bool, peeked: Bool = false, live: Bool, tint: NSColor, fillColor: NSColor, backColor: NSColor? = nil, animated: Bool = false) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for l in [back, frontPanel] {
-            l.fillColor = fillColor.cgColor
-            l.strokeColor = tint.cgColor
-        }
+        back.fillColor = (backColor ?? fillColor).cgColor
+        frontPanel.fillColor = fillColor.cgColor
+        for l in [back, frontPanel] { l.strokeColor = tint.cgColor }
         mark.isHidden = !live
         mark.contentTintColor = tint
         dots.isHidden = !peeked || expanded || live
@@ -474,6 +485,7 @@ final class FolderGlyphView: NSView {
         t = CATransform3DRotate(t, open ? 32 * .pi / 180 : 0, 0, 1, 0)
         back.transform = CATransform3DRotate(t, open ? 28 * .pi / 180 : 0, 1, 0, 0)
         front.transform = CATransform3DRotate(t, open ? -30 * .pi / 180 : 0, 1, 0, 0)
+        frontHole.transform = front.transform
         frontShade.opacity = open ? 1 : 0
         backShade.opacity = open ? 1 : 0.2
         CATransaction.commit()
@@ -528,6 +540,15 @@ final class FolderGlyphView: NSView {
         frontShade.frame = front.bounds
         frontShadeMask.frame = front.bounds
         frontShadeMask.path = panel
+        // In the holder's space (the icon's), everything but the front panel; the margin keeps the
+        // turned square over the whole glyph.
+        backHolder.frame = CGRect(x: 0, y: 0, width: w, height: h)
+        frontHole.bounds = front.bounds
+        frontHole.position = front.position
+        let hole = CGMutablePath()
+        hole.addRect(front.bounds.insetBy(dx: -w, dy: -h))
+        hole.addPath(panel)
+        frontHole.path = hole
         // In the front panel, on whole points so each dot is two pixels square at 1x.
         dots.frame = bounds
         let dotPath = CGMutablePath()
@@ -1323,6 +1344,7 @@ struct FolderRowModel: Equatable {
     var live: Bool
     var tint: NSColor
     var fill: NSColor
+    var back: NSColor
     var tabCount: Int
     var liveBusy: Bool
     /// The warning button's tip after a failed refresh.
@@ -1354,7 +1376,7 @@ final class FolderRowView: SidebarRowView, NSTextFieldDelegate {
         // The same folder opening or closing turns its glyph; a row taking another folder doesn't.
         let toggled = model.map { $0.id == m.id && $0.expanded != m.expanded } ?? false
         model = m
-        glyph.show(expanded: m.expanded, peeked: m.peeked, live: m.live, tint: m.tint, fillColor: m.fill, animated: toggled && window != nil)
+        glyph.show(expanded: m.expanded, peeked: m.peeked, live: m.live, tint: m.tint, fillColor: m.fill, backColor: m.back, animated: toggled && window != nil)
         titleLabel.stringValue = m.title
         titleLabel.textColor = colors.textPrimary
         setAccessibilityLabel(m.title)

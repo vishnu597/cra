@@ -24,6 +24,12 @@ struct TabsPane: View {
                 SettingsCheckbox(title: "Show the space header with only one space", isOn: $store.settings.showSpaceHeaderOnSingleSpace)
                 Text("Off hides the space’s name and its icon at the bottom of the sidebar while you have one space.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+                // #154: Arc's favorites, one set per profile.
+                SettingsCheckbox(title: "Share Favorites across Spaces with the same profile",
+                                 isOn: Binding(get: { store.settings.sharedFavorites }, set: { store.setFavoritesShared($0) }))
+                Text("Spaces on one profile show the same Favorites, as in Arc. Turning it on combines their Favorites; turning it off gives each Space its own copy.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // Arc's Links pane: the Little Arc switch and "Choose where links open inside
             // Arc." with an "Air Traffic Control…" button.
@@ -51,6 +57,20 @@ struct TabsPane: View {
                     .fixedSize()
                     .disabled(!store.settings.autoArchiveEnabled)
                 }
+                // Tab sleeping (GitHub #153): Arc's 4 hours and nothing more unless you ask.
+                HStack(spacing: 6) {
+                    SettingsCheckbox(title: "Force tabs out of memory after:", isOn: $store.settings.tabSleepTimerEnabled)
+                    Picker("", selection: $store.settings.tabSleepAfter) {
+                        ForEach(TabSleepThreshold.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(!store.settings.tabSleepTimerEnabled)
+                }
+                SettingsCheckbox(title: "Force tabs out of memory when the Mac is short of memory",
+                                 isOn: $store.settings.tabSleepOnMemoryPressure)
+                Text(tabSleepNote).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .sheet(isPresented: $showsAirTrafficControl) {
@@ -59,6 +79,14 @@ struct TabsPane: View {
     }
 
     @State private var showsAirTrafficControl = false
+
+    /// Says what a forced-out tab costs, and which tabs stay, before the user finds out.
+    private var tabSleepNote: String {
+        let s = store.settings
+        let note = "A tab forced out of memory reloads when you open it. Tabs playing sound, recording or holding text you typed stay."
+        guard s.tabSleepTimerEnabled, TabSleepPolicy.timer(s.tabSleepAfter).keepsRecentTabs else { return note }
+        return note + (s.tabSleepOnMemoryPressure ? " So do the 10 tabs you used last, unless the Mac is short of memory." : " So do the 10 tabs you used last.")
+    }
 
     private var routesSummary: String {
         switch store.settings.linkRoutes.count {

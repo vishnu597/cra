@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard !bootstrapped else { return }
         bootstrapped = true
         NSApp.setActivationPolicy(.regular)
+        SystemAppearance.shared.start()
         installURLEventHandler()
         PerfCEF.install(app: self)
         CraCEFRuntime.setChromeHosting(store.settings.chromeEngine)
@@ -56,7 +57,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         startContentBlocking()
         SoftwareUpdater.shared.start(app: self)
         buildMenus()
-        store.hasPage = { [unowned self] in self.runtime(for: $0) != nil }
+        store.hasPage = { [unowned self] in self.runtime(for: $0).map { !$0.discarded } ?? false }
+        // A tip takes the tones of the space its browser window is in (the sidebar may be a
+        // floating panel, a child of that window).
+        ArcTooltipController.shared.tones = { [unowned self] window in
+            var w: NSWindow? = window
+            while let x = w {
+                if let m = mainWindows.first(where: { $0.window === x }) { return TooltipTones(theme: m.focusedSpace.theme) }
+                w = x.parent
+            }
+            return nil
+        }
         NotificationCenter.default.addObserver(forName: .craKeyBindingsChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.buildMenus() }
         }
@@ -182,11 +193,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// AppComposition.tabFreezeAfter; `cra://debug?freezeTabs=` shortens it for a test.
     private var freezeAfter = AppComposition.tabFreezeAfter
 
+    /// The last memory-pressure sweep (TabSleepPolicy.sweepsForPressure).
+    private var lastPressureSweep: Date?
+
+    /// Settings ▸ Tabs ▸ Tab Cleanup, read every minute so a change counts from the next pass.
     private func sleepIdleTabs() {
+        let settings = store.settings
         for w in mainWindows {
             w.browsers.freezeIdleTabs(hiddenLongerThan: freezeAfter)
-            w.browsers.sleepIdleTabs(hiddenLongerThan: AppComposition.tabSleepAfter)
+            if settings.tabSleepTimerEnabled { w.browsers.sleepIdleTabs(.timer(settings.tabSleepAfter)) }
         }
+        sweepForMemoryPressure(PerfSystemSample.pressure(level: PerfSystemSampler.pressureLevel()))
+    }
+
+    /// "Force tabs out of memory when the Mac is short of memory" (GitHub #153): while macOS
+    /// reports memory pressure, the pages hidden longest close, a few per sweep, until it doesn't.
+    private func sweepForMemoryPressure(_ pressure: PerfSystemSample.Pressure) {
+        let now = composition.clock.now
+        guard TabSleepPolicy.sweepsForPressure(pressure, enabled: store.settings.tabSleepOnMemoryPressure,
+                                               lastSweep: lastPressureSweep, now: now) else { return }
+        lastPressureSweep = now
+        CraLog.note("tab sleep: memory pressure \(pressure.rawValue), closing up to \(TabSleepPolicy.memoryPressure.limit ?? 0) pages per window")
+        for w in mainWindows { w.browsers.sleepIdleTabs(.memoryPressure) }
     }
 
     /// Settings > Privacy > "Always use secure connections", live like content blocking.
@@ -449,15 +477,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Creates a little window without showing it (`url` nil = popup host).
-    func makeLittleWindow(url: String?) -> LittleWindowController {
-        let w = LittleWindowController(app: self, url: url)
+    func makeLittleWindow(url: String?, opener: CraBrowser? = nil, space: UUID? = nil) -> LittleWindowController {
+        let w = LittleWindowController(app: self, url: url, opener: opener, space: space)
         littleWindows.append(w)
         return w
     }
 
     @discardableResult
-    func openLittleWindow(url: String, activate: Bool = true) -> LittleWindowController {
-        let w = makeLittleWindow(url: url)
+    func openLittleWindow(url: String, activate: Bool = true, opener: CraBrowser? = nil, space: UUID? = nil) -> LittleWindowController {
+        let w = makeLittleWindow(url: url, opener: opener, space: space)
         if activate { w.show() } else { w.window?.orderFront(nil) }
         return w
     }
@@ -465,7 +493,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Arc's Peek: a Little Window over `parent` that closes when a click lands past it.
     func openPeek(url: String, over parent: MainWindowController, fromTab tabID: UUID? = nil) {
         for p in littleWindows where p.peekParent === parent { p.closeWindow() }
-        let w = LittleWindowController(app: self, url: url, peekOver: parent)
+        let w = LittleWindowController(app: self, url: url, peekOver: parent, fromTab: tabID)
         littleWindows.append(w)
         // Arc badges the tab the Peek came from with the peeked page's favicon (modalIcon).
         parent.sidebarUI.peekBadge = tabID.map { .init(tabID: $0, iconKey: FaviconKey.key(for: url)) }
@@ -498,8 +526,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    /// cra://commandbar?query=…&mode=edit, cra://action/<id>, cra://open?url=…,
-    /// cra://dismiss.
+    /// cra://commandbar?query=…&mode=edit, cra://action/<id>,
+    /// cra://open?url=…[&space=<space id>][&background=1|&little=1], cra://dismiss.
     func handleInternalURL(_ u: URL) {
         let comps = URLComponents(url: u, resolvingAgainstBaseURL: false)
         func q(_ name: String) -> String? { comps?.queryItems?.first { $0.name == name }?.value }
@@ -520,12 +548,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // Load a URL in the focused tab / split pane (scripting).
             if let url = q("url") { main.loadInSelectedTab(url) }
         case "open":
-            if let url = q("url"), q("little") == "1" {
-                openLittleWindow(url: url)
-            } else if let url = q("url") {
+            guard let url = q("url") else { break }
+            let background = q("background") == "1"
+            // space=<id> (#168): a real, normal space, as Air Traffic Control routes to; an unknown
+            // or incognito one opens where it did before, in the space in use.
+            let space = q("space").flatMap(UUID.init(uuidString:)).flatMap { store.space($0) != nil && !store.isIncognito(space: $0) ? $0 : nil }
+            if q("little") == "1" {
+                openLittleWindow(url: url, space: space)
+            } else if let space {
+                // Held: useNormalWindow(forSpace:) can change which window is main.
+                let target = useNormalWindow(forSpace: space)
+                let tab = store.createTab(url: url, in: space, select: !background, window: target.windowID)
+                if background { store.markUnread(tab.id, true); target.browsers.ensureRuntime(for: tab.id) }
+                if !HitchMonitor.background { target.showWindow(nil) }
+            } else {
                 useNormalWindow()
-                let tab = store.createTab(url: url, select: q("background") != "1")
-                if q("background") == "1" { store.markUnread(tab.id, true); main.browsers.ensureRuntime(for: tab.id) }
+                let tab = store.createTab(url: url, select: !background)
+                if background { store.markUnread(tab.id, true); main.browsers.ensureRuntime(for: tab.id) }
             }
         case "key":
             // Scripted key press through the normal event path (testing).
@@ -600,6 +639,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 w.setFrame(NSRect(x: w.frame.minX, y: w.frame.maxY - size[1], width: size[0], height: size[1]), display: true)
                 return
             }
+            // macOS' appearance as the app sees it (light, dark, or system to undo): Auto space
+            // themes switch halves without changing the Mac's own setting (#155).
+            if let v = dict["systemAppearance"] {
+                NSApp.appearance = v == "system" ? nil : NSAppearance(named: v == "dark" ? .darkAqua : .aqua)
+                return
+            }
             if dict["relaunch"] != nil { relaunch(); return }
             if dict["quit"] != nil { NSApp.terminate(nil); return }
             if let t = dict["selectTab"].flatMap(UUID.init(uuidString:)) { store.selectTab(t, window: main.windowID); return }
@@ -610,9 +655,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 for w in mainWindows { w.browsers.freezeIdleTabs(hiddenLongerThan: s) }
                 return
             }
-            // One tab-sleeping pass with a short threshold (seconds), so it can be tried without waiting.
+            // One tab-sleeping pass with a short threshold (seconds), so it can be tried without waiting
+            // or opening 11 tabs: the 10 tabs used last aren't kept.
             if let s = dict["sleepTabs"].flatMap(Double.init) {
-                for w in mainWindows { w.browsers.sleepIdleTabs(hiddenLongerThan: s) }
+                for w in mainWindows { w.browsers.sleepIdleTabs(TabSleepPolicy(hiddenFor: s, keepsRecentTabs: false)) }
+                return
+            }
+            // One memory-pressure sweep as if macOS reported this level (warning, critical), without
+            // filling memory or waiting out the last sweep. The setting still decides.
+            if let level = dict["memoryPressure"].flatMap(PerfSystemSample.Pressure.init(rawValue:)) {
+                lastPressureSweep = nil
+                sweepForMemoryPressure(level)
                 return
             }
             // Opens what normally needs a pointer or a held key, for screenshots.
@@ -620,9 +673,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if let v = dict["banner"] { SoftwareUpdater.shared.debugUpdated(v == "none" ? nil : v); return }
             if let v = dict["bannerReady"] { SoftwareUpdater.shared.debugReady(v == "none" ? nil : v); return }
             if dict["switcher"] != nil { main.debugTabSwitcher(); return }
+            if dict["themeEditor"] != nil { main.showSpaceStyleEditor(space: store.focusedSpace); return }
             if dict["jumpPill"] != nil { SpaceListView.jumpToSelected(for: main.sidebarUI, space: store.focusedSpaceID); return }
             if let f = dict["folderPreview"] {
                 if let id = UUID(uuidString: f) { SpaceListView.debugFolderPreview(id, ui: main.sidebarUI) } else { FolderPreviewController.shared.close() }
+                return
+            }
+            if let t = dict["expandFolder"] {
+                for item in store.items.values where item.isFolder && item.title == t { store.setExpanded(item.id, true) }
                 return
             }
             if dict["littlePopup"] != nil { littleWindows.first?.togglePopup(); return }
@@ -638,6 +696,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             if dict["siteControls"] != nil { main.debugSiteControls(); return }
+            // The n-th space icon's tip, without a pointer.
+            if let n = dict["spaceTip"].flatMap({ Int($0) }), let content = main.window?.contentView {
+                ArcTooltipController.shared.debugShowSpaceTip(n, in: content)
+                return
+            }
             if let t = dict["tooltip"], let content = main.window?.contentView {
                 ArcTooltipController.shared.debugShow(t, in: content, at: NSRect(x: 380, y: content.bounds.height - 120, width: 28, height: 28))
                 return
@@ -887,17 +950,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if isNew { LiveFolderManager.shared.refresh(f.id) }
         case "newSpace": main.showSpaceEditor(space: nil)
         case "editSpace": if !main.isIncognito { main.showSpaceEditor(space: store.focusedSpace) }
+        case "changeProfile": if !main.isIncognito { main.showChangeProfileDialog(forSpace: store.focusedSpace.id) }
         case "deleteSpace": if !main.isIncognito { confirmDeleteSpace(store.focusedSpace) }
         case "manageSpaces": if !main.isIncognito { main.showManageSpaces() }
         case "closeTab":
             // Arc: "Close current tab or window".
             if current != nil { main.closeCurrentTab() } else { main.window?.performClose(nil) }
         case "closeWindow": main.window?.performClose(nil)
-        case "reopenClosedTab": if !main.isIncognito { store.reopenLastArchived() }  // incognito tabs leave nothing to restore
+        case "reopenClosedTab":
+            guard !main.isIncognito else { break }  // incognito tabs leave nothing to restore
+            // Arc: a Peek closed after the last archived tab comes back, over the tab it came from.
+            if let peek = main.closedPeek, peek.at > store.archive.first?.archivedAt ?? .distantPast {
+                main.closedPeek = nil
+                if let id = peek.tabID, store.item(id) != nil { store.selectTab(id, window: main.windowID) }
+                openPeek(url: peek.url, over: main, fromTab: peek.tabID)
+            } else {
+                store.reopenLastArchived()
+            }
         case "copyURL":
             if let url = current.flatMap({ store.item($0)?.tab?.url }) {
                 copy(url)
-                main.showToast("Copied Current URL")
+                main.showToast("Copied Current URL", action: .share(url))
             }
         case "copyURLMarkdown":
             if let c = current, let it = store.item(c), let url = it.tab?.url {
@@ -1018,7 +1091,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     self.settingsWindow?.close()
                     self.main.showWindow(nil)
                 },
-                exportDiagnostics: { [weak self] in self?.exportDiagnostics() })
+                exportDiagnostics: { [weak self] in self?.exportDiagnostics() },
+                newProfile: { [weak self] in
+                    guard let self, let w = self.settingsWindow else { return }
+                    self.main.showNewProfileDialog(over: w)
+                })
             let c = SettingsWindowController(store: store, bindings: bindings, actions: actions)
             settingsController = c
             settingsWindow = c.window
@@ -1117,7 +1194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let spaces = NSMenu(title: "Spaces")
         spaces.addItem(item("nextSpace")); spaces.addItem(item("previousSpace"))
         spaces.addItem(.separator())
-        spaces.addItem(item("editSpace")); spaces.addItem(item("deleteSpace")); spaces.addItem(item("manageSpaces"))
+        for id in ["editSpace", "changeProfile", "deleteSpace", "manageSpaces"] { spaces.addItem(item(id)) }
         spaces.addItem(.separator())
         for n in 1...9 { spaces.addItem(item("space\(n)")) }
         spaces.addItem(.separator())

@@ -65,6 +65,7 @@ public enum KeyBindingDefaults {
             KeyAction(id: "nextSpace", name: "Next Space", section: .spaces, shortcuts: [KeyChord(KeyChord.right, cmdOpt)], inCommandBar: false),
             KeyAction(id: "previousSpace", name: "Previous Space", section: .spaces, shortcuts: [KeyChord(KeyChord.left, cmdOpt)], inCommandBar: false),
             KeyAction(id: "editSpace", name: "Edit Space…", section: .spaces, shortcuts: [], triggers: ["theme", "color", "emoji", "edit space"]),
+            KeyAction(id: "changeProfile", name: "Change Profile", section: .spaces, shortcuts: [], triggers: ["profile", "change profile", "set profile"]),
             KeyAction(id: "deleteSpace", name: "Delete Space…", section: .spaces, shortcuts: [], triggers: ["delete space", "remove space"]),
             KeyAction(id: "manageSpaces", name: "Manage Spaces…", section: .spaces, shortcuts: [], triggers: ["manage spaces", "reorder spaces"]),
             // Tabs
@@ -218,6 +219,7 @@ public enum ShortcutDescriptions {
         "nextSpace": "Switch to the next space.",
         "previousSpace": "Switch to the previous space.",
         "editSpace": "Change the space’s name, emoji and theme.",
+        "changeProfile": "Pick the profile the space’s sign-ins, cookies and extensions come from.",
         "deleteSpace": "Delete the current space.",
         "manageSpaces": "Open the Library’s Spaces page: every space side by side, to reorder or edit them.",
         "pinTab": "Pin the tab or unpin it.",

@@ -1,5 +1,5 @@
 import AppKit
-import AppKit
+import Observation
 import SwiftUI
 
 extension Color {
@@ -7,12 +7,18 @@ extension Color {
         let c = HexColor.components(hex) ?? (0.5, 0.5, 0.5)
         self.init(.sRGB, red: c.r, green: c.g, blue: c.b, opacity: 1)
     }
+
+    init(_ c: RGB) { self.init(.sRGB, red: c.r, green: c.g, blue: c.b, opacity: 1) }
 }
 
 extension NSColor {
     convenience init(hex: String) {
         let c = HexColor.components(hex) ?? (0.5, 0.5, 0.5)
         self.init(srgbRed: c.r, green: c.g, blue: c.b, alpha: 1)
+    }
+
+    convenience init(_ c: RGB, alpha: CGFloat = 1) {
+        self.init(srgbRed: c.r, green: c.g, blue: c.b, alpha: alpha)
     }
 }
 
@@ -30,9 +36,10 @@ struct SpacePalette {
     let pillFill: Color
     let toolbarFill: Color
     let folderTint: Color
-    /// Arc 1.170: folder glyphs are a cream fill (theme colour pulled 80% to white) with an outline in the
-    /// toolbar colour. Dark themes use a light outline over a faint white fill instead.
+    /// Arc's folder glyph (FolderTones): an opaque front in tintedLight (light themes) or shadedDark
+    /// (dark), the outline in the other one, and the back panel in midTone.
     let folderFill: Color
+    let folderBack: Color
     /// Selected row in the command bar (Arc tints it with the space color).
     let commandHighlight: Color
     let noise: Double
@@ -55,11 +62,11 @@ struct SpacePalette {
     }
 
     /// Outline and fill for a folder glyph; nil (Auto) is the theme's pair.
-    func folderColors(_ style: FolderIconStyle?) -> (tint: Color, fill: Color) {
+    func folderColors(_ style: FolderIconStyle?) -> (tint: Color, fill: Color, back: Color) {
         switch style {
-        case nil: return (folderTint, folderFill)
-        case .white?: return (.white.opacity(0.92), .white.opacity(0.22))
-        case .black?: return (.black.opacity(0.8), .black.opacity(0.12))
+        case nil: return (folderTint, folderFill, folderBack)
+        case .white?: return (.white.opacity(0.92), .white.opacity(0.22), .white.opacity(0.22))
+        case .black?: return (.black.opacity(0.8), .black.opacity(0.12), .black.opacity(0.12))
         }
     }
 }
@@ -81,32 +88,6 @@ extension SpaceTheme {
     /// Arc's toolbar band: the first theme colour pushed to a dark, fully
     /// saturated shade on light themes (Victor: #72601D) and a muted,
     /// slightly darker one on dark themes (JYSK: #0E0B16).
-    static func hsb(_ r: Double, _ g: Double, _ b: Double) -> (h: Double, s: Double, v: Double) {
-        let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
-        var h = 0.0
-        if d > 0.00001 {
-            if mx == r { h = ((g - b) / d).truncatingRemainder(dividingBy: 6) }
-            else if mx == g { h = (b - r) / d + 2 }
-            else { h = (r - g) / d + 4 }
-            h /= 6
-            if h < 0 { h += 1 }
-        }
-        return (h, mx > 0 ? d / mx : 0, mx)
-    }
-
-    static func rgb(h: Double, s: Double, v: Double) -> (Double, Double, Double) {
-        let i = floor(h * 6), f = h * 6 - i
-        let p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s)
-        switch Int(i) % 6 {
-        case 0: return (v, t, p)
-        case 1: return (q, v, p)
-        case 2: return (p, v, t)
-        case 3: return (p, q, v)
-        case 4: return (t, p, v)
-        default: return (v, p, q)
-        }
-    }
-
     /// Light: 46% brightness, saturation +0.10 (Victor #F8D558 → #725F1D, Arc #72601D).
     /// Dark: 60% saturation, 80% brightness (JYSK #010220 → #0A0B19, Arc #0E0B16).
     /// Arc's light-theme ink: the first theme colour pushed to ~13% brightness
@@ -127,7 +108,14 @@ extension SpaceTheme {
         return Color(.sRGB, red: o.0, green: o.1, blue: o.2, opacity: 1)
     }
 
-    var palette: SpacePalette {
+    /// The theme as macOS shows it now: an Auto theme's light or dark half. Read under
+    /// observation tracking, a switch of macOS' appearance redraws whatever showed the old half.
+    var shown: SpaceTheme { resolved(systemDark: SystemAppearance.shared.isDark) }
+
+    var palette: SpacePalette { shown.fixedPalette }
+
+    /// The palette of a resolved theme (its appearance is light or dark, or judged by colour).
+    private var fixedPalette: SpacePalette {
         let dark = isDark
         let base = colors.isEmpty ? ["#DDDDDD"] : colors
         // Vibrant (Arc): raw colors at `intensity` opacity over the blur.
@@ -137,6 +125,7 @@ extension SpaceTheme {
         if stops.count == 1 { stops.append(SpaceTheme.mix(base[0], towardWhite: !dark, amount: pull + 0.15)) }
 
         let accent = SpaceTheme.mix(base[0], towardWhite: dark, amount: dark ? 0.25 : -0.0)
+        let folder = FolderTones(themeColor: self.accent ?? base[0], dark: dark)
         return SpacePalette(
             isDark: dark,
             gradientColors: stops,
@@ -150,9 +139,9 @@ extension SpaceTheme {
             pillFill: dark ? .white.opacity(0.08) : .black.opacity(0.045),
             // Arc: the toolbar is the first theme color at ~46% (dark) / lightened a touch (dark themes).
             toolbarFill: SpaceTheme.toolbarColor(self.accent ?? base[0], dark: dark),
-            // Dark themes: the toolbar shade vanished on the dark sidebar, so the outline is light ink there.
-            folderTint: dark ? .white.opacity(0.85) : SpaceTheme.toolbarColor(self.accent ?? base[0], dark: dark),
-            folderFill: dark ? .white.opacity(0.14) : SpaceTheme.mix(base[0], towardWhite: true, amount: 0.8),
+            folderTint: Color(folder.outline),
+            folderFill: Color(folder.front),
+            folderBack: Color(folder.back),
             commandHighlight: dark ? accent.opacity(0.55) : SpaceTheme.mix(base[0], towardWhite: false, amount: 0.45).opacity(0.75),
             noise: noise,
             // Calibrated against Arc's rendering of a 0.25-intensity vibrant theme.
@@ -172,6 +161,28 @@ extension SpaceTheme {
             vibrant: vibrant || solid,
             solid: solid
         )
+    }
+}
+
+/// macOS' light or dark appearance, which an Auto space theme follows (Arc: appearanceBased).
+/// Cra never sets NSApp.appearance, so the app's effective appearance is the system's.
+@Observable
+final class SystemAppearance: @unchecked Sendable {
+    static let shared = SystemAppearance()
+    /// Written on the main thread only.
+    private(set) var isDark = false
+    @ObservationIgnored private var observation: NSKeyValueObservation?
+
+    @MainActor func start() {
+        update()
+        observation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
+    }
+
+    @MainActor private func update() {
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if dark != isDark { isDark = dark }
     }
 }
 

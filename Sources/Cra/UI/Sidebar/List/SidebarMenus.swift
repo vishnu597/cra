@@ -81,9 +81,8 @@ enum SidebarMenus {
         }
         menu.addItem(.separator())
         let spaces = submenu(menu, "Move to Space")
-        let current = store.spaceID(ofItem: id)
         for s in store.orderedSpaces {
-            add(spaces, "\(s.emoji) \(s.title)", enabled: s.id != current) { store.moveTab(id, toSpace: s.id, window: ui.windowID) }
+            add(spaces, "\(s.emoji) \(s.title)", enabled: !store.isInSpace(id, s.id)) { store.moveTab(id, toSpace: s.id, window: ui.windowID) }
         }
         folderItems(menu, [id], list: list)
         menu.addItem(.separator())
@@ -259,9 +258,9 @@ enum SidebarMenus {
         add(menu, "Rename…") { ui.renamingID = id }
         menu.addItem(.separator())
         let spaces = submenu(menu, "Move to")
-        let current = store.spaceID(ofItem: id)
         for s in store.orderedSpaces {
-            add(spaces, "\(s.emoji) \(s.title)", on: s.id == current) { if s.id != current { store.moveTab(id, toSpace: s.id, window: ui.windowID) } }
+            let current = store.isInSpace(id, s.id)
+            add(spaces, "\(s.emoji) \(s.title)", on: current) { if !current { store.moveTab(id, toSpace: s.id, window: ui.windowID) } }
         }
         menu.addItem(.separator())
         add(menu, "Archive Item") { for c in children { store.archiveTab(c, reason: .manual) } }
@@ -290,6 +289,15 @@ enum SidebarMenus {
         let store = list.store, actions = list.actions
         let space = list.spaceID
         let menu = menu()
+        // Arc's sidebar menu starts with the space's look, as the header's does (#170).
+        if let s = store.space(space) {
+            if let header = list.header, !store.hidesSpaceHeader(space) {
+                add(menu, "Change Space Icon…") { [weak header] in if let header { actions.changeSpaceIcon(s, header) } }
+                add(menu, "Rename Space…") { [weak header] in header?.beginRename() }
+            }
+            add(menu, "Edit Theme Color…") { actions.editSpaceTheme(s) }
+            menu.addItem(.separator())
+        }
         add(menu, action: "newTab", "New Tab") { actions.openCommandBar(.newTab) }
         add(menu, action: "newFolder") { actions.performAction("newFolder") }
         add(menu, action: "newGitHubLiveFolder", enabled: store.liveFolder(.github, inSpace: space) == nil) {
