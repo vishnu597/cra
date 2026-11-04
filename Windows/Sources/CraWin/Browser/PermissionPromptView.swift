@@ -6,8 +6,8 @@ import WinUI
 
 /// A page's permission request (the Mac's sheet in BrowserManager): CraCore's PermissionPrompt
 /// question, "mail.google.com wants to show notifications" (the site named as Chrome names
-/// it), with Allow and Block. It floats in a window of its own at the top of the page, as the Mac's sheet drops from the window's top;
-/// requests from several pages wait their turn.
+/// it), with Allow and Block. It floats in a window of its own at the top of the page, as
+/// the Mac's sheet drops from the window's top; requests from several pages wait their turn.
 @MainActor
 final class PermissionPromptView {
     static let width = 400.0
