@@ -20,6 +20,7 @@ final class SidebarView: NSView {
     private var libraryHost: LibraryView?
     private var palette: SpacePalette
     private var lastSpaceID: UUID?
+    private var shownTheme: SpaceTheme?
     private var shownLibrary: LibraryPage?
 
     init(store: SidebarStore, ui: SidebarUIState, actions: SidebarActions, favicons: FaviconCache) {
@@ -53,12 +54,14 @@ final class SidebarView: NSView {
         var bannerHeight: CGFloat = 0
         let (space, library, trayOpen, recentCount) = withObservationTracking {
             let space = store.focusedSpace(window: ui.windowID)
+            _ = SystemAppearance.shared.isDark
             bannerHeight = UpdateBannerView.preferredHeight
             return (space, ui.libraryPage, ui.downloadsListOpen, DownloadHistory.shared.recent.count)
         } onChange: { [weak self] in
             Task { @MainActor in self?.observe() }
         }
-        let paletteChanged = lastSpaceID == nil || space.theme != store.space(lastSpaceID ?? space.id)?.theme || space.id != lastSpaceID
+        let paletteChanged = lastSpaceID == nil || space.theme.shown != shownTheme || space.id != lastSpaceID
+        shownTheme = space.theme.shown
         if space.id != lastSpaceID {
             // A drag that hovered another space's icon carries the picks there; its end clears them.
             if lastSpaceID != nil, ui.draggingID == nil { ui.clearPicks() }
@@ -69,8 +72,9 @@ final class SidebarView: NSView {
             let colors = SidebarColors(palette)
             trayHost.colors = colors
             bannerHost.colors = colors
-            bannerHost.themeColor = space.theme.accent ?? space.theme.colors.first
-            player.setTheme(space.theme.accent ?? space.theme.colors.first, dark: palette.isDark)
+            let shown = space.theme.shown
+            bannerHost.themeColor = shown.accent ?? shown.colors.first
+            player.setTheme(shown.accent ?? shown.colors.first, dark: palette.isDark)
             libraryHost?.palette = palette
         }
         self.bannerHeight = bannerHeight
@@ -232,6 +236,8 @@ final class FlippedView: NSView {
 /// and 6 pt from the sidebar edge, no ⌄ menu. The URL pill spans the sidebar 8 pt in from each
 /// side, 36 pt tall, 2 pt under the title area, radius 10, the bare host in 13 pt at 12 pt in.
 /// Its accessories (pinned extensions, copy link, site controls) show while the header is hovered.
+/// Pins that would crowd the address out move to a grid over the favorites instead, as in Arc
+/// 1.171 (PinnedExtensionGrid.fitsInURLField, FavoritesGridView; 4 Nov).
 final class SidebarTopBarView: NSView {
     private let store: SidebarStore
     private let ui: SidebarUIState
@@ -495,12 +501,17 @@ final class SidebarURLPill: NSView {
         layer?.backgroundColor = (hovering ? colors.selectedFill : colors.pillFill).cgColor
     }
 
-    /// Arc's URL-bar accessories: pinned extensions, Copy Link, then the site controls.
+    /// Whether the pins go in this field (else in the grid over the favorites), for its width.
+    private var pinsInField = true
+
+    /// Arc's URL-bar accessories: pinned extensions (while they leave the address room), Copy
+    /// Link, then the site controls.
     private func refreshAccessories(animated: Bool) {
         accessories.forEach { $0.removeFromSuperview() }
         accessories = []
         guard showAccessories, hasTab, let m = model, let actions else { needsLayout = true; return }
-        for (id, _, icon) in m.pinned {
+        pinsInField = PinnedExtensionGrid.fitsInURLField(count: m.pinned.count, fieldWidth: bounds.width)
+        for (id, _, icon) in pinsInField ? m.pinned : [] {
             let b = ToolbarGlyphButton()
             // Arc's pinned extension buttons have no tooltip (#106).
             b.configure(symbol: nil, image: icon, help: "", enabled: true, width: 28, iconSize: 16, tint: colors.textSecondary)
@@ -532,12 +543,15 @@ final class SidebarURLPill: NSView {
     /// The accessories' hover fill is the sidebar's, not the toolbar's.
     override func layout() {
         super.layout()
+        if let m = model, showAccessories, PinnedExtensionGrid.fitsInURLField(count: m.pinned.count, fieldWidth: bounds.width) != pinsInField {
+            refreshAccessories(animated: false)
+        }
         let h = bounds.height
+        // Arc 1.171 (4 Nov): one every 28 pt, the last centred 19 pt in from the end.
         var right = bounds.width - 5
         for v in accessories.reversed() {
             right -= 28
             v.frame = NSRect(x: right, y: (h - 28) / 2, width: 28, height: 28)
-            right -= 1
         }
         let x: CGFloat = 12
         let lh = label.intrinsicContentSize.height
@@ -719,7 +733,10 @@ final class SpaceDockView: NSView {
         guard reorder == nil else { return }
         let i = index(at: point(event))
         hovered = i.map { order[$0] }
-        for (j, id) in order.enumerated() { if let c = cells[id] { j == i ? ArcTooltipController.shared.mouseMoved(in: c) : ArcTooltipController.shared.mouseExited(c) } }
+        // The new cell first: its tip replaces the shown one in place. Leaving the old cell first
+        // faded that tip out while the new one popped in, two tips for 60 ms (#152).
+        if let i, let c = cells[order[i]] { ArcTooltipController.shared.mouseMoved(in: c) }
+        for (j, id) in order.enumerated() where j != i { if let c = cells[id] { ArcTooltipController.shared.mouseExited(c) } }
     }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
     override func mouseExited(with event: NSEvent) {
@@ -927,8 +944,18 @@ final class SpaceCellView: NSView, ArcTooltipTarget {
         return true
     }
 
+    // Arc's tip: the space's name, its profile in a pill, then Go to Space N's keys for the
+    // space's place in the order (⌃1–⌃9, the user's own if rebound; none past the ninth).
     var text: String { title }
-    var keys: [String] { [] }
+    var keys: [String] {
+        guard let i = store.spaceOrder.firstIndex(of: spaceID), i < 9 else { return [] }
+        return KeyBindingRegistry.shared.action("space\(i + 1)")?.primary?.caps ?? []
+    }
+    var badge: String? { store.profile(store.space(spaceID)?.profileID)?.name ?? "Default" }
+    // Arc 1.171: ~0.62 s after the pointer stops (two 120 Hz recordings, 3 Nov 2026), sooner
+    // than a control's tip. Cra's panel takes ~0.07 s more to reach the screen.
+    var idleDelay: TimeInterval { 0.55 }
+    var placement: ArcTooltipPlacement { .above }
     var followsCursor: Bool { false }
     var subtitle: String? { nil }
     var optionText: String? { nil }
@@ -966,7 +993,8 @@ final class LibraryButtonView: NSView {
         glyph.imageScaling = .scaleNone
         glyph.image = LibraryGlyph.image(dark: false)
         addSubview(glyph)
-        (tip.text, tip.keys) = ArcTooltipLabel.split("Library (⇧⌘L)")
+        (tip.text, tip.keys) = ArcTooltipLabel.split("View Library (⇧⌘L)")
+        tip.placement = .trailing
         addSubview(tip)
         bin.wantsLayer = true
         binImage.cornerRadius = 8

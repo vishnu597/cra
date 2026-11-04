@@ -110,7 +110,7 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// Arc's Peek: a link the user clicked (`shiftClick` NO: before it navigates the page or
 /// opens as a target=_blank tab) or Shift-clicked (YES, instead of a new window). Return
 /// YES to show it in a Peek; the page then stays where it is.
-- (BOOL)browser:(CraBrowser *)browser opensPeekForURL:(NSString *)url shiftClick:(BOOL)shiftClick;
+- (BOOL)browser:(CraBrowser *)browser opensPeekForURL:(NSString *)url shiftClick:(BOOL)shiftClick newTab:(BOOL)newTab;
 /// The DevTools frontend shows `panel` ("elements", "console", "network", …): on load, and
 /// on every switch, from Cra or the frontend's own tab bar.
 - (void)browser:(CraBrowser *)browser devToolsShowsPanel:(NSString *)panel;
@@ -184,6 +184,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// size qualifies, and nothing happens when there is none.
 - (void)requestPictureInPictureAutomatic:(BOOL)automatic NS_SWIFT_NAME(requestPictureInPicture(automatic:));
 - (void)exitPictureInPicture;
+/// Picture in Picture's close button: the video pauses and goes back to the page, as in Arc
+/// and Chrome (back to tab and returning to the tab keep it playing).
+- (void)closePictureInPicture;
 /// YES while a video of this page is in the Picture in Picture window.
 @property (nonatomic, readonly) BOOL isInPictureInPicture;
 /// YES while that video is playing.
@@ -273,9 +276,11 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// for each in the same order the profile folders that load it ("Default|Profile <id>", "*"
 /// for every profile), comma-separated; nil when every one loads in every profile.
 + (void)setExtensionPaths:(NSArray<NSString *> *)paths profiles:(nullable NSString *)profiles;
+/// `locale` is Chromium's application locale ("zh-CN"); nil leaves CEF's en-US.
 + (BOOL)initializeWithCachePath:(NSString *)cachePath
                  userAgentProduct:(NSString *)product
                           logPath:(NSString *)logPath
+                           locale:(nullable NSString *)locale
                    useChromeStyle:(BOOL)useChromeStyle
                   useMockKeychain:(BOOL)useMockKeychain;
 /// Runs the Chromium-integrated AppKit run loop. Returns after -quitMessageLoop.

@@ -62,6 +62,8 @@ public final class CraBrowser {
         if automatic { automaticPictureInPictureRequests += 1 }
     }
     public func exitPictureInPicture() { isInPictureInPicture = false }
+    public private(set) var pictureInPictureCloses = 0
+    public func closePictureInPicture() { pictureInPictureCloses += 1; isInPictureInPicture = false }
     public func togglePictureInPicturePlayback() {}
     public func skipPictureInPicture(by seconds: Double) {}
     public private(set) var lastParams = ""
@@ -76,6 +78,11 @@ public final class CraBrowser {
     public func reply(to method: String, with result: String?) {
         guard let index = replies.firstIndex(where: { $0.method == method }) else { fatalError("No pending \(method)") }
         replies.remove(at: index).completion(result, nil)
+    }
+    /// Answers with a protocol error, as CEF does for a method it doesn't have.
+    public func fail(_ method: String, with error: String) {
+        guard let index = replies.firstIndex(where: { $0.method == method }) else { fatalError("No pending \(method)") }
+        replies.remove(at: index).completion(nil, error)
     }
     public func setLoading(_ loading: Bool) {
         isLoading = loading

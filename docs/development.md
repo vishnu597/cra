@@ -8,8 +8,14 @@ Notes for working on the code. How to send a change is in
 
     scripts/build.sh          # fetches CEF on first run, builds build/Cra.app
     scripts/build.sh debug    # debug build
-    scripts/run.sh            # build if needed, then open (--rebuild forces a build)
+    scripts/run.sh            # build if needed, then open; --rebuild [debug] forces a build
     scripts/dev.sh            # dev loop: debug CraDev.app, rebuilds + relaunches on save (~4 s)
+    scripts/dev.sh --once     # build and launch CraDev.app once, logs in this terminal
+
+`just` lists all of the scripts below with what each does (`brew install just`; the
+[justfile](../justfile) is one recipe per script). A recipe passes its arguments on, so
+`just build debug` runs `scripts/build.sh debug`. CI calls the scripts directly, and so can
+you.
 
 Requirements: macOS 14+ on Apple silicon, Xcode 16+, CMake (`brew install cmake`), about
 1 GB of disk for CEF and the build products.
@@ -61,9 +67,11 @@ the save panel.
     scripts/test.sh core             # only Packages/CraCore
     Tests/smoke-launch.sh            # launches build/Cra.app three times, about 30 s
     scripts/scenario.sh all          # user journeys in build/Cra.app, about 6 minutes
-    scripts/coverage.py              # line coverage, and the changed-lines gate
+    scripts/scenario.sh sleep-tabs   # one of them (Tests/Scenarios/<name>.scenario)
+    scripts/coverage.py              # line coverage, and the changed-lines gate against origin/main
+    scripts/coverage.py --base <ref> # the same against another base (CI passes the PR's)
     scripts/fuzz.sh                  # mutated importer fixtures under AddressSanitizer
-    scripts/mutate.py                # mutation testing of the pure code, minutes
+    scripts/mutate.py [word]         # mutation testing of the pure code, minutes; a word limits it
 
 [testing.md](testing.md) has the rules, the layers, the gates and how to write a scenario.
 
@@ -85,7 +93,7 @@ app it builds.
 - `scripts/test-store.sh`: the real `SidebarStore`, `AppComposition` and importers on a
   `ManualScheduler`, against the made-up Arc and Chromium profiles in `Tests/Fixtures`.
 - `scripts/test-policies.sh`: the decisions pulled out of the window controllers
-  (`ToolbarComposition`, `ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
+  (`ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
 - `scripts/test-perf.sh`: the performance recorder on a real main run loop: injected stalls,
   hang files with a `sample` stack, the session marker, ownership, the recording switch
   ([performance.md](performance.md)).
@@ -101,8 +109,11 @@ behave. Check those by hand, and say how in the PR.
 Scenario hooks for a command file (`cra://debug?…`): `checkStore=1` logs a fault per broken
 sidebar link, `pageJS=<js>` runs script in the focused page, `installExtension=<folder>` and
 `removeExtension=<id>`, `extensionAction=<id>`, `fullscreen=1|0`, `windowSize=1280x800`,
-`snapshot=<ViewClass[,n]>&out=<png>`, `sleepTabs=<seconds>`, `stall=<ms>` (blocks the main
-thread), `perfReport=<path>` (the recorder's perf.json now), `relaunch=1` and `quit=1`.
+`snapshot=<ViewClass[,n]>&out=<png>`, `sleepTabs=<seconds>` (the 10 tabs used last too), `memoryPressure=warning|critical` (one
+memory-pressure sweep at that level, if Settings ▸ Tabs has it on), `stall=<ms>` (blocks the main
+thread), `perfReport=<path>` (the recorder's perf.json now), `systemAppearance=light|dark|system`
+(the appearance Auto space themes follow, without changing the Mac's), `themeEditor=1` (Edit
+Theme Color… for the focused space), `relaunch=1` and `quit=1`.
 
 ## Running a test instance
 
@@ -170,6 +181,7 @@ Cra registers the `cra://` scheme so it can be driven from a shell:
     open "cra://commandbar?query=github"    # open the command bar with text
     open "cra://open?url=https://example.com&background=1"
     open "cra://open?url=https://example.com&little=1"   # in a Little Window
+    open "cra://open?url=https://example.com&space=<space id>"   # in that space (its id in sidebar.json)
     open "cra://import?source=arc&archive=1&settings=1"  # headless import
     open "cra://dismiss"                    # close sheets, command bar, find bar
 

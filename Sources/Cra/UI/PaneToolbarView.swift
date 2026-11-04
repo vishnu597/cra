@@ -22,6 +22,8 @@ final class PaneToolbarView: NSView {
         var kind = Kind.noTab
         var inSplit = false
         var focusedPane = true
+        /// The pointer is over the bar: an unfocused pane shows its controls (Arc's onHover blueprint).
+        var hovered = false
         var canGoBack = false
         var canGoForward = false
         var isLoading = false
@@ -64,6 +66,11 @@ final class PaneToolbarView: NSView {
     /// Arc lifts the whole developer bar ~9% toward white while its address field is edited.
     private let editVeil = NSView()
     private var press = WindowDragGesture()
+    /// Not store state: the tracking area sets it and syncs.
+    private var hovered = false {
+        didSet { if hovered != oldValue { sync() } }
+    }
+    private var hoverArea: NSTrackingArea?
 
     init(paneTabID: UUID?, store: SidebarStore, ui: SidebarUIState, actions: SidebarActions) {
         self.paneTabID = paneTabID
@@ -101,6 +108,24 @@ final class PaneToolbarView: NSView {
         (superview as? PaneCardView)?.developerBar = model.kind == .developer ? model.fill : nil
     }
 
+    // Arc reveals an unfocused pane's controls while the pointer is over its bar (its
+    // ContentToolbarInteractionTracker hover session). Active always: the key window is often
+    // a page's.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
+        if let window {
+            let inside = !isHiddenOrHasHiddenAncestor && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+            if inside != hovered { hovered = inside }
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { hovered = true }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
     // MARK: Model
 
     private func scheduleSync() {
@@ -126,6 +151,7 @@ final class PaneToolbarView: NSView {
         let item = paneTabID.flatMap { store.item($0) } ?? (paneTabID == nil ? store.selectedTab(window: ui.windowID) : nil)
         m.inSplit = paneTabID != nil && ui.splitPaneIDs.count > 1
         m.focusedPane = paneTabID == nil || store.selectedTabID(window: ui.windowID) == paneTabID
+        m.hovered = m.inSplit && hovered
         let nav = paneTabID.map { ui.navState(for: $0) }
             ?? TabNavState(canGoBack: ui.canGoBack, canGoForward: ui.canGoForward, isLoading: ui.isLoading, themeColor: ui.pageThemeColor)
         m.canGoBack = nav.canGoBack
@@ -237,7 +263,7 @@ final class PaneToolbarView: NSView {
         hairline.isHidden = m.hairline == nil
         hairline.layer?.backgroundColor = m.hairline?.cgColor
         let bar = ToolbarComposition(kind: m.kind, inSplit: m.inSplit, sidebarVisible: m.sidebarVisible, focusedPane: m.focusedPane,
-                                     canGoBack: m.canGoBack, canGoForward: m.canGoForward, isLoading: m.isLoading,
+                                     hovered: m.hovered, canGoBack: m.canGoBack, canGoForward: m.canGoForward, isLoading: m.isLoading,
                                      pinnedExtensions: m.pinned.map(\.id), hasExtensions: m.hasExtensions)
         // The no-tab bar and an empty pane show navigation that does nothing (Arc greys it out).
         let wide = m.kind == .noTab || m.kind == .emptyPane
@@ -269,11 +295,16 @@ final class PaneToolbarView: NSView {
                 // Arc: the 16 pt action icon with its badge, and no tooltip (Arc 1.171, #106).
                 b.configure(symbol: nil, image: ExtensionStore.shared.badged(e?.icon, e?.badge, tint: m.fgDim), help: "", enabled: true,
                             width: 34, iconSize: 16, tint: m.fgDim, hover: m.hover)
-                b.action = { [weak self] in self?.actions.runExtension(id) }
+                let pane = paneTabID
+                b.action = { [weak self] in
+                    if let pane { self?.actions.paneRunExtension(pane, id) } else { self?.actions.runExtension(id) }
+                }
                 b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
                 return b
             case .extensions:
-                return glyph("extensions", "slider.horizontal.2.square", help: "Extensions", width: 34, iconSize: 16) { $0.actions.showExtensionsMenu() }
+                return glyph("extensions", "slider.horizontal.2.square", help: "Extensions", width: 34, iconSize: 16) {
+                    if let pane = $0.paneTabID { $0.actions.paneExtensionsMenu(pane) } else { $0.actions.showExtensionsMenu() }
+                }
             case .addSplit:
                 return glyph("split", "square.split.2x1", help: "Add Split View (⌃⇧=)", width: 34, iconSize: 16) { $0.actions.performAction("addSplitView") }
             case .splitOptions:
@@ -330,13 +361,6 @@ final class PaneToolbarView: NSView {
             b.cornerRadius = m.kind == .developer ? 6 : 7
             b.iconRowHeight = bh
         }
-        // Left group: icons edge to edge, the first (toggle or ←) centred 21 pt from the card edge (Arc 1.171).
-        var x: CGFloat = m.kind == .emptyPane ? 1 : 2.5
-        for b in left {
-            b.frame = NSRect(x: x, y: (h - bh) / 2, width: b.width, height: bh)
-            x += b.width
-        }
-        let leftEnd = left.isEmpty ? 0 : x
         // Right group, from the trailing edge: pinned extensions … Split View 6 pt in; a split pane's
         // close 4 pt in; developer copy | Console, Network, Inspect | spaced as in Arc 1.170 (#88).
         var rx = w - (m.inSplit ? 4 : (right.isEmpty ? 0 : 6))
@@ -347,6 +371,44 @@ final class PaneToolbarView: NSView {
             devGroup = Array(trailing[(i - 1)...end])
             trailing.removeSubrange((i - 1)...end)
         }
+        // A narrow bar keeps the address (ToolbarRoom, Arc's …HasRoom): the pins go from the front,
+        // then ↻, then the sliders. The Extensions menu still has the pins; ⌘R still reloads.
+        let widthOf = { (v: NSView) in (v as? ToolbarGlyphButton)?.width ?? 26 }
+        let pins = trailing.filter { v in m.pinned.contains { buttons["ext:" + $0.id] === v } }
+        let reload = left.first { $0 === buttons["reload"] }
+        let settings = trailing.first { $0 === buttons["extensions"] }
+        // The copy glyph goes in every pane at the width where a focused pane loses its sliders
+        // (Arc, 3-pane split): judged on that pane's full set, so all panes of a width agree.
+        var showsCopy = true
+        if m.kind == .normal {
+            let fullLeft: CGFloat = 2.5 + 3 * 37 + 6
+            let fullRight: CGFloat = (m.inSplit ? 4 + 30 + 26 : 6 + 34) + 34 + 6
+            let fullRoom = w - fullLeft - fullRight - 2 * (8 + 6)
+            showsCopy = !ToolbarRoom.plan(pins: [], reload: 37, settings: 34, needed: urlButton.idealWidth(withCopy: true),
+                                          room: fullRoom).hidesSettings
+        }
+        urlButton.showsCopy = showsCopy
+        var plan = ToolbarRoom.Plan()
+        if m.kind == .normal {
+            let start: CGFloat = 2.5
+            let leftEnd = left.isEmpty ? 0 : start + left.reduce(0) { $0 + widthOf($1) }
+            let room = rx - trailing.reduce(0) { $0 + widthOf($1) } - 6 - (leftEnd + (left.isEmpty ? 0 : 6)) - 2 * (8 + 6)
+            plan = ToolbarRoom.plan(pins: pins.map(widthOf), reload: reload.map(widthOf), settings: settings.map(widthOf),
+                                    needed: urlButton.idealWidth, room: room)
+        }
+        for (i, v) in pins.enumerated() { v.isHidden = i < plan.hiddenPins }
+        reload?.isHidden = plan.hidesReload
+        settings?.isHidden = plan.hidesSettings
+        let dropped: [NSView] = Array(pins.prefix(plan.hiddenPins)) + (plan.hidesSettings ? settings.map { [$0] } ?? [] : [])
+        trailing.removeAll { v in dropped.contains { $0 === v } }
+        // Left group: icons edge to edge, the first (toggle or ←) centred 21 pt from the card edge (Arc 1.171).
+        var x: CGFloat = m.kind == .emptyPane ? 1 : 2.5
+        let shownLeft = left.filter { !(plan.hidesReload && $0 === reload) }
+        for b in shownLeft {
+            b.frame = NSRect(x: x, y: (h - bh) / 2, width: b.width, height: bh)
+            x += b.width
+        }
+        let leftEnd = shownLeft.isEmpty ? 0 : x
         for v in trailing.reversed() {
             let bw = (v as? ToolbarGlyphButton)?.width ?? 26
             rx -= bw
@@ -435,6 +497,8 @@ final class PaneToolbarView: NSView {
 
     private func showSplitMenu(from view: NSView?) {
         guard let id = paneTabID, let view else { return }
+        // A hovered pane's options act on that pane: Copy Link and Flip read the focused one.
+        actions.focusPane(id)
         let menu = NSMenu()
         let items: [(String, String, () -> Void)?] = [
             ("Separate Tab from Split", "separateFromSplit", { [weak self] in self?.actions.separatePane(id) }),
@@ -501,6 +565,8 @@ final class ToolbarGlyphButton: NSView {
     private var hover = NSColor.white.withAlphaComponent(0.1)
     private var iconBox: NSSize?
     var cornerRadius: CGFloat = 7 { didSet { layer?.cornerRadius = cornerRadius } }
+    /// The fill while not hovered (the sidebar's pinned extension grid draws its cells like tiles).
+    var restFill: NSColor = .clear { didSet { refreshFill() } }
     /// The height an extension icon is centred in, from the bottom (the toolbar sets its button height;
     /// the sidebar pill keeps the 26 pt it was laid out with).
     var iconRowHeight: CGFloat = 26 { didSet { needsLayout = true } }
@@ -554,12 +620,12 @@ final class ToolbarGlyphButton: NSView {
     override func layout() {
         super.layout()
         let h = bounds.height
-        imageView.frame = iconBox.map { NSRect(x: (width - $0.width) / 2, y: (iconRowHeight - $0.height) / 2, width: $0.width, height: $0.height) }
+        imageView.frame = iconBox.map { NSRect(x: (bounds.width - $0.width) / 2, y: (iconRowHeight - $0.height) / 2, width: $0.width, height: $0.height) }
             ?? NSRect(x: 0, y: 0, width: width, height: h)
     }
 
     private func refreshFill() {
-        layer?.backgroundColor = (hovering && enabled ? hover : .clear).cgColor
+        layer?.backgroundColor = (hovering && enabled ? hover : restFill).cgColor
     }
 
     override var mouseDownCanMoveWindow: Bool { false }
@@ -621,6 +687,15 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     /// own pill, 24 pt tall, starting 20 pt in with the text 7 pt inside it. Each has its own hover;
     /// the pointer picks one where they meet. The developer bar is one piece.
     private var split = false
+    /// Arc drops the copy glyph in a narrow pane, at the width where the sliders go (GitHub #178).
+    var showsCopy = true {
+        didSet {
+            guard showsCopy != oldValue else { return }
+            for v in [icon, copyFill, copyTip] as [NSView] { v.isHidden = !showsCopy || (v === copyTip && !split) }
+            needsLayout = true
+        }
+    }
+    private var lead: CGFloat { showsCopy ? Self.pillStart : 0 }
     private enum Region { case none, copy, address }
     private var region = Region.none { didSet { if region != oldValue { refreshFill() } } }
     private let copyFill = NSView()
@@ -663,9 +738,12 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     }
 
     /// The text's natural width plus padding; the bar centres and clips the button to it.
-    var idealWidth: CGFloat {
+    var idealWidth: CGFloat { idealWidth(withCopy: showsCopy) }
+
+    func idealWidth(withCopy: Bool) -> CGFloat {
         let text = label.attributedStringValue.size().width
-        return ceil(split ? Self.textStart + text + Self.pillPad : 10 + iconWidth + 7 + text + 10)
+        let start = Self.textStart - (withCopy ? 0 : Self.pillStart)
+        return ceil(split ? start + text + Self.pillPad : 10 + iconWidth + 7 + text + 10)
     }
 
     /// The glyph's own width, as SwiftUI lays an Image out; developer mode boxes it at 14 pt.
@@ -677,7 +755,7 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
         self.hover = hover
         self.copyHover = copyHover
         split = !developer
-        copyTip.isHidden = !split
+        copyTip.isHidden = !split || !showsCopy
         self.url = url
         ink = fg
         field?.textColor = fg
@@ -706,13 +784,14 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
         if split {
             let box = Self.copyBox, y = (h - box) / 2
             copyFill.frame = NSRect(x: 0, y: y, width: box, height: box)
-            addressFill.frame = NSRect(x: Self.pillStart, y: y, width: max(0, bounds.width - Self.pillStart), height: box)
+            addressFill.frame = NSRect(x: lead, y: y, width: max(0, bounds.width - lead), height: box)
             icon.frame = NSRect(x: 0, y: 0, width: box, height: h)
             let lh = label.intrinsicContentSize.height
-            label.frame = NSRect(x: Self.textStart - SidebarText.inset, y: (h - lh) / 2,
-                                 width: max(0, bounds.width - Self.textStart - Self.pillPad) + 2 * SidebarText.inset, height: lh)
-            copyTip.frame = NSRect(x: 0, y: 0, width: Self.pillStart, height: h)
-            tip.frame = NSRect(x: Self.pillStart, y: 0, width: max(0, bounds.width - Self.pillStart), height: h)
+            let textStart = lead + Self.textStart - Self.pillStart
+            label.frame = NSRect(x: textStart - SidebarText.inset, y: (h - lh) / 2,
+                                 width: max(0, bounds.width - textStart - Self.pillPad) + 2 * SidebarText.inset, height: lh)
+            copyTip.frame = NSRect(x: 0, y: 0, width: lead, height: h)
+            tip.frame = NSRect(x: lead, y: 0, width: max(0, bounds.width - lead), height: h)
             return
         }
         tip.frame = bounds
@@ -799,7 +878,7 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
     private func region(at event: NSEvent) -> Region {
         let p = convert(event.locationInWindow, from: nil)
         guard bounds.contains(p) else { return .none }
-        return split && p.x < Self.pillStart ? .copy : .address
+        return split && p.x < lead ? .copy : .address
     }
 
     override func updateTrackingAreas() {

@@ -7,6 +7,7 @@ struct SettingsActions {
     var rebuildArcProfiles: () -> Void = {}
     var openURL: (String) -> Void = { _ in }
     var exportDiagnostics: () -> Void = {}
+    var newProfile: () -> Void = {}
 }
 
 /// Dia's sidebar glyphs are SF Symbols (compared against the running Dia's icons).

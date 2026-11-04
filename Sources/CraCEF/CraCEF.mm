@@ -632,9 +632,15 @@ public:
         // ad script will do) opens a peer connection. Cra offers no local address at
         // all instead (webrtc.ip_handling_policy, set in OnContextInitialized), so
         // there is nothing to announce and the mDNS responder can stay off.
+        // The WebUI omnibox popups go too. Every page carries Chrome's toolbar, hidden
+        // (CraChromeViewDelegate), and since Chromium 156 its omnibox pre-warms a WebUI popup: a hidden widget with its own compositor plus a
+        // chrome://omnibox-popup document, about 45 MB a tab (GPU surfaces and one shared WebUI
+        // renderer). Cra never shows Chrome's omnibox; the views popup it falls back to is built
+        // only when the omnibox opens.
         std::string disabled = command_line->GetSwitchValue("disable-features");
         command_line->AppendSwitchWithValue("disable-features",
-            (disabled.empty() ? "" : disabled + ",") + "WebRtcHideLocalIpsWithMdns");
+            (disabled.empty() ? "" : disabled + ",") + "WebRtcHideLocalIpsWithMdns,"
+            + "WebUIOmniboxPopup,WebUIOmniboxAimPopup");
         // --load-extension loads after the restored tabs start loading. The first extension
         // with webRequest or declarativeNetRequest makes Chromium reset the profile's URL
         // loader factories (WebRequestAPI::UpdateMayHaveProxies), which strands a navigation
@@ -642,7 +648,10 @@ public:
         // start leaves nothing to reset (it also covers such an extension installed later).
         std::string enabled = command_line->GetSwitchValue("enable-features");
         command_line->AppendSwitchWithValue("enable-features",
-            (enabled.empty() ? "" : enabled + ",") + "ForceWebRequestProxyForTest");
+            (enabled.empty() ? "" : enabled + ",") + "ForceWebRequestProxyForTest,"
+            // Tab sleeping discards a page in place (Cra.discard), as Arc's Chromium does: the tab
+            // keeps its back/forward list and scroll position, and loads again when shown (#153).
+            + "WebContentsDiscard");
         // Kerberos/NTLM single sign-on (ADFS /adfs/ls/wia and the like). Chromium only sends
         // the OS ticket to allowlisted hosts, and IT sets that list as a Chrome or Edge policy,
         // which CEF never reads. Without it those logins fail with ERR_INVALID_AUTH_CREDENTIALS.
@@ -1198,9 +1207,10 @@ public:
         // A target=_blank link the user clicked (Shift-clicked: a new window) may open in a
         // Peek; window.open with features (a sign-in popup) is CEF_WOD_NEW_POPUP and stays one.
         if (user_gesture && (target_disposition == CEF_WOD_NEW_FOREGROUND_TAB || target_disposition == CEF_WOD_NEW_WINDOW)
-            && [o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:)]
+            && [o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:newTab:)]
             && [o.delegate browser:o opensPeekForURL:NSStringFromCef(target_url)
-                        shiftClick:target_disposition == CEF_WOD_NEW_WINDOW]) return true;
+                        shiftClick:target_disposition == CEF_WOD_NEW_WINDOW
+                           newTab:target_disposition == CEF_WOD_NEW_FOREGROUND_TAB]) return true;
         BOOL background = (target_disposition == CEF_WOD_NEW_BACKGROUND_TAB);
         CraBrowser* host = [o.delegate browser:o popupHostForURL:NSStringFromCef(target_url) inBackground:background];
         if (!host) return true;  // blocked
@@ -1474,8 +1484,8 @@ public:
         if (!user_gesture || is_redirect) return false;
         cef_transition_type_t tt = request->GetTransitionType();
         if ((tt & TT_SOURCE_MASK) != TT_LINK || (tt & TT_FORWARD_BACK_FLAG)) return false;
-        if (![o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:)]) return false;
-        return [o.delegate browser:o opensPeekForURL:NSStringFromCef(request->GetURL()) shiftClick:NO];
+        if (![o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:newTab:)]) return false;
+        return [o.delegate browser:o opensPeekForURL:NSStringFromCef(request->GetURL()) shiftClick:NO newTab:NO];
     }
 
     bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& target_url,
@@ -1484,8 +1494,8 @@ public:
         if (!o) return false;
         // Shift-click (Chrome: a new window).
         if (user_gesture && target_disposition == CEF_WOD_NEW_WINDOW
-            && [o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:)]
-            && [o.delegate browser:o opensPeekForURL:NSStringFromCef(target_url) shiftClick:YES]) return true;
+            && [o.delegate respondsToSelector:@selector(browser:opensPeekForURL:shiftClick:newTab:)]
+            && [o.delegate browser:o opensPeekForURL:NSStringFromCef(target_url) shiftClick:YES newTab:NO]) return true;
         BOOL background = (target_disposition == CEF_WOD_NEW_BACKGROUND_TAB);
         [o.delegate browser:o requestsNewTabWithURL:NSStringFromCef(target_url) inBackground:background];
         return true;
@@ -2305,16 +2315,19 @@ static NSView* FindRenderWidgetHostView(NSView* root) {
     }
 }
 
-- (void)exitPictureInPicture {
+- (void)exitPictureInPicture { [self exitPictureInPicturePausing:NO]; }
+- (void)closePictureInPicture { [self exitPictureInPicturePausing:YES]; }
+
+- (void)exitPictureInPicturePausing:(BOOL)pause {
     if (!_browser) return;
+    CefString js = pause ? "(function(){var v=document.pictureInPictureElement;if(!v)return;v.pause();"
+                           "document.exitPictureInPicture().catch(function(){});})();"
+                         : "if(document.pictureInPictureElement){document.exitPictureInPicture().catch(function(){});}";
     std::vector<CefString> ids;
     _browser->GetFrameIdentifiers(ids);
     for (const auto& id : ids) {
         CefRefPtr<CefFrame> f = _browser->GetFrameByIdentifier(id);
-        if (f && f->IsValid()) {
-            f->ExecuteJavaScript("if(document.pictureInPictureElement){document.exitPictureInPicture().catch(function(){});}",
-                                 f->GetURL(), 0);
-        }
+        if (f && f->IsValid()) f->ExecuteJavaScript(js, f->GetURL(), 0);
     }
 }
 - (void)print { if (_browser) _browser->GetHost()->Print(); }
@@ -2523,6 +2536,7 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 + (BOOL)initializeWithCachePath:(NSString*)cachePath
                userAgentProduct:(NSString*)product
                         logPath:(NSString*)logPath
+                         locale:(NSString*)locale
                  useChromeStyle:(BOOL)useChromeStyle
                 useMockKeychain:(BOOL)useMockKeychain {
     if (g_libraryLoader) return YES;
@@ -2552,6 +2566,8 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
     settings.persist_session_cookies = true;
     CefString(&settings.user_agent_product) = CefStringFromNS(product);
     CefString(&settings.log_file) = CefStringFromNS(logPath);
+    // Without it CEF passes --lang=en-US whatever macOS is set to (#167).
+    if (locale.length) CefString(&settings.locale) = CefStringFromNS(locale);
     settings.log_severity = LOGSEVERITY_WARNING;
     settings.background_color = CefColorSetARGB(255, 255, 255, 255);
 
@@ -2768,13 +2784,50 @@ static BOOL CraIsInPageView(NSView* v) {
     return NO;
 }
 
+// Whether a key is a shortcut that Chromium keeps from pages because it is enabled in System
+// Settings ▸ Keyboard ▸ Shortcuts (EventIsReservedBySystem, content/browser/cocoa/
+// system_hotkey_map.mm): ⌘Space set to switch input sources (#174), ⌘` for the next window.
+// macOS acts on these inside -[NSApplication sendEvent:]. Same set as Chromium's map: the
+// enabled "standard" entries of com.apple.symbolichotkeys, without 80 and 82, plus ⌘` and ⇧⌘`
+// for 27 when the user hasn't changed it. Read live (a few µs) so a changed setting applies.
+static BOOL CraIsSystemHotKey(NSEvent* event) {
+    const NSEventModifierFlags relevant =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption | NSEventModifierFlagControl;
+    NSEventModifierFlags mods = event.modifierFlags & relevant;
+    NSDictionary* stored = CFBridgingRelease(
+        CFPreferencesCopyAppValue(CFSTR("AppleSymbolicHotKeys"), CFSTR("com.apple.symbolichotkeys")));
+    NSMutableDictionary* hotKeys = [@{@"27": @{@"enabled": @YES,
+                                              @"value": @{@"type": @"standard", @"parameters": @[@96, @50, @(NSEventModifierFlagCommand)]}}}
+                                       mutableCopy];
+    if ([stored isKindOfClass:[NSDictionary class]]) [hotKeys addEntriesFromDictionary:stored];
+    [hotKeys removeObjectsForKeys:@[@"80", @"82"]];
+    for (NSString* identifier in hotKeys) {
+        NSDictionary* hotKey = hotKeys[identifier];
+        if (![hotKey isKindOfClass:[NSDictionary class]] || ![hotKey[@"enabled"] respondsToSelector:@selector(boolValue)] ||
+            ![hotKey[@"enabled"] boolValue])
+            continue;
+        NSDictionary* value = hotKey[@"value"];
+        if (![value isKindOfClass:[NSDictionary class]] || ![value[@"type"] isEqual:@"standard"]) continue;
+        NSArray* parameters = value[@"parameters"];
+        if (![parameters isKindOfClass:[NSArray class]] || parameters.count != 3 ||
+            ![parameters[1] isKindOfClass:[NSNumber class]] || ![parameters[2] isKindOfClass:[NSNumber class]])
+            continue;
+        if ([parameters[1] unsignedShortValue] != event.keyCode) continue;
+        NSEventModifierFlags hotKeyMods = [parameters[2] unsignedIntegerValue] & relevant;
+        if (hotKeyMods == mods) return YES;
+        if ([identifier isEqualToString:@"27"] && hotKeyMods == (mods & ~NSEventModifierFlagShift)) return YES;
+    }
+    return NO;
+}
+
 // Chrome's rule: when a web view has focus, ⌘-shortcuts go to the page
 // first and only reach the menu bar if the page leaves them alone (so ⌘F in
 // Google Docs or ⌘← in a text field keep working). Reserved shortcuts are
 // taken in OnPreKeyEvent, the rest in OnKeyEvent. Keys the page leaves alone
 // come back here from Chromium's CommandDispatcher (redispatchKeyEvent:), and
 // those must take the normal path so the menu bar sees them: ⌘C/⌘V/⌘X/⌘A/⌘Z
-// only exist as Edit menu items sent to the page's first responder.
+// only exist as Edit menu items sent to the page's first responder. Enabled macOS
+// shortcuts (CraIsSystemHotKey) always take the normal path, as in Chrome and Arc.
 - (void)sendEvent:(NSEvent*)event {
     CefScopedSendingEvent sendingEventScoper;
     if ([_forwardedKeyEvents containsObject:event]) {
@@ -2782,7 +2835,7 @@ static BOOL CraIsInPageView(NSView* v) {
         [super sendEvent:event];
         return;
     }
-    if (event.type == NSEventTypeKeyDown && (event.modifierFlags & NSEventModifierFlagCommand)) {
+    if (event.type == NSEventTypeKeyDown && (event.modifierFlags & NSEventModifierFlagCommand) && !CraIsSystemHotKey(event)) {
         NSWindow* key = self.keyWindow;
         NSResponder* fr = key.firstResponder;
         if ([fr isKindOfClass:[NSView class]]) {
