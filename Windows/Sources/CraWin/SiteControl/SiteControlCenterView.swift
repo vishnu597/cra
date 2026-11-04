@@ -196,6 +196,7 @@ final class SiteControlCenterView {
     }
 
     /// The Mac's SiteControlCenterColors (Arc 1.170's, sampled; light ones mirror them).
+    @MainActor
     private struct Colors {
         let background, action, actionHover, actionOutline, text, header, secondary, divider: Brush
         let footerFill, footerHover, moreFill, moreHover, accent, inactive, glyphOnAccent, glyphOnInactive: Brush
