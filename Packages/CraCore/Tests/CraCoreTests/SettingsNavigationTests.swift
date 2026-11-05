@@ -42,7 +42,7 @@ struct SettingsNavigationTests {
     }
 
     @Test func panesHaveTitlesInDiasOrder() {
-        #expect(SettingsPane.allCases.map(\.title) == ["General", "Tabs", "Privacy", "Profiles", "Extensions", "Shortcuts",
+        #expect(SettingsPane.allCases.map(\.title) == ["General", "Tabs", "Max", "Privacy", "Profiles", "Extensions", "Shortcuts",
                                                        "Performance", "Advanced"])
         #expect(SettingsPane.tabs.id == "tabs")
         #expect(SettingsPane.windowsPanes.allSatisfy { SettingsPane.allCases.contains($0) })

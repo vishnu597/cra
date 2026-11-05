@@ -910,7 +910,9 @@ Observed live on a throwaway Today split (example.com | example.org), archived a
   in Split View, Duplicate, Move to, New Folder with 2 Items, Archive Tabs…).
 - [?] Not measured: the drag-over fill on a dark theme, coloured dark themes (the star's colour there), 1x.
 - Cra: FavoritesEmptyCard, dismissed per favorites container (WindowPrefs.favoritesEmptyStateDismissed, since
-  Cra's favorites are per space). Badge, title, subtitle and × land within 1 px of Arc's at 2x.
+  Cra's favorites are per space). Badge, title, subtitle and × land within 1 px of Arc's at 2x. The dashed line
+  runs on the fill's outer point, not just outside it: the card sits at the top of the space pager, which clips,
+  so a line outside the fill lost its top edge.
 
 ### Space header row (Arc 1.171, live, 1 Nov, issue #39)
 - [O] At rest: the space icon, then the title; nothing else. A space with an emoji shows it (the issue's
@@ -935,6 +937,8 @@ Observed live on a throwaway Today split (example.com | example.org), archived a
   without the fill).
 - Cra: SpaceHeaderView matches all four states (rest, hover, collapsed, collapsed + hover) to within
   1 px at 2x; the ••• square sits 0.5 pt off so its dots land on Arc's.
+- Cra deviation (4 Nov, X DM): collapsed, Cra keeps the space icon at rest and shows the right-pointing
+  chevron only on hover, so the icon is always visible. A space without an icon keeps Arc's resting chevron.
 
 ### DevTools docking, Arc's way (25 Oct)
 
@@ -1847,13 +1851,10 @@ iconOffsetXAnimator, iconBounceAnimator, lazy g / vx0 / vy0 / projectileMotionDu
   6 pt high, drops to 12 pt low at ~0.15 s, back to −2 pt, settled by ~0.4 s. Faint grey while Arc's window is in
   the background, white when it is key. It leaves 30 s after the glyph lands (appeared 8.47 s, faded 39.37-39.53 s
   in a 60 fps capture), fading over 0.15 s, the same with Arc in front or behind.
-- With Tidy Downloads on, Arc also shows a "Download renamed to:" card above the bin; Cra has no Tidy Downloads.
+- With Tidy Downloads on, Arc also shows a "Download renamed to:" card above the bin (see "Tidy Downloads").
 - Cra: DownloadFlight (overlay panel, Core Animation keyframes sampled from the same projectile) and DownloadBin in
   SpaceDock. Verified side by side with fixed-source test builds.
-- Tidy Downloads card (only with Arc Max's renaming): in over ~0.2 s once the rename is ready, gone after 8.0 s in
-  under 0.1 s. Prompt and inputs (filename, tab title, domain; JSON `newName`) are in the binary next to
-  beginRename(browserContextID:downloadID:defaultFilename:sourceUrl:webContentsTitle:referrerTitle:). Not built in
-  Cra: Victor doesn't want AI features for now (27 Oct 2026).
+- Tidy Downloads card (only with Arc Max's renaming): see "Tidy Downloads" below (built 4 Nov 2026).
 
 ### Arc's downloads list on hovering the Library button (live, 60 fps, 1728×1084 window)
 
@@ -3016,3 +3017,126 @@ Sidebar width via StorableWindows' `sidebarWidth`, window size over AX. Frames f
 - [?] Not measured: whether the switch depends on the host's width (only github.com was tried), the grid
   cells' hover and pressed fills, where a grid pin's popup opens (Cra: under the cell), a space with
   pins but no favorites (Cra: the header follows the grid as it follows tiles).
+
+## Tidy Tabs (Arc 1.171, 4 Nov 2026, Swift metadata + strings, Victor's Arc with Arc Max on, offline Arc at 2x, 120 fps)
+
+Arc Max's "Organize Today Tabs". Arc sends the loose Today tabs to its server (OpenAI) and files them under
+named group headers; Cra asks the Mac's own Apple Intelligence model instead (Victor, 4 Nov 2026: only when
+Apple Intelligence is on, so it's free and nothing leaves the Mac).
+- [O static] `tidyTabsEnabled` (defaults), `canAutoOrganizeTodayTabs`, `createUnpinnedTabGroups()` in
+  WindowData+TabGroups.swift with the request "Here are my tabs, in the format 'id: title':" and "Your array
+  of group assignments, as valid JSON within a ```code block```:" plus a "Tab group of miscellaneous tabs".
+  The answer becomes `SidebarItemData.tabGroup(SidebarTabGroup { title })` items in the unpinned container,
+  the tabs their children: in StorableSidebar, `"data": {"tabGroup": {"title": "Planets"}}` (an empty `{}`
+  fails to decode and Arc drops the item with its tabs). Undo string "Undo prompt for tidying explore tabs".
+- [O static] UnpinnedSectionHeaderCellView: stackView, tidyButton (SidebarTidyButton: imageView "broom-stick",
+  a 14 pt template SVG in ARCClients_BaseAssets, label, divider), clearButton, downArrowImage, borderView,
+  squiggleView. SquiggleDivider (viewModel, height, amplitudeAnimationDuration) over SquiggleViewModel (period,
+  phase, controlPointFraction, amplitudeFunction); window state `dividerSquiggleActiveSpaceIDs`.
+- [O] Shown on hovering the divider once Today holds 6 tabs, grouped ones counted (offline: 5 loose tabs →
+  Clear only; 6 → Tidy; 2 loose + 6 grouped → Tidy). Tooltip "Organize Today Tabs". After a run Tidy is
+  gone until Today changes, even when the run grouped nothing (Arc's server no longer answers: a click gave
+  0.57 s of squiggle and no groups; a second click on that spot did nothing).
+- [O] Layout at 2x on a 347 pt sidebar (dark space): the line ends 239, broom ink 248.5–257, "Tidy"
+  262–282.5 (11 pt semibold, the Clear label's tone, brighter on hover), a 0.5 pt hairline 12.5 pt tall at 291,
+  "Clear" 302–327.5.
+- [O] The squiggle (60 fps, sine fitted per frame): period 12.75 pt, amplitude 3.0 pt the whole length of the
+  line, travelling left at 5 periods a second (phase +0.52 rad per 1/60 s); the amplitude ramps linearly 0 → 3
+  in 0.4 s from the click and back in 0.4 s when the answer is in.
+- [O] The broom turns about the top of its handle: 31° clockwise in ~0.2 s (ease out) at the click, holds
+  ~0.12 s, swings back 7° past upright by ~0.65 s and settles by ~0.9 s. Only one sweep was seen (the run
+  ended); Cra repeats it while the model works.
+- [O] Group header (offline Arc, hand-written tabGroup items): a 41 pt row like a tab's, no icon, the name in
+  13 pt semibold in the space header's tone at the tabs' icon inset (x 17); the tabs below are not indented.
+  Hovered, two 26 pt buttons end 13 pt in: `folder.badge.plus` "Create Folder" and ✕ "Close tab group"; no
+  row fill. Right-click: one item, "Remove header" (the tabs stay where they are, loose). Create Folder: an open
+  folder with the group's name at the top of Pinned, its tabs inside and pinned; the group goes.
+- Cra: TidyTabs (CraCore: when to offer, the prompt, cleaning the model's answer, Today's order),
+  TidyTabsService (FoundationModels guided generation, macOS 26, hidden without Apple Intelligence),
+  SidebarStore tab groups (a folder with `tabGroup: true`, so an older Cra reads the file), DividerRowView's
+  TidyButton + SquiggleLayer + BroomGlyph (Cra's own drawing of the broom), GroupHeaderRowView. ⌘Z undoes the
+  last tidy until a tab closes or a header is used. Measured on Cra: amplitude 2.97 pt, +0.52 rad a frame,
+  ramps 0.38 s.
+- [?] Not seen: Arc's real grouping (the server is gone), what Arc does with a model answer naming an existing
+  group, whether a header can be dragged, and the arrow Arc sometimes draws before "Clear" (offline copy).
+
+## Tidy titles and Tidy Tab Titles (Arc 1.171, 4 Nov 2026, Swift metadata + strings, Victor's Arc, 60 fps recordings)
+
+Two things share the name. Arc tidies every tab's displayed title by per-site rules, always; Arc Max's Tidy Tab
+Titles (`renamePinnedTabsEnabled`, AI endpoint `renamePinnedTabs`) gives a tab a new name when it is pinned.
+- [O] Rules: `tidyTitles` in web_content_behavior.json (ARC_WebContentBehaviorConfigurationClient.bundle, also
+  served by content.arc.net): 52 sites (51 online, less app.notion.com), each `{siteName, rules: [{match?, title}]}`.
+  `match`: pathEquals, pathContainsRegex, fragmentEquals, fragmentContainsRegex (none: everywhere); `title`:
+  always, removingPattern, removingPatterns (decoder strings next to "Unable to decode TitleModifier"). Live:
+  "Jupiter - Wikipedia" shows "Jupiter", "Y Combinator | Hacker News" "Y Combinator", "Climate - BBC News"
+  unchanged (no rules), the same with renamePinnedTabsEnabled off. Stored savedTitle stays the page's.
+- [O] Tidy Tab Titles, live (two pins, Tabs ▸ Pin Tab): "Foundation Models | Apple Developer Documentation" →
+  "Foundation Models", "Climate - BBC News" → "Climate News". Stored as the item's custom `title`. Arc's server
+  still answered on 4 Nov 2026 (Tidy Tabs' didn't).
+- [O] Timeline (60 fps): the row moves into Pinned in ~0.12 s; the rename starts 0.95–1.07 s after the pin (the
+  server's round trip). At once the row turns two-line: title up, "Double-click to rename" under it (Arc's
+  TabCellState hint, also the hover tooltip's subtitle). One soft front (~72 pt from opaque to clear) crosses
+  left to right at ~1,180 pt/s: the old title (drawn whole, clipped, no ellipsis) fades out behind it, the new title
+  and the subtitle in; the subtitle is bright (white ~96 % on the dark space) until the end. Sparkles: white dots
+  ~1.5–3 pt, ~28 at a time, rising along a band that crosses the whole row in 0.55 s, scattered up to ~30 pt above
+  and below it, mostly lit until the end. At 0.55 s (0.525 and 0.55 measured) sparkles go at once and the
+  subtitle drops to its usual tone; it leaves 3.1 s later (in ~0.07 s), the row back to one line.
+- [O static] TabCellView: isAnimatingAiRename, animatedGradientView (AnimatedGradientView: oldView, newView,
+  baseMaskLayer, overlayMaskLayer, animationDuration, animationDelay, fadeWidth, contentOffset), sparksView
+  (sparkles, animationPeriod, animationDuration, sparkleColor), currentSubtitleAnimationUUID. Analytics
+  `auto_renamed_pinned_tab` with old/new title length.
+- Arc's earlier renames in Victor's sidebar (the model's examples): "IT Career Paths - IT General - Confluence" →
+  "IT Career Paths", "Personal apps | Heroku" → "Heroku", "Deltagere ‹ Grønne tanker — WordPress" → "Grønne tanker".
+- Cra: TidyTitleRules (Arc's rules data, every unnamed tab row and split cell), TidyTitles + TidyTitlesService
+  (FoundationModels, ~0.5 s, held to ~1 s after the pin like Arc), TabRowView.playTidyRename (front masks on the
+  old and new title and the subtitle, 46 sparkles). Measured on Cra: rename 1.08 s after the pin, 0.55 s sweep,
+  "Climate - BBC News" → "Climate News" as Arc. Settings ▸ Max ▸ Tidy Tab Titles, off by default (Arc's Max is
+  opt-in).
+- [?] Not seen: whether a drag into Pinned renames (Cra does, every pin counts), a rename whose new name isn't a
+  prefix of the old (Cra crossfades in the soft edge), undo.
+
+## Tidy Downloads (Arc 1.171, 4 Nov 2026, strings + Victor's Arc, 60 fps recordings)
+
+Arc Max's renameDownloads: a finished download is renamed on disk and a card above the download bin says so.
+- [O static] beginRename(browserContextID:downloadID:defaultFilename:sourceUrl:webContentsTitle:referrerTitle:) sends
+  the file name, the source tab's title and domain with a prompt ("Rewrite its filename to be helpful, concise and
+  readable. 2-4 words." plus rules and nine examples) and reads JSON `newName`; it refuses an empty name or one
+  starting with ".". The card is SidebarBanner's ("Download renamed to:", "Revert to original name"); the toasts
+  "Download renamed!" / "Download name reverted!" are DownloadRenamedToastContentView in Arc's toast.
+- [O] Live, three GitHub zips from their repo pages: Hello-World-master.zip → "Hello World Repository.zip",
+  Spoon-Knife-main.zip → "Spoon Knife main.zip", git-consortium-master.zip → "Git Consortium Master.zip" (renamed
+  on disk). A second download from the same tab didn't start (Chrome's multiple-download block).
+- [O] Card (dark space, 347 pt sidebar, AX + 2x frames): a button 331 × 74 pt at x 8 (the sidebar less 8 pt a side),
+  body 65 pt with 12 pt corners plus a 9 pt tail at bottom left whose tip ends 1 pt above the bin. Fill #03061F;
+  "Download renamed to:" 12 pt regular #343BD1, 13 pt in, cap top 12.5 pt down; the new name 14 pt semibold white,
+  cap top 31; the old name 12 pt #343BD1, cap top 50, struck through; ↶ and ✕ grey glyphs centred 47 and 21 pt from
+  the right, 17 pt down; four-point sparkles (5–10 pt) twinkling by the label, the names and the bottom left.
+- [O] Timeline: the card comes ~2.6 s after the download starts (with a small zip), springing from the tail's tip:
+  0.55× → 1.0 in 0.18 s, 1.05× at 0.29 s, settled by ~0.55 s, fading in over ~0.1 s; the strike draws left to right
+  0.5 s in, over ~0.15 s. It leaves 7.96 s after it came, shrinking back to the tip and fading in ~0.12 s.
+  ↶ renamed the file back at once (git-consortium-master.zip). Not captured: the reverted toast (Cra shows
+  "Download name reverted!" in its one toast), the card in a light space (Cra: white, from Arc's Max picture), and
+  whether hovering holds it.
+- Cra: TidyDownloads (CraCore: prompt with Cra's own examples, the name's checks, a free name), TidyDownloadsService
+  (FoundationModels, renames the file, DownloadHistory.move, revert), DownloadRenameCard (SidebarView, over the bin).
+  Settings ▸ Max ▸ Tidy Downloads, off by default. Deviations Victor asked for (5 Nov 2026): the body is 71 pt
+  (the old name's baseline as far from the bottom as the label's cap top from the top), and the card stays while the
+  pointer is on it, then for what was left of its 8 s but at least 3 s.
+
+## Little Arc over a full-screen app (Arc 1.171, 5 Nov 2026, issue #186, Victor's Arc + a test full-screen app)
+
+- [O] With another app full screen on its own Space, `open -a Arc https://example.com/…` (a link from another app)
+  opened Little Arc on that full-screen Space (CGSCopySpacesForWindows: the full-screen Space, type 4), and the
+  active Space stayed there. Cra 0.1.30 switched to the desktop Space (type 0) and opened the Little Window there.
+- [O AX] Little Arc's AX subrole is `AXSystemDialog` at window level 0, with no window buttons among its AX
+  children (an `AXCloseButton` attribute is still there). In AppKit only a titled `NSPanel` with
+  `.nonactivatingPanel` reports that subrole (NSWindow: AXStandardWindow; NSPanel: AXDialog; utility panel:
+  AXFloatingWindow; borderless: AXUnknown).
+- [O, stand-in app] Why it matters: an ordinary window can't join another app's full-screen Space. With `.fullScreenAuxiliary`,
+  `.moveToActiveSpace`, `.canJoinAllApplications` (macOS 13) or no activation at all, a stand-in app's new window
+  still landed on the desktop. A titled non-activating `NSPanel` with `.fullScreenAuxiliary` lands on the full-screen
+  Space, and `NSApp.activate` afterwards doesn't switch Spaces. With `.fullScreenPrimary` added it still enters
+  its own full screen (page video).
+- [O, Cra test copy] Child windows: a child ordered in before its parent is on screen, or shown by its owner before it was
+  attached (Chromium's page window), stays on the desktop Space. Making it key then switches Spaces. Ordering it
+  out and adding it again as a child, after the parent is on screen, puts it on the parent's Space.

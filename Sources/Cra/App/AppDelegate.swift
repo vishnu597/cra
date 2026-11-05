@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SoftwareUpdater.shared.start(app: self)
         buildMenus()
         store.hasPage = { [unowned self] in self.runtime(for: $0).map { !$0.discarded } ?? false }
+        store.tabPinned = { [unowned self] in TidyTitlesService.shared.tabPinned($0, store: self.store) }
         // A tip takes the tones of the space its browser window is in (the sidebar may be a
         // floating panel, a child of that window).
         ArcTooltipController.shared.tones = { [unowned self] window in
@@ -180,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         observeContentBlocking()
         observeHttpsOnly()
+        observeLinkMenu()
         logSecureDNS()
     }
 
@@ -232,6 +234,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             setting.refresh()
             guard let line = setting.inEffect?.line else { return }
             if line != last { last = line; CraLog.note("secure dns: " + line) }
+        }
+    }
+
+    /// Settings ▸ Tabs ▸ "Open links in new tabs in the background" (GitHub #183): the page
+    /// context menu's two open-link items (LinkMenu), read when the next menu opens.
+    private func observeLinkMenu() {
+        observeChanges(of: { [store] in store.settings.openLinksInBackground }) { background in
+            let items = LinkMenu.items(openLinksInBackground: background)
+            CraCEFRuntime.setLinkMenuTitles(items.map(\.title), opensInBackground: items.map { NSNumber(value: $0.opensInBackground) })
         }
     }
 
@@ -438,7 +449,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainWindows.removeAll { $0 === c }
         c.tearDown()
         store.removeWindow(c.windowID)
-        if c.isIncognito, !mainWindows.contains(where: \.isIncognito) { CraCEFRuntime.endIncognitoSession() }
+        if c.isIncognito, !mainWindows.contains(where: \.isIncognito) {
+            CraCEFRuntime.endIncognitoSession()
+            WebKitStores.endIncognitoSession()
+        }
         // AppKit makes the next window key on its own; until then actions go to the frontmost.
         if let front = NSApp.orderedWindows.compactMap({ w in mainWindows.first { $0.window === w } }).first {
             store.activeWindowID = front.windowID
@@ -486,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @discardableResult
     func openLittleWindow(url: String, activate: Bool = true, opener: CraBrowser? = nil, space: UUID? = nil) -> LittleWindowController {
         let w = makeLittleWindow(url: url, opener: opener, space: space)
-        if activate { w.show() } else { w.window?.orderFront(nil) }
+        if activate { w.show() } else { w.orderFrontInBackground() }
         return w
     }
 
@@ -532,8 +546,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let comps = URLComponents(url: u, resolvingAgainstBaseURL: false)
         func q(_ name: String) -> String? { comps?.queryItems?.first { $0.name == name }?.value }
         // Actions keep their target: a key Little Window stays key (perform routes to it).
-        // A background test instance (CRA_TEST_BACKGROUND) never comes to the front.
-        if (u.host != "action" || keyLittleWindow == nil) && !HitchMonitor.background {
+        // A background test instance (CRA_TEST_BACKGROUND) never comes to the front. A Little
+        // Window opens on the Space in use, so the browser window stays where it is (#186).
+        let little = u.host == "open" && q("little") == "1"
+        if (u.host != "action" || keyLittleWindow == nil) && !little && !HitchMonitor.background {
             main.showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -553,7 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // space=<id> (#168): a real, normal space, as Air Traffic Control routes to; an unknown
             // or incognito one opens where it did before, in the space in use.
             let space = q("space").flatMap(UUID.init(uuidString:)).flatMap { store.space($0) != nil && !store.isIncognito(space: $0) ? $0 : nil }
-            if q("little") == "1" {
+            if little {
                 openLittleWindow(url: url, space: space)
             } else if let space {
                 // Held: useNormalWindow(forSpace:) can change which window is main.
@@ -614,6 +630,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             if let st = dict["status"] { main.browserManager(statusMessage: st); return }
+            // tidy: the divider's Tidy on the window's space, without hovering it; undoTidy: ⌘Z's.
+            if dict["tidy"] != nil { TidyTabsService.shared.tidy(store.focusedSpace(window: main.windowID).id, store: store); return }
+            if dict["undoTidy"] != nil { _ = store.undoTidy(); return }
+            // settingsPane=max: Settings opened on that pane.
+            if let p = dict["settingsPane"].flatMap(SettingsPane.init(rawValue:)) {
+                showSettingsWindow()
+                settingsController?.show(p)
+                return
+            }
             // Scenario hooks (scripts/scenario.sh): what a journey needs without a pointer.
             if dict["checkStore"] != nil { logSidebarProblems(); return }
             // A main-thread stall of this many milliseconds, for the performance recorder's tests.
@@ -675,6 +700,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if let v = dict["banner"] { SoftwareUpdater.shared.debugUpdated(v == "none" ? nil : v); return }
             if let v = dict["bannerReady"] { SoftwareUpdater.shared.debugReady(v == "none" ? nil : v); return }
             if dict["switcher"] != nil { main.debugTabSwitcher(); return }
+            // The Site Control Center's Safari's Engine switch for the focused page, without the pointer.
+            if let v = dict["safariEngine"] { main.debugChooseSafariEngine(v == "on"); return }
+            // Script in Cra's isolated world of the focused page: "Cra isolatedJS → <result>" on stdout.
+            if let js = dict["isolatedJS"] {
+                let params = String(decoding: (try? JSONSerialization.data(withJSONObject: ["expression": js, "returnByValue": true])) ?? Data(), as: UTF8.self)
+                main.currentBrowser?.evaluate(inIsolatedWorld: PageScript.world, params: params) { result, error in
+                    NSLog("Cra isolatedJS → %@", result ?? "error: \(error ?? "?")")
+                }
+                return
+            }
+            // The sidebar player without the pointer: play/pause/next/previous/pip on the newest
+            // card ("state" only logs), then its cards: "Cra nowPlaying[<label>] <host> playing=… prev=… next=… video=… pip=…".
+            if let op = dict["nowPlaying"], let np = main.browsers.nowPlaying {
+                let label = dict["label"].map { "[\($0)]" } ?? ""
+                let actions: [String: NowPlaying.Action] = ["toggle": .togglePlayback, "next": .next, "previous": .previous,
+                                                           "pip": .pictureInPicture, "dismiss": .dismiss]
+                if let action = actions[op], let id = np.entries.last?.id { main.browsers.performNowPlaying(id, action) }
+                for e in np.entries {
+                    let host = CraLog.host(main.browsers.runtime(for: e.id)?.browser.currentURL ?? "")
+                    NSLog("Cra nowPlaying%@ %@ playing=%d prev=%d next=%d video=%d pip=%d", label, host, e.playing ? 1 : 0, e.hasPrevious ? 1 : 0,
+                          e.hasNext ? 1 : 0, e.hasVideo ? 1 : 0, np.pictureInPicture.contains(e.id) ? 1 : 0)
+                }
+                if np.entries.isEmpty { NSLog("Cra nowPlaying%@ none", label) }
+                return
+            }
             if dict["themeEditor"] != nil { main.showSpaceStyleEditor(space: store.focusedSpace); return }
             if dict["jumpPill"] != nil { SpaceListView.jumpToSelected(for: main.sidebarUI, space: store.focusedSpaceID); return }
             if let f = dict["folderPreview"] {
@@ -712,6 +762,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             if let id = dict["extensionAction"] { main.runExtensionAction(id); return }
+            // What the side panel's close button does (scripts/scenario.sh).
+            if dict["sidePanel"] == "close" { main.sidePanel.hide(); return }
             if let path = dict["exportDiagnostics"] {
                 Diagnostics.export(windows: mainWindows, store: store, to: URL(fileURLWithPath: path))
                 return
@@ -746,6 +798,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // folder=<id>,1 opens a folder, ,0 closes it (its glyph turns as a click's does).
             if let f = dict["folder"]?.split(separator: ","), f.count == 2, let id = UUID(uuidString: String(f[0])) {
                 store.setExpanded(id, f[1] == "1")
+                return
+            }
+            // collapsePinned=1 collapses the focused space's pinned tabs, 0 expands them (a header click).
+            if let v = dict["collapsePinned"] {
+                let sid = store.focusedSpaceID
+                if store.isPinnedCollapsed(sid) != (v == "1") { store.togglePinnedCollapsed(sid) }
                 return
             }
             // Settings ▸ Advanced's search engine picker, by keyword.
@@ -818,6 +876,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "pictureInPicture":
             item.title = main.currentBrowser?.isInPictureInPicture == true ? "Exit Picture in Picture" : "Picture in Picture"
         case "promoteLittleWindow": return keyLittleWindow?.hasPage ?? false
+        case "checkForUpdates": return SoftwareUpdater.shared.validateMenuItem(item)
         case "closeSplitPane", "separateFromSplit", "flipSplitOrientation":
             return store.selectedTabID.flatMap { store.splitContaining($0) } != nil
         case "addSplitView": return store.selectedTabID != nil
@@ -907,8 +966,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return false
     }
 
-    /// Arc: ⌘Z brings back the tab you closed last (closing registers an undo, GitHub #21),
-    /// unless the keyboard is in something with text to undo: a text field, or an editable
+    /// Arc: ⌘Z brings back the tab you closed last (closing registers an undo, GitHub #21), or undoes
+    /// the last Tidy, unless the keyboard is in something with text to undo: a text field, or an editable
     /// element in a page (Chromium's page view reports its ui::TextInputType, 0 = none).
     private func undoClosedTab(_ event: NSEvent) -> Bool {
         guard Shortcut("z", NSEvent.ModifierFlags.command).matches(event) else { return false }
@@ -917,7 +976,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let view = responder as? NSView, NSStringFromClass(type(of: view)) == "RenderWidgetHostViewCocoa",
            view.responds(to: NSSelectorFromString("textInputType")),
            (view.value(forKey: "textInputType") as? Int ?? 0) != 0 { return false }
-        perform("reopenClosedTab")
+        // The last thing to undo may be a tidy (Arc's "Undo Tidy Tabs"); a tab closed since comes first.
+        if !store.undoTidy() { perform("reopenClosedTab") }
         return true
     }
 
@@ -1011,7 +1071,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "pinTab": if let c = current { store.togglePinned(c) }
         case "favoriteTab":
             if let c = current { store.isFavorite(c) ? store.removeFromFavorites(c) : store.addToFavorites(c) }
-        case "renameTab": main.sidebarUI.renamingID = current
+        // A pane has no row of its own: its split's name is edited.
+        case "renameTab": main.sidebarUI.renamingID = current.map { store.splitContaining($0)?.id ?? $0 }
         case "duplicateTab": if let c = current { store.duplicateTab(c) }
         case "resetTab": if let c = current { main.resetPinnedTab(c) }
         case "muteTab":
@@ -1037,6 +1098,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "importData": main.showImport()
         case "rebuildArcProfiles": ArcProfileRebuilder.run(store: store) { [weak self] in self?.relaunch() }
         case "setDefaultBrowser": Task { await SystemIntegration.shared.makeDefaultBrowser() }
+        case "checkForUpdates": SoftwareUpdater.shared.checkForUpdates(nil)
         case "clearBrowsingData":
             // Chrome's dialog, in a normal window: what it deletes from history leaves the command bar too.
             let normal = useNormalWindow()
@@ -1135,9 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         appMenu.addItem(item("clearBrowsingData"))
         appMenu.addItem(.separator())
         appMenu.addItem(item("importData"))
-        let update = NSMenuItem(title: "Check for Updates…", action: #selector(SoftwareUpdater.checkForUpdates(_:)), keyEquivalent: "")
-        update.target = SoftwareUpdater.shared
-        appMenu.addItem(update)
+        appMenu.addItem(item("checkForUpdates"))
         appMenu.addItem(.separator())
         appMenu.addItem(std("Hide Cra", #selector(NSApplication.hide(_:)), "h"))
         appMenu.addItem(std("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))

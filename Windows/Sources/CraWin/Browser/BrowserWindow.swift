@@ -10,12 +10,20 @@ import WinUI
 
 /// One browser window on the shared SidebarStore: the toolbar, address box and sidebar on
 /// the left, the open tab's page on the right (or its split's panes, side by side or stacked).
-/// The Windows counterpart of MainWindowController and BrowserManager, smaller for now: one
-/// window, a page made when its tab is first shown and closed when the tab leaves the sidebar
-/// or is unloaded.
+/// The Windows counterpart of MainWindowController and BrowserManager, smaller for now: a
+/// page made when its tab is first shown and closed when the tab leaves the sidebar or is
+/// unloaded. Each window draws one of the store's window sessions (WindowSession): its focused
+/// space and selected tabs; a private window's session has an incognito space of its own and
+/// its pages load in the off-the-record profile.
 @MainActor
 final class BrowserWindow {
     let store: SidebarStore
+    /// The store's window session this window shows.
+    let windowID: UUID
+    /// A private (incognito) window.
+    let isIncognito: Bool
+    /// The app's windows: new ones, and this one going.
+    private weak var host: BrowserWindowHost?
     /// XAML in the sidebar column only, so the page gets real clicks (HostWindow).
     private(set) var window: HostWindow!
     private var sidebar: SidebarView!
@@ -35,6 +43,9 @@ final class BrowserWindow {
 
     /// Pages by tab id.
     private var pages: [UUID: WebPage] = [:]
+    /// Every page this window made that Chromium hasn't finished closing: the window waits for
+    /// them before it goes (CEF's DoClose order). Other windows' pages don't count.
+    private var livePages: Set<ObjectIdentifier> = []
     /// The selected tab's page: the focused pane, which takes the keyboard and the commands.
     private weak var shownPage: WebPage?
     private var shownTabID: UUID?
@@ -65,8 +76,9 @@ final class BrowserWindow {
     private var closing = false
     private var readyToClose = false
     private var closeTimer: WinAppSDK.DispatcherQueueTimer?
-    /// Ctrl+,: made the first time it opens, then hidden and shown again.
-    private var settingsWindow: SettingsWindow?
+    /// Ctrl+,: one for the app, made the first time any window opens it, then hidden and shown
+    /// again (over the window that asked).
+    private static var settingsWindow: SettingsWindow?
     /// Permission requests waiting for the user, oldest first; the first is on screen.
     private var permissionQueue: [(page: WeakPage, origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
     private let permissionPrompt = PermissionPromptView()
@@ -88,13 +100,19 @@ final class BrowserWindow {
     /// What a new window opens when the sidebar has nothing to show.
     static let startPage = "https://crabrowser.app"
 
-    init(store: SidebarStore, dispatcher: WinAppSDK.DispatcherQueue) throws {
+    /// `frame`: where the window opens (a restored or cascaded one); nil lets Windows place it.
+    /// `newWindow`: opened by New Window, so it starts with the command bar rather than a page.
+    init(store: SidebarStore, session: WindowSession, frame: WindowFrame?, newWindow: Bool = false,
+         dispatcher: WinAppSDK.DispatcherQueue, host: BrowserWindowHost) throws {
         self.store = store
+        windowID = session.id
+        isIncognito = session.isIncognito
+        self.host = host
         self.dispatcher = dispatcher
         engine = SuggestionEngine(store: store, commands: { WinKeyBindings.shared.barCommands(display: \.windowsDisplay) },
                                   load: WinSuggestLoader.load)
-        commandBar = CommandBarView(engine: engine, store: store)
-        sidebar = SidebarView(store: store, actions: self)
+        commandBar = CommandBarView(engine: engine, store: store, windowID: session.id)
+        sidebar = SidebarView(store: store, windowID: session.id, actions: self)
         downloads = DownloadsTray(history: .shared, dispatcher: dispatcher)
         sidebar.attachDownloads(button: downloads.button, list: downloads.list)
         downloads.pointer = { [weak self] in
@@ -106,8 +124,8 @@ final class BrowserWindow {
             // The XAML island starts at the client area's top left.
             return (Double(p.x) / window.scale, Double(p.y) / window.scale)
         }
-        window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth)
-        window.title = "Cra"
+        window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth, frame: frame)
+        window.title = Self.title(nil, incognito: isIncognito)
         hwnd = window.hwnd
         window.onLayout = { [weak self] _ in
             self?.layoutPanes()
@@ -124,6 +142,11 @@ final class BrowserWindow {
         }
         window.onMouse = { [weak self] event in self?.handlePaneMouse(event) }
         window.cursor = { [weak self] x, y in self?.paneCursor(x: x, y: y) }
+        window.onActivate = { [weak self] in
+            guard let self, !self.closing else { return }
+            self.store.activeWindowID = self.windowID
+        }
+        window.onMoveEnded = { [weak self] in self?.saveFrame() }
         window.onFocus = { [weak self] in
             guard let self, !self.closing, !self.commandBar.isOpen else { return }
             self.focusContent()
@@ -135,17 +158,62 @@ final class BrowserWindow {
         toast = ToastView(owner: window) { [weak self] in self?.pageOnScreen() }
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
         window.shouldClose = { [weak self] in
-            guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
+            guard let self, !self.readyToClose else { return true }
+            self.saveFrame()
+            guard !self.livePages.isEmpty else { return true }
             self.beginClosing()
             return false
         }
-        // One window for now: closing it quits (there's no WinUI Window to make WinUI quit).
-        window.onClose = { PostQuitMessage(0) }
-        if store.selectedTab == nil && store.visibleTabs(in: store.focusedSpaceID).isEmpty {
-            store.createTab(url: Self.startPage)
+        window.onClose = { [weak self] in
+            guard let self else { return }
+            self.host?.windowDidClose(self)
+        }
+        store.activeWindowID = windowID
+        if newWindow {
+            refresh()
+            openCommandBar(.newTab)
+            return
+        }
+        if store.selectedTab(window: windowID) == nil && store.visibleTabs(in: store.focusedSpaceID(window: windowID)).isEmpty {
+            store.createTab(url: Self.startPage, window: windowID)
         }
         refresh()
     }
+
+    /// "Cra", or the tab's title before it; a private window says so, as Chrome's do.
+    private static func title(_ tab: String?, incognito: Bool) -> String {
+        let app = incognito ? "Cra (Incognito)" : "Cra"
+        guard let tab, !tab.isEmpty else { return app }
+        return "\(tab) - \(app)"
+    }
+
+    /// Brings the window to the front (another Cra launch, a link from another app).
+    func activate() { window.activate() }
+
+    /// Asks the window to close as its close button does (Ctrl+Shift+W).
+    func requestClose() {
+        guard !closing, window.shouldClose?() ?? true else { return }
+        // After the key's event, as the close button's is: the XAML that delivered the key goes
+        // with the window, and tearing it down inside its own handler traps.
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.window?.close() }
+    }
+
+    /// Where the window is, for the next launch (windows.json). A minimized or maximized window
+    /// keeps the frame it had before.
+    func saveFrame() {
+        guard !closing, let hwnd = HWND(bitPattern: hwnd), !IsIconic(hwnd), !IsZoomed(hwnd) else { return }
+        let frame = window.frame.string
+        guard store.window(windowID).id == windowID, store.window(windowID).frame != frame else { return }
+        store.updateWindow(windowID) { $0.frame = frame }
+    }
+
+    /// The window's frame on screen, for a new window cascaded from it.
+    var frame: WindowFrame { window.frame }
+    var workArea: WindowFrame? { window.workArea }
+    var scale: Double { window.scale }
+
+    /// The tab has a live page in this window.
+    func hasPage(_ id: UUID) -> Bool { pages[id] != nil }
 
     // MARK: Store → window
 
@@ -157,10 +225,10 @@ final class BrowserWindow {
         withObservationTracking {
             sidebar.build()
             sidebarPanel.background = sidebar.fill
-            applyPaneColors(store.focusedSpace.theme)
-            downloads.apply(SidebarPalette(store.focusedSpace.theme), fill: sidebar.fill)
+            applyPaneColors(store.focusedSpace(window: windowID).theme)
+            downloads.apply(SidebarPalette(store.focusedSpace(window: windowID).theme), fill: sidebar.fill)
             syncPages()
-            showAddress(store.selectedTab?.tab?.url ?? "")
+            showAddress(store.selectedTab(window: windowID)?.tab?.url ?? "")
         } onChange: { [weak self] in
             // Called inside the change, on the main thread: draw once it is done.
             onMain { self?.queueRefresh() }
@@ -180,7 +248,7 @@ final class BrowserWindow {
         }
         // Split view: the selected tab's split decides which panes are on screen. An empty pane
         // (Arc's "Search or Enter URL…") has no page yet.
-        let selected = store.selectedTab
+        let selected = store.selectedTab(window: windowID)
         let panes = selected.map { store.paneTabIDs(for: $0.id) } ?? []
         var shown: [UUID: WebPage] = [:]
         for id in panes {
@@ -192,12 +260,12 @@ final class BrowserWindow {
         for (id, page) in pages where shown[id] == nil { page.isVisible = false }
         for page in shown.values { page.isVisible = true }
         show(selected.flatMap { shown[$0.id] }, tab: selected?.id)
-        let title = selected?.displayTitle ?? ""
-        window.title = title.isEmpty ? "Cra" : "\(title) - Cra"
+        window.title = Self.title(selected?.displayTitle, incognito: isIncognito)
     }
 
     private func makePage(for id: UUID, url: String) -> WebPage {
-        let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, delegate: self)
+        let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, incognito: isIncognito, delegate: self)
+        livePages.insert(ObjectIdentifier(page))
         page.userInfo = id
         page.isVisible = false
         pages[id] = page
@@ -240,12 +308,13 @@ final class BrowserWindow {
         paneIDs = []
         paneDrag = nil
         for page in open { page.close() }
+        // Popup hosts and pages already on their way out count too (livePages).
         closeTimer = try? dispatcher.createTimer()
         closeTimer?.interval = TimeSpan(duration: 3 * 10_000_000)
         closeTimer?.isRepeating = false
         closeTimer?.tick.addHandler { [weak self] _, _ in self?.finishClosing() }
         try? closeTimer?.start()
-        if cra_cef_live_browser_count() == 0 { finishClosing() }
+        if livePages.isEmpty { finishClosing() }
     }
 
     private func finishClosing() {
@@ -373,11 +442,11 @@ final class BrowserWindow {
     private func presentCommandBar(_ mode: CommandBarMode) {
         guard !closing, let commandWindow else { return }
         // An empty pane gets Arc's "Search or Enter URL…" bar; the result fills the pane.
-        let fillingEmptyPane = store.selectedTab?.isEmptyTab == true
-        let prefill = mode == .editURL && !fillingEmptyPane ? store.selectedTab?.tab?.url : nil
-        let effective: CommandBarMode = mode == .editURL && (store.selectedTab == nil || fillingEmptyPane) ? .newTab : mode
+        let fillingEmptyPane = store.selectedTab(window: windowID)?.isEmptyTab == true
+        let prefill = mode == .editURL && !fillingEmptyPane ? store.selectedTab(window: windowID)?.tab?.url : nil
+        let effective: CommandBarMode = mode == .editURL && (store.selectedTab(window: windowID) == nil || fillingEmptyPane) ? .newTab : mode
         commandBarDeactivated = false
-        commandBar.open(mode: effective, prefill: prefill, theme: store.focusedSpace.theme)
+        commandBar.open(mode: effective, prefill: prefill, theme: store.focusedSpace(window: windowID).theme)
         placeCommandBar()
         commandWindow.show { [weak self] in self?.commandBar.focusField() }
     }
@@ -401,11 +470,11 @@ final class BrowserWindow {
         let query = commandBar.query
         func open(_ url: String) {
             store.recordQuerySelection(query: query, url: url)
-            let fillsEmptyPane = store.selectedTab?.isEmptyTab == true
-            if mode == .editURL || fillsEmptyPane, store.selectedTabID != nil {
+            let fillsEmptyPane = store.selectedTab(window: windowID)?.isEmptyTab == true
+            if mode == .editURL || fillsEmptyPane, store.selectedTabID(window: windowID) != nil {
                 loadInSelectedTab(url)
             } else {
-                store.createTab(url: url)
+                store.createTab(url: url, window: windowID)
             }
         }
         guard let s else {
@@ -416,7 +485,7 @@ final class BrowserWindow {
         switch s.kind {
         case .switchToTab(let id):
             store.recordQuerySelection(query: query, url: s.url ?? "")
-            store.selectTab(id)
+            store.selectTab(id, window: windowID)
         case .archived(let id):
             _ = store.restoreArchived(id)
         case .navigate:
@@ -428,11 +497,11 @@ final class BrowserWindow {
         case .command(let id):
             perform(id)
         case .switchSpace(let id):
-            store.focusSpace(id)
+            store.focusSpace(id, window: windowID)
         case .moveToSpace(let id):
-            if let t = store.selectedTabID { _ = store.moveTabAndFollow(t, toSpace: id) }
+            if let t = store.selectedTabID(window: windowID) { _ = store.moveTabAndFollow(t, toSpace: id, window: windowID) }
         case .moveToFolder(let id):
-            if let t = store.selectedTabID { store.moveItem(t, to: id, index: nil) }
+            if let t = store.selectedTabID(window: windowID) { store.moveItem(t, to: id, index: nil) }
         }
     }
 
@@ -455,13 +524,13 @@ final class BrowserWindow {
         }
         guard let url, !url.isEmpty else { return false }
         store.recordQuerySelection(query: query, url: url)
-        let tab = store.createTab(url: url, select: false)
+        let tab = store.createTab(url: url, select: false, window: windowID)
         store.markUnread(tab.id, false)  // Arc saves these read, unlike a link opened in the background
         return true
     }
 
     private func loadInSelectedTab(_ url: String) {
-        guard let id = store.selectedTabID else { return }
+        guard let id = store.selectedTabID(window: windowID) else { return }
         if let page = pages[id] {
             page.loadURL(url)
             page.setFocused(true)
@@ -480,17 +549,20 @@ final class BrowserWindow {
         case "findNext": findNext(forward: true)
         case "findPrevious": findNext(forward: false)
         case "settings": openSettings()
+        case "newWindow": host?.openNewWindow(incognito: false)
+        case "newIncognitoWindow": host?.openNewWindow(incognito: true)
+        case "closeWindow": requestClose()
         case "newTab": beginNewTab()
         case "editURL": openCommandBar(.editURL)
         case "reopenClosedTab": reopenClosedTab()
         case "closeTab": closeCurrentTab()
         case "reload": reload(ignoringCache: false)
         case "hardReload": reload(ignoringCache: true)
-        case "pinTab": if let t = store.selectedTabID { store.togglePinned(t) }
+        case "pinTab": if let t = store.selectedTabID(window: windowID) { store.togglePinned(t) }
         case "nextTab": cycleTab(1)
         case "previousTab": cycleTab(-1)
-        case "nextSpace": store.focusSpace(offset: 1)
-        case "previousSpace": store.focusSpace(offset: -1)
+        case "nextSpace": store.focusSpace(offset: 1, window: windowID)
+        case "previousSpace": store.focusSpace(offset: -1, window: windowID)
         case "copyURL": copyURL(markdown: false)
         case "copyURLMarkdown": copyURL(markdown: true)
         case "capturePage": capture(fullPage: false)
@@ -499,9 +571,9 @@ final class BrowserWindow {
         case "goBack": shownPage?.goBack()
         case "goForward": shownPage?.goForward()
         case "addSplitView": addSplitPane()
-        case "closeSplitPane": if let t = store.selectedTabID { closeSplitPane(t) }
-        case "separateFromSplit": if let t = store.selectedTabID { separatePane(t) }
-        case "flipSplitOrientation": if let t = store.selectedTabID, let split = store.splitContaining(t) { store.flipSplitOrientation(split.id) }
+        case "closeSplitPane": if let t = store.selectedTabID(window: windowID) { closeSplitPane(t) }
+        case "separateFromSplit": if let t = store.selectedTabID(window: windowID) { separatePane(t) }
+        case "flipSplitOrientation": if let t = store.selectedTabID(window: windowID), let split = store.splitContaining(t) { store.flipSplitOrientation(split.id) }
         case "nextSplitPane": cycleSplitPane(1)
         case "previousSplitPane": cycleSplitPane(-1)
         default:
@@ -514,23 +586,23 @@ final class BrowserWindow {
     // MARK: Commands
 
     private func closeCurrentTab() {
-        if let id = store.selectedTabID { closeTab(id) }
+        if let id = store.selectedTabID(window: windowID) { closeTab(id) }
     }
 
     /// Selects the tab `delta` rows away in the space's favorites, pinned and Today tabs.
     private func cycleTab(_ delta: Int) {
-        let tabs = store.visibleTabs(in: store.focusedSpaceID)
+        let tabs = store.visibleTabs(in: store.focusedSpaceID(window: windowID))
         guard !tabs.isEmpty else { return }
-        let idx = store.selectedTabID.flatMap { id in tabs.firstIndex { $0.id == id } } ?? -1
+        let idx = store.selectedTabID(window: windowID).flatMap { id in tabs.firstIndex { $0.id == id } } ?? -1
         let n = tabs.count
-        store.selectTab(tabs[((idx + delta) % n + n) % n].id)
+        store.selectTab(tabs[((idx + delta) % n + n) % n].id, window: windowID)
     }
 
     /// Ctrl+1…8 the nth tab, Ctrl+9 the last (Arc's "Go to Sidebar Item N").
     private func selectTab(number n: Int) {
-        let tabs = store.visibleTabs(in: store.focusedSpaceID)
+        let tabs = store.visibleTabs(in: store.focusedSpaceID(window: windowID))
         guard !tabs.isEmpty else { return }
-        store.selectTab((n == 9 ? tabs.last : tabs[min(n, tabs.count) - 1])?.id)
+        store.selectTab((n == 9 ? tabs.last : tabs[min(n, tabs.count) - 1])?.id, window: windowID)
     }
 
     private func reopenClosedTab() {
@@ -553,7 +625,7 @@ final class BrowserWindow {
     /// Ctrl+F (MainWindowController.showFindBar): the bar, its field focused.
     private func showFindBar() {
         guard !closing, let findWindow else { return }
-        findBar.apply(dark: store.focusedSpace.theme.isDark)
+        findBar.apply(dark: store.focusedSpace(window: windowID).theme.isDark)
         findVisible = true
         placeFindBar()
         // After the key event that asked, as with the command bar.
@@ -618,15 +690,15 @@ final class BrowserWindow {
 
     /// Ctrl+, (Arc's ⌘,): the Settings window, centred on this one when it opens.
     private func openSettings() {
-        if settingsWindow == nil {
+        if Self.settingsWindow == nil {
             do {
-                settingsWindow = try SettingsWindow(store: store)
+                Self.settingsWindow = try SettingsWindow(store: store)
             } catch {
                 print("The Settings window could not be made: \(error)")
                 return
             }
         }
-        settingsWindow?.show(over: window)
+        Self.settingsWindow?.show(over: window)
     }
 
     // MARK: Keys
@@ -648,7 +720,7 @@ final class BrowserWindow {
     /// Arc's "Add Split View" (Ctrl+Shift+=): an empty pane next to the focused one, the command
     /// bar asking what it shows (MainWindowController.addSplitPane). Arc stops at four panes.
     private func addSplitPane() {
-        guard let current = store.selectedTabID else { return beginNewTab() }
+        guard let current = store.selectedTabID(window: windowID) else { return beginNewTab() }
         guard store.paneTabIDs(for: current).count < SplitPaneLayout.Constants.maximumPanes else { return }
         guard store.addEmptyPane(nextTo: current) != nil else { return }
         // syncPages sees the empty pane selected and opens the bar.
@@ -670,14 +742,14 @@ final class BrowserWindow {
     func separatePane(_ id: UUID) {
         guard store.splitContaining(id) != nil else { return }
         store.separateFromSplit(id)
-        store.selectTab(id)
+        store.selectTab(id, window: windowID)
     }
 
     /// Switch to Next / Previous Split View.
     private func cycleSplitPane(_ delta: Int) {
-        guard let current = store.selectedTabID,
+        guard let current = store.selectedTabID(window: windowID),
               let next = SplitPaneLayout.pane(delta, from: current, in: store.paneTabIDs(for: current)) else { return }
-        store.selectTab(next)
+        store.selectTab(next, window: windowID)
     }
 
     /// Lays the panes out in the page area with CraCore's SplitPaneLayout (in DIPs, y down) and
@@ -746,7 +818,7 @@ final class BrowserWindow {
                 paneDrag = (divider: index, x: x, y: y, start: factors, factors: factors)
                 layoutPanes()
             } else if let id = paneIDs.first(where: { paneFrames[$0].map { Self.contains($0, x: x, y: y) } == true }), pages[id] == nil {
-                if store.selectedTabID == id { openCommandBar(.editURL) } else { store.selectTab(id) }
+                if store.selectedTabID(window: windowID) == id { openCommandBar(.editURL) } else { store.selectTab(id, window: windowID) }
             }
         case .move(let x, let y):
             guard let drag = paneDrag else { return }
@@ -796,7 +868,7 @@ final class BrowserWindow {
             return
         }
         permissionHeight = permissionPrompt.show(origin: request.origin, kinds: UInt(request.kinds.rawValue),
-                                                 dark: store.focusedSpace.theme.isDark)
+                                                 dark: store.focusedSpace(window: windowID).theme.isDark)
         placePermissionPrompt()
         permissionWindow.show { [weak self] in self?.permissionPrompt.focus() }
     }
@@ -851,7 +923,7 @@ final class BrowserWindow {
 
     private func showSiteControlCenter() {
         guard !closing, let siteControlWindow, let window, let host = HWND(bitPattern: hwnd) else { return }
-        let url = store.selectedTab?.tab?.url ?? ""
+        let url = store.selectedTab(window: windowID)?.tab?.url ?? ""
         let ssl = shownPage?.sslStatus
         let secure = ConnectionSecurity.isSecure(url: url, status: ssl?.status)
         var actions = SiteControlCenterView.Actions()
@@ -904,7 +976,7 @@ final class BrowserWindow {
         hideSiteControlCenter(refocus: true)
         switch action {
         case .share:
-            guard let tab = store.selectedTab, let url = tab.tab?.url, !url.isEmpty else { return }
+            guard let tab = store.selectedTab(window: windowID), let url = tab.tab?.url, !url.isEmpty else { return }
             WinShell.share(url: url, title: tab.displayTitle, owner: hwnd)
         case .copyURL: copyURL(markdown: false)
         case .capture: capture(fullPage: false)
@@ -917,9 +989,9 @@ final class BrowserWindow {
         switch item {
         case .clearCache: shownPage?.clearSiteDataAndReload(cookies: false)
         case .clearCookies: shownPage?.clearSiteDataAndReload(cookies: true)
-        case .siteSettings: if let settings = SiteControlCenter.siteSettingsURL(for: url) { store.createTab(url: settings) }
-        case .manageExtensions: store.createTab(url: SiteControlCenter.manageExtensionsURL)
-        case .addExtension: store.createTab(url: SiteControlCenter.addExtensionURL)
+        case .siteSettings: if let settings = SiteControlCenter.siteSettingsURL(for: url) { store.createTab(url: settings, window: windowID) }
+        case .manageExtensions: store.createTab(url: SiteControlCenter.manageExtensionsURL, window: windowID)
+        case .addExtension: store.createTab(url: SiteControlCenter.addExtensionURL, window: windowID)
         }
     }
 
@@ -927,7 +999,7 @@ final class BrowserWindow {
 
     /// Ctrl+Shift+C (Arc's ⇧⌘C): the page's address; with Alt, as a Markdown link.
     private func copyURL(markdown: Bool) {
-        guard let tab = store.selectedTab, let url = tab.tab?.url, !url.isEmpty else { return }
+        guard let tab = store.selectedTab(window: windowID), let url = tab.tab?.url, !url.isEmpty else { return }
         guard WinShell.copy(markdown ? "[\(tab.displayTitle)](\(url))" : url) else { return }
         if markdown {
             showToast("Copied URL as Markdown")
@@ -987,7 +1059,7 @@ final class BrowserWindow {
 
     private func showToast(_ text: String, action: ToastView.Action? = nil) {
         guard !closing else { return }
-        toast.show(text, action: action, theme: store.focusedSpace.theme)
+        toast.show(text, action: action, theme: store.focusedSpace(window: windowID).theme)
     }
 
     /// The focused pane's frame on screen (the whole page area without a split), for the toast.
@@ -1009,7 +1081,7 @@ extension BrowserWindow: SidebarActions {
         guard let item = store.item(id), item.isTab else { return }
         if store.isPinned(id) {
             let panes = store.paneTabIDs(for: id)
-            let wasSelected = store.selectedTabID.map(panes.contains) ?? false
+            let wasSelected = store.selectedTabID(window: windowID).map(panes.contains) ?? false
             for p in panes {
                 _ = store.resetPinnedTab(p)
                 pages[p]?.close()
@@ -1017,9 +1089,9 @@ extension BrowserWindow: SidebarActions {
             }
             if wasSelected {
                 // Back to the tab used before, if it is still open; an unloaded pinned tab doesn't count.
-                let back = store.recentTabs(in: store.focusedSpaceID, limit: .max)
+                let back = store.recentTabs(in: store.focusedSpaceID(window: windowID), limit: .max)
                     .first { !panes.contains($0) && (!store.isPinned($0) || pages[$0] != nil) }
-                store.selectTab(back)
+                store.selectTab(back, window: windowID)
             }
         } else {
             store.archiveTab(id, reason: .manual)
@@ -1033,7 +1105,7 @@ extension BrowserWindow: SidebarActions {
 
     func addPane(toSplit id: UUID) {
         guard let last = store.children(of: id).last(where: \.isTab) else { return }
-        store.selectTab(last.id)
+        store.selectTab(last.id, window: windowID)
         addSplitPane()
     }
 }
@@ -1070,18 +1142,19 @@ extension BrowserWindow: WebPageDelegate {
 
     func page(_ page: WebPage, requestsNewTabWithURL url: String, inBackground background: Bool) {
         let space = tabID(of: page).flatMap { store.spaceID(ofItem: $0) }
-        store.createTab(url: url, in: space, select: !background)
+        store.createTab(url: url, in: space, select: !background, window: windowID)
     }
 
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage? {
         // The popup gets a tab of its own; its page is the host Chromium opens it in.
         let space = tabID(of: page).flatMap { store.spaceID(ofItem: $0) }
-        let tab = store.createTab(url: url, in: space, select: false)
+        let tab = store.createTab(url: url, in: space, select: false, window: windowID)
         let host = WebPage(popupHostIn: hwnd, frame: contentFrame(), delegate: self)
+        livePages.insert(ObjectIdentifier(host))
         host.userInfo = tab.id
         host.isVisible = false
         pages[tab.id] = host
-        if !background { store.selectTab(tab.id) }
+        if !background { store.selectTab(tab.id, window: windowID) }
         return host
     }
 
@@ -1163,15 +1236,16 @@ extension BrowserWindow: WebPageDelegate {
 
     /// A click into another pane focuses it (Arc: the split's focusItemID follows the click).
     func pageDidReceiveFocus(_ page: WebPage) {
-        guard !closing, let id = tabID(of: page), id != store.selectedTabID, paneIDs.contains(id) else { return }
-        store.selectTab(id)
+        guard !closing, let id = tabID(of: page), id != store.selectedTabID(window: windowID), paneIDs.contains(id) else { return }
+        store.selectTab(id, window: windowID)
     }
 
     func pageDidClose(_ page: WebPage) {
+        livePages.remove(ObjectIdentifier(page))
         if closing {
             // After this callback: it comes from inside CEF's OnBeforeClose, and destroying the
             // pages' parent window there crashed libcef.
-            if cra_cef_live_browser_count() == 0 {
+            if livePages.isEmpty {
                 _ = try? dispatcher.tryEnqueue { [weak self] in self?.finishClosing() }
             }
             return

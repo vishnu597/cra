@@ -48,6 +48,8 @@ void cra_cef_set_relaunch_handler(void *context, CraRelaunchHandler handler);
 /// shuts Chromium down. Call once, when the app quits.
 void cra_cef_shutdown(void);
 int cra_cef_live_browser_count(void);
+/// The last private window closed: the next private page starts a fresh off-the-record profile.
+void cra_cef_end_incognito_session(void);
 /// Static strings, "156.0.8078.80" and "156.0.15+g…".
 const char *cra_cef_chromium_version(void);
 const char *cra_cef_version(void);
@@ -200,6 +202,9 @@ typedef struct CraBrowserCallbacks {
 /// popup returned for it from popup_host_requested.
 CraBrowser *cra_browser_create(uintptr_t parent, int x, int y, int width, int height, const char *url,
                                CraBrowserCallbacks callbacks);
+/// The same, in the off-the-record profile private windows share when `incognito` is non-zero.
+CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int width, int height, const char *url,
+                                  int incognito, CraBrowserCallbacks callbacks);
 void cra_browser_set_frame(CraBrowser *browser, int x, int y, int width, int height);
 /// Shows or hides the page (a background tab is hidden; Chromium also throttles it).
 void cra_browser_set_visible(CraBrowser *browser, int visible);

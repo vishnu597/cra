@@ -113,6 +113,23 @@ void HideDownloadBubble(CefRefPtr<CefRequestContext> context) {
     }
 }
 
+/// The off-the-record profile private windows share (an empty cache path keeps cookies,
+/// storage and cache in memory), until the last of them closes (cra_cef_end_incognito_session).
+/// Its preferences get Cra's settings once it loads, as the Mac's IncognitoContext does.
+class IncognitoContextHandler : public CefRequestContextHandler {
+public:
+    void OnRequestContextInitialized(CefRefPtr<CefRequestContext> context) override { HideDownloadBubble(context); }
+private:
+    IMPLEMENT_REFCOUNTING(IncognitoContextHandler);
+};
+
+CefRefPtr<CefRequestContext> g_incognitoContext;
+
+CefRefPtr<CefRequestContext> IncognitoContext() {
+    if (!g_incognitoContext) g_incognitoContext = CefRequestContext::CreateContext(CefRequestContextSettings(), new IncognitoContextHandler());
+    return g_incognitoContext;
+}
+
 std::wstring DownloadsFolder() {
     PWSTR path = nullptr;
     std::wstring out;
@@ -297,6 +314,7 @@ struct CraBrowser {
     bool visible = true;
     std::string pending_url;  // to create once Chromium's context is up
     bool is_popup_host = false;
+    bool incognito = false;  // in the off-the-record profile
     bool close_requested = false;
     bool closed_by_page = false;
     bool focus_pending = false;  // focused before Chromium made the page: focus it once it is
@@ -784,7 +802,7 @@ void CraBrowser::Create() {
     CefBrowserSettings settings;
     CraPageSettings(settings);
     CefBrowserHost::CreateBrowser(info, client, pending_url.empty() ? "about:blank" : pending_url, settings, nullptr,
-                                  nullptr);
+                                  incognito ? IncognitoContext() : nullptr);
 }
 
 /// Chromium is done with the page (or never had one): tell Swift, then free it.
@@ -856,6 +874,7 @@ extern "C" void cra_cef_shutdown(void) {
         }
         Sleep(10);
     }
+    g_incognitoContext = nullptr;
     KillPumpTimer();
     if (g_pumpWindow) DestroyWindow(g_pumpWindow);
     g_pumpWindow = nullptr;
@@ -863,6 +882,8 @@ extern "C" void cra_cef_shutdown(void) {
 }
 
 extern "C" int cra_cef_live_browser_count(void) { return static_cast<int>(g_browsers.size()); }
+
+extern "C" void cra_cef_end_incognito_session(void) { g_incognitoContext = nullptr; }
 
 extern "C" const char *cra_cef_chromium_version(void) {
     static char version[64];
@@ -877,7 +898,13 @@ extern "C" const char *cra_cef_version(void) { return CEF_VERSION; }
 
 extern "C" CraBrowser *cra_browser_create(uintptr_t parent, int x, int y, int width, int height, const char *url,
                                           CraBrowserCallbacks callbacks) {
+    return cra_browser_create_in(parent, x, y, width, height, url, 0, callbacks);
+}
+
+extern "C" CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int width, int height, const char *url,
+                                             int incognito, CraBrowserCallbacks callbacks) {
     auto *b = new CraBrowser;
+    b->incognito = incognito != 0;
     b->client = new CraClient(b);
     b->callbacks = callbacks;
     b->parent = reinterpret_cast<HWND>(parent);

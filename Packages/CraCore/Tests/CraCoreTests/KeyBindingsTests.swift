@@ -34,7 +34,7 @@ struct KeyBindingsTests {
         #expect(mac["moveTabToSpace9"]?.shortcuts == [Self.chord("9", [.command, .control])])
         #expect(mac["clearBrowsingData"]?.symbol == "trash")
         #expect(mac["newWindow"]?.inCommandBar == false)
-        #expect(KeyBindingDefaults.mac.count == 69 + 27)
+        #expect(KeyBindingDefaults.mac.count == 70 + 27)
     }
 
     /// Windows' table names only actions the Mac has, in the Mac's order, and its keys don't
@@ -55,6 +55,8 @@ struct KeyBindingsTests {
         #expect(win["copyURL"]?.primary?.windowsDisplay == "Ctrl+Shift+C")
         #expect(win["copyURLMarkdown"]?.primary?.windowsDisplay == "Ctrl+Alt+Shift+C")
         #expect(win["capturePage"]?.primary?.windowsDisplay == "Ctrl+Shift+2")
+        #expect(win["newIncognitoWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+N")
+        #expect(win["closeWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+W")
         #expect(win["clearCookies"]?.shortcuts == [])
     }
 

@@ -102,6 +102,7 @@ enum BrowserManagerLifecycleTests {
         extensionPageRetryCase()
         await sleepCase("malformed or missing replies cannot authorize sleeping", reply: nil) { _, _ in }
         await pageProbeCase()
+        await pageEngineCase()
         print("Browser manager lifecycle: \(checks) checks passed")
     }
 
@@ -132,6 +133,101 @@ enum BrowserManagerLifecycleTests {
         defer { window.close() }
         window.contentView!.addSubview(runtime.browser.containerView)
         expect(PageProbe.viewState(runtime).hasSuffix(" display=none"), "the view state names the display the page's window is on")
+        manager.closeAll()
+    }
+
+    /// DRM services open in WebKit (ProtectedMediaSites); a popup keeps its opener's engine; a
+    /// navigation the other engine has to show reopens the tab's page there, in its place on screen.
+    @MainActor
+    private static func pageEngineCase() async {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let observer = Observer()
+        manager.delegate = observer
+        let player = store.createTab(url: "https://open.spotify.com/").id
+        let site = store.createTab(url: "https://example.test/a").id
+        let other = store.createTab(url: "https://example.test/b").id
+        manager.show([site, other], focused: other, focus: false)
+        expect(manager.ensureRuntime(for: player)?.browser is WebKitBrowser, "a DRM service's tab opens in WebKit")
+        let chromium = manager.runtime(for: site)!.browser
+        expect(!(chromium is WebKitBrowser), "any other site opens in Chromium")
+
+        // window.open keeps its opener's engine: WebKit can only fill a web view it made.
+        let fromWebKit = manager.browser(manager.runtime(for: player)!.browser, popupHostForURL: "https://example.test/signin", inBackground: true)
+        expect(fromWebKit is WebKitBrowser, "a WebKit page's popup host is a WebKit page, whatever its address")
+        let fromChromium = manager.browser(chromium, popupHostForURL: "https://open.spotify.com/", inBackground: true)
+        expect(fromChromium.map { !($0 is WebKitBrowser) } == true, "a Chromium page's popup host is Chromium's, whatever its address")
+
+        // A POST, or a site Chromium shows: the navigation goes on in Chromium.
+        expect(!manager.browser(chromium, handsOffNavigationToURL: "https://www.netflix.com/login", method: "POST"),
+               "a POST to a service stays: its body can't move")
+        expect(!manager.browser(chromium, handsOffNavigationToURL: "https://example.test/c", method: "GET"), "a Chromium site stays in Chromium")
+        await drainMainQueue()
+        expect(manager.runtime(for: site)?.browser === chromium, "nothing moved")
+
+        // A link in the left pane to Netflix: the pane's page reopens in WebKit, same split, same focus.
+        expect(manager.browser(chromium, handsOffNavigationToURL: "https://www.netflix.com/browse", method: "GET"),
+               "Chromium's navigation to a service stops before its request goes out")
+        expect(manager.runtime(for: site)?.browser === chromium, "the page moves a turn later, not inside Chromium's callback")
+        await drainMainQueue()
+        let moved = manager.runtime(for: site)?.browser
+        expect(moved is WebKitBrowser && moved?.currentURL == "https://www.netflix.com/browse", "the pane's page opens in WebKit at the address")
+        expect(chromium.closeRequested && store.item(site)?.tab?.url == "https://www.netflix.com/browse", "the Chromium page closes; the tab has the new address")
+        expect(manager.visibleTabIDs == [site, other] && manager.visibleTabID == other, "the split keeps its panes, order and focus")
+        chromium.finishClose()
+
+        // Cra's own navigation in a WebKit page (the URL bar) to another site goes back to Chromium.
+        expect(manager.browser(moved!, handsOffNavigationToURL: "https://example.test/typed", method: "GET"),
+               "a typed address WebKit doesn't show moves to Chromium")
+        expect(!manager.browser(moved!, handsOffNavigationToURL: "https://www.netflix.com/title/1", method: "GET"),
+               "a typed address of a service stays in WebKit")
+        await drainMainQueue()
+        expect(!(manager.runtime(for: site)?.browser is WebKitBrowser) && manager.visibleTabIDs == [site, other], "back in Chromium, in its pane")
+
+        // A tab out of sight gets its page in the other engine at once, so its title and favicon fill in.
+        let hidden = manager.ensureRuntime(for: store.createTab(url: "https://t.example.test/x").id)!
+        expect(manager.browser(hidden.browser, handsOffNavigationToURL: "https://www.disneyplus.com/", method: "GET"), "a background redirect moves too")
+        await drainMainQueue()
+        expect(manager.runtime(for: hidden.tabID)?.browser is WebKitBrowser && !manager.visibleTabIDs.contains(hidden.tabID),
+               "a hidden tab is reopened in WebKit and stays hidden")
+
+        // WebKit's own fullscreen window covers Cra's: the video is on screen, so no Picture in Picture.
+        store.settings.autoPictureInPicture = true
+        let player2 = store.createTab(url: "https://www.netflix.com/watch/1").id
+        manager.show(player2, focus: false)
+        let fullscreen = manager.runtime(for: player2)!.browser as! WebKitBrowser
+        fullscreen.isAudible = true
+        fullscreen.isContentFullscreen = true
+        manager.windowVisibilityChanged(covered: true)
+        expect(!fullscreen.replies.contains { $0.method == "Runtime.evaluate" }, "a WebKit page in its own fullscreen isn't sent to Picture in Picture")
+        manager.windowVisibilityChanged(covered: false)
+        fullscreen.isContentFullscreen = false
+        manager.windowVisibilityChanged(covered: true)
+        expect(fullscreen.replies.contains { $0.method == "Runtime.evaluate" }, "out of fullscreen, a covered window's playing WebKit page is asked as before")
+        manager.windowVisibilityChanged(covered: false)
+        store.settings.autoPictureInPicture = false
+
+        // The Site Control Center's Safari's Engine switch: a site off the list moves to WebKit, in its
+        // place on screen, and back; the choice holds for the next page of that site.
+        let chosen = store.createTab(url: "https://stream.example.test/film").id
+        manager.show([chosen, other], focused: chosen, focus: false)
+        let before = manager.runtime(for: chosen)!.browser
+        manager.reopenInItsEngine(chosen)
+        expect(manager.runtime(for: chosen)?.browser === before, "without a choice the page stays where it is")
+        PageEngines.choose(.webKit, for: "https://stream.example.test/film")
+        manager.reopenInItsEngine(chosen)
+        await drainMainQueue()
+        expect(manager.runtime(for: chosen)?.browser is WebKitBrowser && manager.visibleTabIDs == [chosen, other] && manager.visibleTabID == chosen,
+               "chosen for Safari's engine, the page opens in WebKit in its pane")
+        expect(PageEngines.sites.engine(for: "https://stream.example.test/other") == .webKit, "the choice holds for the site")
+        PageEngines.choose(.chromium, for: "https://stream.example.test/film")
+        manager.reopenInItsEngine(chosen)
+        await drainMainQueue()
+        expect(!(manager.runtime(for: chosen)?.browser is WebKitBrowser), "chosen back, the page opens in Chromium")
+        expect(PageEngines.choices.added.isEmpty && PageEngines.choices.removed.isEmpty, "chosen back, nothing is left on the lists")
+
+        // A late request from a page that already moved changes nothing.
+        expect(!manager.browser(chromium, handsOffNavigationToURL: "https://www.netflix.com/", method: "GET"), "a retired page can't move its tab again")
         manager.closeAll()
     }
 

@@ -16,6 +16,8 @@ extension SettingsPane {
         switch self {
         case .general: return "gearshape"
         case .tabs: return "square.on.square"
+        // macOS 15.1 added Apple's mark; before it, sparkles.
+        case .max: return NSImage(systemSymbolName: "apple.intelligence", accessibilityDescription: nil) != nil ? "apple.intelligence" : "sparkles"
         case .privacy: return "hand.raised"
         case .profiles: return "person"
         case .extensions: return "puzzlepiece.extension"
@@ -35,6 +37,8 @@ extension SettingsPane {
 @MainActor
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let nav = SettingsNavigation()
+
+    func show(_ pane: SettingsPane) { nav.show(pane) }
 
     init(store: SidebarStore, bindings: KeyBindingRegistry, actions: SettingsActions) {
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: SettingsMetrics.windowSize),
@@ -191,6 +195,7 @@ struct SettingsContent: View {
                 switch nav.pane {
                 case .general: GeneralPane()
                 case .tabs: TabsPane()
+                case .max: MaxPane()
                 case .privacy: PrivacyPane(actions: actions)
                 case .profiles: ProfilesPane(actions: actions)
                 case .extensions: ExtensionsPane(actions: actions)

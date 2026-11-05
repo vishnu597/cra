@@ -33,6 +33,8 @@ issue when a newer stable CEF is out; `scripts/update-cef.sh` moves the pin.
   view, windows, settings, onboarding)
 - `Sources/CraCEF` — Objective-C++ bridge between Swift and CEF
 - `Sources/CraHelper` — Chromium subprocess executable
+- `Sources/Cra/Services/WebKit` — the WebKit page that DRM services open in
+  ([protected-media.md](protected-media.md))
 - `Packages/CraCore` — models and decisions with no AppKit or Chromium (the sidebar model,
   settings and the other data-folder files, Air Traffic Control, live folder data, key chords,
   space themes, Arc theme import, the favorites grid), visible in every `Sources/Cra` file.
@@ -75,8 +77,9 @@ the save panel.
 
 [testing.md](testing.md) has the rules, the layers, the gates and how to write a scenario.
 
-CI runs `scripts/test.sh` on every pull request (no CEF download) and the smoke test on the
-app it builds.
+CI runs the same tests on every pull request and push to main (no CEF download), once, through
+`scripts/coverage.py` plus `scripts/lint.py`, and the smoke test on the app it builds. A change
+to Markdown or `docs/` alone runs nothing.
 
 - `Packages/CraCore` (`swift test --package-path Packages/CraCore`): a package of its own, so
   its tests build without `vendor/cef`. Code that decides something without a window or a
@@ -113,7 +116,9 @@ sidebar link, `pageJS=<js>` runs script in the focused page, `installExtension=<
 memory-pressure sweep at that level, if Settings ▸ Tabs has it on), `stall=<ms>` (blocks the main
 thread), `perfReport=<path>` (the recorder's perf.json now), `systemAppearance=light|dark|system`
 (the appearance Auto space themes follow, without changing the Mac's), `themeEditor=1` (Edit
-Theme Color… for the focused space), `relaunch=1` and `quit=1`.
+Theme Color… for the focused space), `relaunch=1`, `quit=1`, and `nowPlaying=state|toggle|next|previous|pip|dismiss` (the sidebar player's
+newest card, then a `Cra nowPlaying[<label>] <host> playing=… prev=… next=… video=… pip=…` line per card
+on stdout; `&label=` tells checks apart).
 
 ## Running a test instance
 
@@ -154,6 +159,14 @@ swipe (22 trackpad samples of 14 pt) and `cra://debug?scroll=30,30,150,700` scro
 scroll view at x 150, y 700 of the window (from its top left) 30 pt a frame for 30 frames.
 Measure them with `sample <pid> 6 1` and compare the main thread's busy time between builds.
 
+Tidy Tabs needs Apple Intelligence. `CRA_TIDY_FAKE_MODEL=1` stands in a model that groups by
+site (after a 1.6 s pause), so a test instance on any Mac shows the button, the squiggle and the
+groups, Tidy Tab Titles names a pinned tab after its title's first part and Tidy Downloads tidies a
+download's file name by hand; `CRA_TIDY_FAKE_MODEL=off` (or `preparing`, `ineligible`) shows Settings ▸ Max as a Mac
+without Apple Intelligence would. `cra://debug?tidy=1` runs Tidy on the window's space without
+hovering the divider, `cra://debug?undoTidy=1` is ⌘Z's undo and `cra://debug?settingsPane=max`
+opens Settings on a pane.
+
 `cra://debug?menuAt=315,24` opens the menu a click at that window point would open (the
 developer-mode ⌄ here), and `&button=right` the context menu, a tab row's for instance.
 `&target=little` aims at the newest Little Window instead (its profile chip, for one).
@@ -173,6 +186,23 @@ from their Chrome window into the card, like Arc and Dia, and the Chrome window 
 empty, click-through and never key. Pages go back into their window while DevTools is open.
 `CRA_EMBED_PAGES=0` (or `defaults write dk.kildahl.cra embedPages -bool NO`) keeps pages in
 their own child windows, the hosting before 0.1.17, for comparing the two.
+
+### Cleaning up after test copies
+
+A renamed test copy leaves files outside its own folder: a 300 MB–1 GB code sign clone in
+the per-user temp folder when it's killed instead of quit, plus caches, preferences and
+LaunchServices entries under its bundle id. Dozens of them filled a 460 GB disk. Give a
+copy a bundle id starting with `dk.kildahl.cra.test.` (or another `dk.kildahl.cra`,
+`dk.kildahl.test.`, `app.crabrowser.` or `dev.cra.` id), quit it through its menu rather
+than killing it, and delete it when you're done.
+
+`scripts/clean-test-leftovers.sh` removes what's left: clones no process has open, the data
+of test bundle ids that aren't running, Claude Code scratchpads of this repo that haven't
+changed for a day, and LaunchServices entries of deleted Cra bundles. It never touches
+the installed Cra's ids, CraClip, a running app or anything changed in the last hour. Use
+`--dry-run` to see what it would do. In Claude Code it runs in the background at most every
+30 minutes as a Stop hook (`.claude/settings.json`), and the log of the last run is
+`$(getconf DARWIN_USER_TEMP_DIR)cra-clean-test-leftovers.log`.
 
 ## Scripting hooks
 
