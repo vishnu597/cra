@@ -55,6 +55,8 @@ struct KeyBindingsTests {
         #expect(win["copyURL"]?.primary?.windowsDisplay == "Ctrl+Shift+C")
         #expect(win["copyURLMarkdown"]?.primary?.windowsDisplay == "Ctrl+Alt+Shift+C")
         #expect(win["capturePage"]?.primary?.windowsDisplay == "Ctrl+Shift+2")
+        #expect(win["newIncognitoWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+N")
+        #expect(win["closeWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+W")
         #expect(win["clearCookies"]?.shortcuts == [])
     }
 

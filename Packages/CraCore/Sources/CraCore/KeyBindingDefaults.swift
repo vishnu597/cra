@@ -139,6 +139,9 @@ public enum KeyBindingDefaults {
         let alt: KeyChord.Modifiers = .option
         var table: [String: [KeyChord]] = [
             "newTab": [KeyChord("t", ctrl)],
+            "newWindow": [KeyChord("n", ctrl)],
+            "newIncognitoWindow": [KeyChord("n", ctrlShift)],
+            "closeWindow": [KeyChord("w", ctrlShift)],
             "reopenClosedTab": [KeyChord("t", ctrlShift)],
             "editURL": [KeyChord("l", ctrl)],
             "closeTab": [KeyChord("w", ctrl)],
