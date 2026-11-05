@@ -1,6 +1,7 @@
 import CraCore
 import Foundation
 import UWP
+import WinAppSDK
 import WindowsFoundation
 import WinSDK
 import WinUI
@@ -242,7 +243,11 @@ final class DeveloperBarView {
         editing = focused
         veil.visibility = focused ? .visible : .collapsed
         if focused {
-            try? field.selectAll()
+            // After the click that focused it, which would put the caret where it landed.
+            _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { [weak self] in
+                guard let self, self.editing else { return }
+                try? self.field.selectAll()
+            }
         } else if field.text != url {
             // Clicked away: the address shows the page's again.
             setText(url)

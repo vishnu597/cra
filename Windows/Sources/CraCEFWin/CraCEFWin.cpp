@@ -80,9 +80,11 @@ std::string HexFromCSSColor(const std::string &css) {
     "color;d.remove();}"                                                                                        \
     "return c;}"
 
+// The probes report through console.debug: OnConsoleMessage hears every level, and DevTools'
+// Console hides Verbose messages unless asked, so Cra's reports stay out of a page's Console.
 const char kBackgroundProbe[] =
     "(function(){if(!window.__craBg){var color=" CRA_PAGE_BACKGROUND_FN ";"
-    "window.__craBg=function(){try{var c=color();if(c)console.log('__cra_bg:'+c);}catch(e){}};"
+    "window.__craBg=function(){try{var c=color();if(c)console.debug('__cra_bg:'+c);}catch(e){}};"
     "matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){setTimeout(window.__craBg,50);});"
     "setTimeout(window.__craBg,1500);}"
     "window.__craBg();})();";
@@ -96,7 +98,7 @@ const char kThemeProbe[] =
     "0)'&&h!=='transparent'){c=h;}}"
     "if(!c){c='rgb(255, 255, 255)';}"
     "var d=document.createElement('div');d.style.color=c;document.body.appendChild(d);"
-    "var rgb=getComputedStyle(d).color;d.remove();console.log('__cra_theme:'+rgb);}catch(e){}}"
+    "var rgb=getComputedStyle(d).color;d.remove();console.debug('__cra_theme:'+rgb);}catch(e){}}"
     "probe();setTimeout(probe,1500);})();";
 
 /// Settings for every page Cra makes. Cra draws its own status bubble.
@@ -914,7 +916,7 @@ public:
             std::string rgb = m.substr(theme.size());
             std::string hex = rgb == "none" ? "none" : HexFromCSSColor(rgb);
             if (o && o->callbacks.theme_color_reported) o->callbacks.theme_color_reported(o->callbacks.context, hex.c_str());
-            return true;  // keep it out of the console
+            return true;
         }
         return false;
     }

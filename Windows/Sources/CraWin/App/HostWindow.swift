@@ -5,7 +5,8 @@ import WinAppSDK
 import WinSDK
 import WinUI
 
-/// A top-level window with XAML in its sidebar column only and Chromium's pages beside it.
+/// A top-level window with XAML in its sidebar column (and a strip over the page area when
+/// asked: the Developer Mode bar) and Chromium's pages beside it.
 ///
 /// Not a WinUI `Window`: a Window's XAML bridge always covers its whole client area, and WinUI
 /// then takes every real click and wheel meant for a page under it, even with the page above it
@@ -20,9 +21,13 @@ final class HostWindow {
     /// Every page is a child window of it.
     let hwnd: UInt
     private let xaml = DesktopWindowXamlSource()
+    /// The strip over the page area, a second island so it covers no page (see above).
+    private let topXaml = DesktopWindowXamlSource()
 
     /// The XAML column's width, in DIPs.
     var sidebarWidth: Double { didSet { layout() } }
+    /// The strip's height over the page area, in DIPs; 0 hides it and the pages fill the area.
+    var topBarHeight: Double = 0 { didSet { if topBarHeight != oldValue { layout() } } }
     /// After every resize, with the page area (`contentFrame`).
     var onLayout: ((PixelRect) -> Void)?
     /// The window moved on screen (what floats over it follows).
@@ -64,12 +69,18 @@ final class HostWindow {
 
     /// `frame`: where to open, in screen pixels (a restored or cascaded window); nil opens a
     /// `width` × `height` window where Windows puts it.
-    init(content: UIElement, sidebarWidth: Double, frame: WindowFrame? = nil, width: Double = 1280, height: Double = 820) throws {
+    /// `topBar`: what the strip over the page area shows while `topBarHeight` isn't 0.
+    init(content: UIElement, topBar: UIElement? = nil, sidebarWidth: Double, frame: WindowFrame? = nil,
+         width: Double = 1280, height: Double = 820) throws {
         appWindow = try AppWindow.create()
         hwnd = UInt(appWindow.id.value)
         self.sidebarWidth = sidebarWidth
         try xaml.initialize(appWindow.id)
         xaml.content = content
+        if let topBar {
+            try topXaml.initialize(appWindow.id)
+            topXaml.content = topBar
+        }
         appWindow.changed.addHandler { [weak self] _, args in
             if args?.didSizeChange == true { self?.layout() }
             if args?.didPositionChange == true { self?.onMove?() }
@@ -147,11 +158,19 @@ final class HostWindow {
         return dpi > 0 ? Double(dpi) / 96 : 1
     }
 
-    /// The page area: right of the sidebar, in physical pixels relative to the client area.
+    /// The page area: right of the sidebar and under the top strip, in physical pixels relative
+    /// to the client area.
     var contentFrame: PixelRect {
         let size = appWindow.clientSize
         let x = min(size.width, Int32((sidebarWidth * scale).rounded()))
-        return PixelRect(x: x, y: 0, width: size.width - x, height: size.height)
+        let y = min(size.height, Int32((topBarHeight * scale).rounded()))
+        return PixelRect(x: x, y: y, width: size.width - x, height: size.height - y)
+    }
+
+    /// Moves Win32 focus into the top strip's XAML, for a programmatic XAML focus to take.
+    func focusTopBar() {
+        guard let bridge = topXaml.siteBridge, let window = HWND(bitPattern: UInt(bridge.windowId.value)) else { return }
+        _ = SetFocus(window)
     }
 
     /// Moves Win32 focus into the XAML column (from a page), for a programmatic XAML focus to
@@ -277,14 +296,23 @@ final class HostWindow {
         guard !closed else { return }
         closed = true
         onClose?()
+        try? topXaml.close()
         try? xaml.close()
         try? appWindow.destroy()
     }
 
     private func layout() {
         guard !closed else { return }
-        let frame = contentFrame
-        try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: frame.x, height: frame.height))
+        let frame = contentFrame, height = appWindow.clientSize.height
+        try? xaml.siteBridge?.moveAndResize(RectInt32(x: 0, y: 0, width: frame.x, height: height))
+        if let bridge = topXaml.siteBridge, let strip = HWND(bitPattern: UInt(bridge.windowId.value)) {
+            if frame.y > 0 {
+                try? bridge.moveAndResize(RectInt32(x: frame.x, y: 0, width: frame.width, height: frame.y))
+                _ = ShowWindow(strip, SW_SHOWNA)
+            } else {
+                _ = ShowWindow(strip, SW_HIDE)
+            }
+        }
         onLayout?(frame)
     }
 }

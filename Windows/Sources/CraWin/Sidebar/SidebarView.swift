@@ -37,6 +37,9 @@ final class SidebarView {
     private let favicons: Favicons
     private weak var actions: SidebarActions?
     private var palette = SidebarPalette(SpaceTheme.presets[0])
+    /// Controls a handler reaches weakly: a WinRT control made in Swift is only a wrapper, freed
+    /// (and its weak references nil) once Swift lets go of it, however long XAML shows it.
+    private var kept: [AnyObject] = []
 
     /// Emoji a new space picks from, in turn.
     private static let spaceEmoji = ["🌱", "💼", "🎮", "📚", "🎨", "🏠", "✈️", "🧪"]
@@ -72,6 +75,7 @@ final class SidebarView {
     func build() {
         let space = store.focusedSpace(window: windowID)
         palette = SidebarPalette(space.theme)
+        kept = []
         buildFavorites(space)
         buildHeader(space)
         list.children.clear()
@@ -177,8 +181,12 @@ final class SidebarView {
             }
         } else if item.isTab {
             let closable = item.id
-            appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, depth: depth, selected: store.isSelected(item.id, window: windowID),
-                      unread: item.isUnread, closable: closable, menu: tabMenu(item)) { [weak self] in
+            let selected = store.isSelected(item.id, window: windowID)
+            // A site in Developer Mode: its host and port under the title, a ring round the open tab.
+            let developer = item.tab.map { store.settings.isDeveloperMode(url: $0.url) } ?? false
+            appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, subtitle: item.tab?.sidebarSubtitle(developerMode: developer),
+                      depth: depth, selected: selected, ring: developer && selected, unread: item.isUnread, closable: closable,
+                      menu: tabMenu(item)) { [weak self] in
                 self?.select(item.id)
             }
         }
@@ -232,8 +240,8 @@ final class SidebarView {
         }
     }
 
-    private func appendRow(icon: RowIcon, title: String, depth: Int, selected: Bool, unread: Bool, closable: UUID?,
-                           menu: MenuFlyout?, _ action: @escaping @MainActor () -> Void) {
+    private func appendRow(icon: RowIcon, title: String, subtitle: String? = nil, depth: Int, selected: Bool, ring: Bool = false,
+                           unread: Bool, closable: UUID?, menu: MenuFlyout?, _ action: @escaping @MainActor () -> Void) {
         let row = Grid()
         row.columnDefinitions.append(UI.column(UI.star))
         row.columnDefinitions.append(UI.column(UI.auto))
@@ -247,7 +255,16 @@ final class SidebarView {
         label.children.append(lead)
         let name = UI.text(title.isEmpty ? "New Tab" : title, color: palette.text)
         if unread { name.fontWeight = UWP.FontWeight(weight: 600) }
-        label.children.append(name)
+        if let subtitle {
+            let lines = StackPanel()
+            lines.orientation = .vertical
+            lines.verticalAlignment = .center
+            lines.children.append(name)
+            lines.children.append(UI.text(subtitle, size: 11, color: palette.secondaryText))
+            label.children.append(lines)
+        } else {
+            label.children.append(name)
+        }
 
         let pick = UI.button(label, fill: selected ? palette.selected : nil, action)
         pick.horizontalAlignment = .stretch
@@ -261,7 +278,39 @@ final class SidebarView {
             row.children.append(close)
             try? Grid.setColumn(close, 1)
         }
+        if ring { addDeveloperRing(to: row) }
         list.children.append(row)
+    }
+
+    /// Arc's ring round a Developer Mode site's open tab (CraCore's DeveloperTabRing): yellow
+    /// under black dashes at 80 %, the dashes cut to the row's size.
+    private func addDeveloperRing(to row: Grid) {
+        let yellow = Rectangle(), dashes = Rectangle()
+        yellow.stroke = UI.brush(255, 204, 0)
+        dashes.stroke = UI.brush(0, 0, 0, alpha: UInt8((DeveloperTabRing.dashAlpha * 255).rounded()))
+        kept += [yellow, dashes]
+        for ring in [yellow, dashes] {
+            ring.strokeThickness = DeveloperTabRing.lineWidth
+            ring.isHitTestVisible = false
+            row.children.append(ring)
+            try? Grid.setColumnSpan(ring, 2)
+        }
+        dashes.sizeChanged.addHandler { [weak yellow, weak dashes] _, _ in
+            guard let yellow, let dashes else { return }
+            // The stroke sits inside the shape, so its middle runs 1 DIP in, as the Mac's path does.
+            let w = dashes.actualWidth - DeveloperTabRing.lineWidth, h = dashes.actualHeight - DeveloperTabRing.lineWidth
+            let r = DeveloperTabRing.cornerRadius(width: w, height: h)
+            for ring in [yellow, dashes] {
+                ring.radiusX = r
+                ring.radiusY = r
+            }
+            // XAML counts dashes in stroke widths.
+            let d = DeveloperTabRing.dash(width: w, height: h) / DeveloperTabRing.lineWidth
+            let pattern = DoubleCollection()
+            pattern.append(d)
+            pattern.append(d)
+            dashes.strokeDashArray = pattern
+        }
     }
 
     /// The line between the pinned tabs and Today.

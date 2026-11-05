@@ -4,9 +4,9 @@ Every feature of the Mac app, what the Windows app has of it, and where the code
 can share lives. The goal is the Mac app's features on Windows, built on the Mac's own logic:
 what decides something goes in CraCore once and both shells call it (CLAUDE.md, rule 1).
 
-<!-- upstream-reviewed: f6b9fb6 -->
-Upstream reviewed through **f6b9fb6** (VictorKildahl/cra main, 5 Nov 2026). Fork main has
-merged upstream through 25d236a; the commit after it is in [Waiting in upstream](#waiting-in-upstream).
+<!-- upstream-reviewed: ef42649 -->
+Upstream reviewed through **ef42649** (VictorKildahl/cra main, 5 Nov 2026). Fork main has
+merged upstream through ef42649 (#22).
 
 **Status:** ✅ on Windows · 🟡 partly · 🔜 in review · ❌ not yet · ➖ Mac only, or replaced by a
 Windows counterpart
@@ -22,20 +22,20 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Area | ✅ | 🟡 | 🔜 | ❌ | ➖ |
 |---|--:|--:|--:|--:|--:|
 | Window, pages and toolbar | 6 | 3 | 0 | 5 | 1 |
-| Sidebar | 6 | 4 | 0 | 10 | 0 |
+| Sidebar | 6 | 4 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
 | Little Windows, Peek and the Library | 0 | 1 | 0 | 6 | 0 |
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
 | Profiles, privacy and site data | 3 | 1 | 0 | 6 | 0 |
-| DevTools and Developer Mode | 1 | 0 | 0 | 2 | 0 |
+| DevTools and Developer Mode | 1 | 0 | 1 | 1 | 0 |
 | Extensions | 0 | 0 | 0 | 5 | 0 |
 | Settings | 4 | 1 | 0 | 4 | 0 |
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 6 | 2 |
-| **All** | 28 | 15 | 0 | 55 | 8 |
+| **All** | 28 | 15 | 1 | 55 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -55,7 +55,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Page context menu: Open Link in New Tab / Background Tab | 🟡 | `BrowserManager.swift` | `LinkMenu` | Chromium's menu shows; Cra's two items and the background setting are missing. |
 | Arc-style tooltips in the space's tones | ❌ | `ArcTooltip.swift` | `ThemeTones` (`TooltipTones`) | Windows uses plain WinUI tooltips. |
 | Theme, metrics and the brand mark | 🟡 | `Theme.swift`, `Tuning.swift`, `BrandMark.swift` | `SpaceTheme`, `ThemeTones` | Sidebar palette from `SpaceTheme` is shared; Windows has its own metrics. Brand mark from `brand/`. |
-| Sidebar blur, Reduce transparency, active/inactive look | ❌ | `ActiveAppearanceProbe.swift` (upstream, not merged yet) | `SidebarBackdrop` | Windows counterpart: Mica or Acrylic, and Windows' transparency setting. |
+| Sidebar blur, Reduce transparency, active/inactive look | ❌ | `ActiveAppearanceProbe.swift` | `SidebarBackdrop` | Windows counterpart: Mica or Acrylic, and Windows' transparency setting. Since f6b9fb6 a full-screen window keeps its active look while its Space slides away (AppKit's own answer, `windowActive(activeAppearance:)`). |
 | Only one Cra running (an older copy quits) | ➖ | `NewestCopy.swift` | | Windows: a single-instance mutex when the installer lands. |
 
 ## Sidebar
@@ -67,17 +67,18 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Move Tab to Space N (`moveTabToSpaceN`) | ❌ | `MainWindowController.swift`, `AppDelegate.swift` | `SpaceWindow`, `SidebarStore` | No Windows key yet (the Mac's is ⌃⌘N); comes with Little Windows, whose page it can also send. |
 | Swipe, Shift + wheel or sideways wheel between spaces | ❌ | `SpacePagerView.swift` | `WheelSpaceSwitch` | Decision shared; Windows needs the wheel hook and the slide. |
 | Pinned tabs and folders, Today, Clear Today, archive on close | ✅ [#5] | `SidebarRowViews.swift`, `SidebarItemView.swift` | `SidebarStore`, `CloseSuccessor`, `SidebarClose` | `clearToday` and `newFolder` are in the sidebar menus, not yet commands; `SidebarClose` (Arc's close buttons per row kind) isn't used on Windows yet. |
-| Pinned tab extras: back to its page by the favicon, the slash, Reset (`resetTab`), edit URL | ❌ | `EditPinnedURLDialog.swift`, `SidebarRowViews.swift` | `PinnedNavigation` | |
+| Pinned tab extras: back to its page by the favicon, the slash, Reset (`resetTab`), edit URL | ❌ | `EditPinnedURLDialog.swift`, `SidebarRowViews.swift` | `PinnedNavigation` | Since 6e371cc "Back to Pinned URL" slides in under the title on hovering the icon (0.16 s). |
 | Folders: hinge animation, hover previews with search, tabs shown under a closed folder | 🟡 | `FolderPreview.swift` | `FolderPeek` | Windows has folders without previews or the animation. |
 | Favorites | 🟡 [#5] | `SidebarRowViews.swift`, `TileColor.swift` | `FavoritesLayout`, `FavoritesSharing` | Missing: 4/2/1 columns by width (`FavoritesLayout`), tile colours and icons, "Drag to add Favorites" card, Settings' share-across-spaces switch. |
-| Drag and drop: reorder, into folders and favorites, onto a space's icon, several picked tabs at once, reorder spaces | ❌ | `SidebarListDrop.swift`, `SpaceListView.swift` | `SidebarStore` | The store's moves are shared; the XAML drag layer is the work. Big item. |
+| Drag and drop: reorder, into folders and favorites, onto a space's icon, several picked tabs at once, reorder spaces | ❌ | `SidebarListDrop.swift`, `SpaceListView.swift` | `SidebarStore` | The store's moves are shared; the XAML drag layer is the work. Big item. Since 1f3c3d3 a tab dropped on any tab, pinned too, offers a split (no folder drop); since dfa3358 rows keep their hover through AppKit's stray exits (Mac only). |
 | Space menu: rename, icon, theme, profile, folder, export, delete | 🟡 [#5] [#19] | `MainWindowController+SpaceMenu.swift`, `SidebarMenus.swift`, `SpaceIconPicker.swift`, `EmojiCatalog.swift`, `EmojiCatalog+Data.swift` | `SpaceProfiles` | Windows has New Folder, New Space, Clear Today, Hide Space Header, Set Profile, Delete. Missing `editSpace`, `deleteSpace` and `newSpace` as commands, rename, the emoji picker. `EmojiCatalog+Data.swift` has no imports: move it to CraCore for the Windows picker. |
-| Space theme editor: Arc's presets, light and dark halves, grain | ❌ | `SpaceStyleEditor.swift`, `SpaceEditorView.swift` | `SpaceTheme`, `SpaceThemeVariants`, `SpaceColorPresets`, `ArcThemeImport` | Windows draws themes it reads; editing is missing. The colour logic is all shared. |
+| Space theme editor: Arc's presets, light and dark halves, grain | ❌ | `SpaceStyleEditor.swift`, `SpaceEditorView.swift` | `SpaceTheme`, `SpaceThemeVariants`, `SpaceColorPresets`, `ArcThemeImport` | Windows draws themes it reads; editing is missing. The colour logic is all shared. Since 6e371cc swatches and knobs grow under the pointer and shrink when pressed. |
 | Manage Spaces page (`manageSpaces`) | ❌ | `SpacesManagerView.swift` | `SidebarStore` | |
 | Space tooltip with its profile and keys | ❌ | `SpaceDock.swift`, `ArcTooltip.swift` | `ThemeTones` | |
 | Jump pill back to the open tab | ❌ | `SidebarJumpPill.swift` | | |
 | Rename (`renameTab`), duplicate (`duplicateTab`), Add to Favorites (`favoriteTab`) as commands | 🟡 | `SidebarMenus.swift` | `SidebarStore` | Duplicate and favorites are in the row menu; rename is missing; none are commands yet. |
 | Unread dots and theme colours | ✅ [#5] | `SidebarRowViews.swift` | `SidebarModel` | |
+| Download location per profile: a folder, or ask where to save each file (Settings ▸ Profiles) | ❌ | `DownloadDestinations.swift`, `ProfilesPane.swift` | `DownloadLocation` | Upstream ef42649. `DownloadLocation`'s decoder keeps only folders starting with "/": Windows needs drive paths (`C:\…`) to count as absolute first. |
 | Downloads list in the footer, thumbnails, no Chrome download arrow | ✅ [#10] [#12] | `DownloadsTray.swift`, `DownloadThumbnails.swift`, `ChromeDownloadAnimation.swift` | `DownloadHistory`, `DownloadRow`, `RelativeTime` | Missing: the flight into the bin (`DownloadFlight.swift`), `viewDownloads` (⇧⌘J) as a command. |
 | Download flight into the Library button | ❌ | `DownloadFlight.swift` | | |
 | Favicons in rows, tiles and the command bar | ✅ [#12] | `FaviconCache.swift` | `FaviconKey` | |
@@ -152,7 +153,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | DevTools docked in the page's place (`devTools`, `inspectElement`, `jsConsole`), Chrome's dock sides and undocking | ✅ [#20] | `MainWindowController.swift` | `DevToolsToggle` | Moved to CraCore in #20; both apps decide each press with it. |
-| Developer Mode bar for a site (`toggleDeveloperMode`): striped bar, Console, Network, Inspect | ❌ | `PaneToolbarView.swift` | `ToolbarComposition` | Next after DevTools in the Phase 2 list. |
+| Developer Mode for a site (`toggleDeveloperMode`): the striped bar with the full URL edited in place, Copy, Console, Network, Inspect; host and port under the tab's title; the ring round the open tab | 🔜 [#22] | `PaneToolbarView.swift`, `SidebarRowViews.swift` | `ToolbarComposition`, `DeveloperBar` (`SpaceTheme.developerBar`, `DeveloperStripes`, `DeveloperTabRing`, `OKLab`) | Windows: Ctrl+Shift+D (the Mac's ⌃D is Pin Tab there). The bar's colours, stripes and ring moved to CraCore in #22 for both apps. Not in a split, as on the Mac; Windows has no normal toolbar yet, so a split pane shows no bar. |
 | Performance recorder, Settings ▸ Performance, Export Diagnostics | ❌ | `PerformancePane.swift`, `Perf.swift`, `PerfCEF.swift`, `PerfFiles.swift`, `PerfRecorder.swift`, `PerfSamplers.swift`, `MainLoopObserver.swift`, `HitchMonitor.swift`, `Diagnostics.swift`, `CraLog.swift` | `PerfHistory`, `PerfInsights`, `PerfMetric`, `PerfProcessTable`, `PerfReport`, `PerfSampleStack`, `PerfSession`, `PerfStall`, `PerfState`, `LogHistogram`, `SiteNames`, `DiagnosticsRedaction`, `DisplayDiagnostics` | The recorder's model is shared; samplers are per platform. `CraLog.swift` is Foundation only: move it to CraCore so both apps log the same way. |
 
 ## Extensions
@@ -234,11 +235,7 @@ Windows code that repeats Mac logic instead of calling CraCore is a bug to fix t
 
 ## Waiting in upstream
 
-Upstream commits after the fork's last sync (25d236a, in #20), triaged:
-
-| Commit | What | Windows |
-|---|---|---|
-| f6b9fb6 | Sidebar active look through a full-screen switch, blur built like AppKit's: adds `ActiveAppearanceProbe.swift`, changes `SidebarBackdrop` | Sidebar blur row |
+Upstream commits after the fork's last sync (ef42649, in #22), triaged: none yet.
 
 ## Keeping this current
 
@@ -270,3 +267,4 @@ Upstream commits after the fork's last sync (25d236a, in #20), triaged:
 [#19]: https://github.com/vishnu597/cra-windows/pull/19
 [#20]: https://github.com/vishnu597/cra-windows/pull/20
 [#21]: https://github.com/vishnu597/cra-windows/pull/21
+[#22]: https://github.com/vishnu597/cra-windows/pull/22
