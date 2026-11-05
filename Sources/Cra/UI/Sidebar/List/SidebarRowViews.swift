@@ -607,16 +607,16 @@ final class FocusRingLayer: CALayer {
     override func layoutSublayers() {
         super.layoutSublayers()
         let rect = bounds.insetBy(dx: 1, dy: 1)
-        let r = developer ? min(radius, rect.width / 2, rect.height / 2) : radius - 1
+        let r = developer ? CGFloat(DeveloperTabRing.cornerRadius(width: rect.width, height: rect.height)) : radius - 1
         let path = CGPath(roundedRect: rect, cornerWidth: r, cornerHeight: r, transform: nil)
         for l in [yellow, dashes] {
             l.frame = bounds
             l.path = path
         }
         if developer, rect.width > 0 {
-            let edge = 2 * rect.width + 2 * rect.height - 8 * r + 2 * .pi * r
-            let d = edge / (rect.width < 210 ? 60 : rect.width < 346 ? 80 : 100)
-            dashes.lineDashPattern = [NSNumber(value: Double(d)), NSNumber(value: Double(d))]
+            // CraCore's DeveloperTabRing cuts the dashes (Windows draws the same ring).
+            let d = DeveloperTabRing.dash(width: rect.width, height: rect.height)
+            dashes.lineDashPattern = [NSNumber(value: d), NSNumber(value: d)]
         }
     }
 }

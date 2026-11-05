@@ -63,6 +63,7 @@ struct KeyBindingsTests {
         #expect(win["changeProfile"]?.shortcuts == [] && win["changeProfile"]?.inCommandBar == true)
         #expect(win["devTools"]?.shortcuts.map(\.windowsDisplay) == ["Ctrl+Shift+I", "F12"])
         #expect(win["jsConsole"]?.primary?.windowsDisplay == "Ctrl+Shift+J")
+        #expect(win["toggleDeveloperMode"]?.primary?.windowsDisplay == "Ctrl+Shift+D")
         #expect(win["inspectElement"]?.shortcuts == [])
     }
 
