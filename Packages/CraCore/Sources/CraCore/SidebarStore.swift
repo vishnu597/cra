@@ -2017,6 +2017,13 @@ public final class SidebarStore {
         revision &+= 1
     }
 
+    /// Go to Space N (⌃N on the Mac, Alt+N on Windows): the Nth space in the dock, from 1.
+    /// Nothing happens past the last space.
+    public func focusSpace(number n: Int, window: UUID? = nil) {
+        guard n >= 1, n <= spaceOrder.count else { return }
+        focusSpace(spaceOrder[n - 1], window: window)
+    }
+
     public func focusSpace(offset: Int, window: UUID? = nil) {
         guard let idx = spaceOrder.firstIndex(of: focusedSpaceID(window: window)), spaceOrder.count > 1 else { return }
         let n = spaceOrder.count

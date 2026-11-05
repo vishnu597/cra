@@ -39,6 +39,11 @@ main before each new piece of work, and `.github/workflows/upstream-drift.yml` r
 Monday how far behind it is (and fails when upstream no longer merges cleanly). Mac code
 changes only where a decision moves into CraCore, and then as upstream would write it.
 
+Each sync also updates `Windows/PARITY.md`: a row for every new Mac feature, file and command,
+and its `upstream-reviewed` marker moved to the newest upstream commit read.
+`python3 -I Windows/scripts/parity.py report --upstream upstream/main` lists what to look at; the
+same workflow checks the file on every pull request.
+
 ## Chromium
 
 `Windows/Sources/CraCEFWin` is the Windows counterpart of `Sources/CraCEF`: a C++ bridge with
@@ -128,4 +133,6 @@ for the page. The frontend's dock menu picks the side; undocking moves them into
 their own (they close and open again there), and docking moves them back. CraCore's
 `DevToolsToggle` decides what each press does, as on the Mac.
 
-The parity checklist and phases are in the porting plan.
+[`Windows/PARITY.md`](../Windows/PARITY.md) lists every Mac feature, what Windows has of it and the
+CraCore code both apps share; `Windows/scripts/parity.py` keeps it in step with the Mac app and
+upstream (see "Keeping up with upstream").
