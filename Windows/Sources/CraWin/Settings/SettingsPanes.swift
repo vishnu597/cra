@@ -147,6 +147,10 @@ enum SettingsPanes {
         // Rebuilt when a profile, or which spaces use one, changes (not on every space edit, so an
         // open Rename flyout stays).
         var shown = ""
+        // The rows' fields and flyouts, which their handlers capture weakly: a WinRT control built
+        // from Swift is only a wrapper, gone once nothing in Swift holds it, however long XAML
+        // keeps the control.
+        var kept: [AnyObject] = []
         func rebuild() {
             let rows: [(String, BrowserProfile?, [Space])] = [("Default", nil, store.spaces(usingProfile: nil))]
                 + store.profiles.map { ($0.name, $0, store.spaces(usingProfile: $0.id)) }
@@ -154,16 +158,18 @@ enum SettingsPanes {
                 .joined(separator: "\n")
             guard signature != shown else { return }
             shown = signature
+            var parts: [AnyObject] = []
             holder.child = card(rows.map { name, profile, spaces in
-                profileRow(name: name, profile: profile, spaces: spaces, store: store, palette: palette)
+                profileRow(name: name, profile: profile, spaces: spaces, store: store, palette: palette) { parts.append($0) }
             }, palette: palette)
+            kept = parts
         }
         rebuild()
         return SettingsPaneContent(element: stack) { rebuild() }
     }
 
     private static func profileRow(name: String, profile: BrowserProfile?, spaces: [Space], store: SidebarStore,
-                                   palette: SettingsPalette) -> Grid {
+                                   palette: SettingsPalette, keep: (AnyObject) -> Void) -> Grid {
         let row = Grid()
         row.minHeight = Double(SettingsMetrics.cardRowHeight) + 8
         row.padding = Thickness(left: Double(SettingsMetrics.cardRowInset), top: 6, right: Double(SettingsMetrics.cardRowInset), bottom: 6)
@@ -214,6 +220,8 @@ enum SettingsPanes {
         renamePanel.children.append(apply)
         renameFlyout.content = renamePanel
         rename.flyout = renameFlyout
+        keep(renameFlyout)
+        keep(field)
         buttons.children.append(rename)
 
         // Delete…: only a profile no space uses, after Arc's warning.
@@ -242,6 +250,7 @@ enum SettingsPanes {
         warning.children.append(confirm)
         deleteFlyout.content = warning
         delete.flyout = deleteFlyout
+        keep(deleteFlyout)
         buttons.children.append(delete)
 
         row.children.append(buttons)

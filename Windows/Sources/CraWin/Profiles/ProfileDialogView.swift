@@ -33,6 +33,9 @@ final class ProfileDialogView {
     private var spaces: [Space] = []
     private var profiles: [BrowserProfile] = []
     private var ticked: Set<UUID> = []
+    /// The spaces step's checkboxes, held so their click handlers' weak captures stay alive (a
+    /// WinRT control built from Swift is only a wrapper, gone once nothing in Swift holds it).
+    private var boxes: [CheckBox] = []
     private let nameField = TextBox()
     /// Change Profile's picker: Default, the profiles, New Profile.
     private let picker = ComboBox()
@@ -134,6 +137,7 @@ final class ProfileDialogView {
         let list = StackPanel()
         list.orientation = .vertical
         list.margin = Thickness(left: 0, top: 16, right: 0, bottom: 0)
+        boxes = []
         for space in spaces {
             let box = CheckBox()
             let label = UI.text("\(space.emoji) \(space.title)", size: 14, color: Self.white)
@@ -144,6 +148,7 @@ final class ProfileDialogView {
                 if box.isChecked == true { self.ticked.insert(space.id) } else { self.ticked.remove(space.id) }
             }
             list.children.append(box)
+            boxes.append(box)
         }
         let scroll = ScrollViewer()
         scroll.maxHeight = 220
