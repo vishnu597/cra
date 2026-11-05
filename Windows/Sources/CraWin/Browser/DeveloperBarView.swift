@@ -230,7 +230,7 @@ final class DeveloperBarView {
         for band in DeveloperStripes.bands(width: size.width, height: size.height) {
             let points = PointCollection()
             for p in band { points.append(WindowsFoundation.Point(x: Float(p.x), y: Float(p.y))) }
-            let shape = Polygon()
+            let shape = WinUI.Polygon()  // not GDI's Polygon
             shape.points = points
             shape.fill = fill
             stripes.children.append(shape)

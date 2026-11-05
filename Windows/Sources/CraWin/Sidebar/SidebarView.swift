@@ -285,7 +285,7 @@ final class SidebarView {
     /// Arc's ring round a Developer Mode site's open tab (CraCore's DeveloperTabRing): yellow
     /// under black dashes at 80 %, the dashes cut to the row's size.
     private func addDeveloperRing(to row: Grid) {
-        let yellow = Rectangle(), dashes = Rectangle()
+        let yellow = WinUI.Rectangle(), dashes = WinUI.Rectangle()  // not GDI's Rectangle
         yellow.stroke = UI.brush(255, 204, 0)
         dashes.stroke = UI.brush(0, 0, 0, alpha: UInt8((DeveloperTabRing.dashAlpha * 255).rounded()))
         kept += [yellow, dashes]
