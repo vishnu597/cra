@@ -193,7 +193,9 @@ final class BrowserWindow {
     /// Asks the window to close as its close button does (Ctrl+Shift+W).
     func requestClose() {
         guard !closing, window.shouldClose?() ?? true else { return }
-        window.close()
+        // After the key's event, as the close button's is: the XAML that delivered the key goes
+        // with the window, and tearing it down inside its own handler traps.
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.window?.close() }
     }
 
     /// Where the window is, for the next launch (windows.json). A minimized or maximized window
