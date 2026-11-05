@@ -122,7 +122,9 @@ public enum KeyBindingDefaults {
     /// the bits are named after); `.command` would be the Windows key, which no default uses.
     /// ⌘ becomes Ctrl, and where that collides or Windows has its own convention the key is
     /// Chrome's on Windows: Alt+Left and Right go back and forward, Ctrl+Tab cycles tabs in
-    /// sidebar order (Windows has no tab switcher yet), F3 and F5 keep their meaning.
+    /// sidebar order (Windows has no tab switcher yet), F3 and F5 keep their meaning. Spaces take
+    /// Arc for Windows' keys: Ctrl+Alt+Left and Right page them, Alt+1–9 go to one (Ctrl+1–9 is
+    /// already Go to Tab, as in Chrome).
     public static let windows: [KeyAction] = mac.compactMap { action in
         windowsShortcuts[action.id].map { keys in
             var a = action
@@ -171,7 +173,10 @@ public enum KeyBindingDefaults {
             "clearCache": [],
             "clearCookies": [],
         ]
-        for n in 1...9 { table["item\(n)"] = [KeyChord("\(n)", ctrl)] }
+        for n in 1...9 {
+            table["item\(n)"] = [KeyChord("\(n)", ctrl)]
+            table["space\(n)"] = [KeyChord("\(n)", alt)]
+        }
         return table
     }()
 }

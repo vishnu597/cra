@@ -22,7 +22,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Area | ✅ | 🟡 | 🔜 | ❌ | ➖ |
 |---|--:|--:|--:|--:|--:|
 | Window, pages and toolbar | 6 | 3 | 0 | 5 | 1 |
-| Sidebar | 5 | 4 | 0 | 10 | 0 |
+| Sidebar | 6 | 4 | 0 | 10 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
 | Little Windows, Peek and the Library | 0 | 1 | 0 | 6 | 0 |
@@ -35,7 +35,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 6 | 2 |
-| **All** | 26 | 15 | 1 | 55 | 8 |
+| **All** | 27 | 15 | 1 | 55 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -63,7 +63,8 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | Spaces: switch, create, delete, the space dock | ✅ [#5] | `SidebarView.swift`, `SidebarRootView.swift`, `SpaceDock.swift`, `SpaceListView.swift`, `SpaceColumnView.swift`, `SidebarUIState.swift` | `SidebarStore`, `SidebarModel`, `ItemTable`, `SidebarIntegrity` | Same `sidebar.json` as the Mac. |
-| Go to Space N (`spaceN`), Move Tab to Space N (`moveTabToSpaceN`) | ❌ | `MainWindowController.swift` | `KeyBindingDefaults`, `SpaceWindow` | The Mac uses ⌃1–9 for spaces and ⌘1–9 for tabs; on Windows Ctrl+1–9 is already tabs (as in Chrome), so spaces need another key. Decide before adding. |
+| Go to Space N (`spaceN`) on Alt+1–9, next and previous space on Ctrl+Alt+Right and Left | ✅ [#5] [#21] | `MainWindowController.swift`, `AppDelegate.swift` | `KeyBindingDefaults`, `SidebarStore` (`focusSpace(number:)`) | Arc for Windows' keys: Ctrl+1–9 stays Go to Tab, as in Chrome. |
+| Move Tab to Space N (`moveTabToSpaceN`) | ❌ | `MainWindowController.swift`, `AppDelegate.swift` | `SpaceWindow`, `SidebarStore` | No Windows key yet (the Mac's is ⌃⌘N); comes with Little Windows, whose page it can also send. |
 | Swipe, Shift + wheel or sideways wheel between spaces | ❌ | `SpacePagerView.swift` | `WheelSpaceSwitch` | Decision shared; Windows needs the wheel hook and the slide. |
 | Pinned tabs and folders, Today, Clear Today, archive on close | ✅ [#5] | `SidebarRowViews.swift`, `SidebarItemView.swift` | `SidebarStore`, `CloseSuccessor`, `SidebarClose` | `clearToday` and `newFolder` are in the sidebar menus, not yet commands; `SidebarClose` (Arc's close buttons per row kind) isn't used on Windows yet. |
 | Pinned tab extras: back to its page by the favicon, the slash, Reset (`resetTab`), edit URL | ❌ | `EditPinnedURLDialog.swift`, `SidebarRowViews.swift` | `PinnedNavigation` | |
@@ -270,3 +271,4 @@ Upstream commits after the fork's last sync (098376c), triaged:
 [#18]: https://github.com/vishnu597/cra-windows/pull/18
 [#19]: https://github.com/vishnu597/cra-windows/pull/19
 [#20]: https://github.com/vishnu597/cra-windows/pull/20
+[#21]: https://github.com/vishnu597/cra-windows/pull/21
