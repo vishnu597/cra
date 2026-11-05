@@ -593,6 +593,10 @@ final class BrowserWindow {
         case "nextSplitPane": cycleSplitPane(1)
         case "previousSplitPane": cycleSplitPane(-1)
         default:
+            if id.hasPrefix("space"), let n = Int(id.dropFirst(5)), (1...9).contains(n) {
+                store.focusSpace(number: n, window: windowID)
+                return true
+            }
             guard id.hasPrefix("item"), let n = Int(id.dropFirst(4)), (1...9).contains(n) else { return false }
             selectTab(number: n)
         }

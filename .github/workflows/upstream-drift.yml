@@ -1,19 +1,22 @@
 # The fork's own check (not for upstream): how far main has drifted from VictorKildahl/cra's
 # main, and whether upstream still merges in cleanly. Fails only on a conflicting merge, the
 # drift that has to be resolved by hand before the Windows port can be folded back.
+# The parity job (weekly and on pull requests) holds Windows/PARITY.md to the Mac app and
+# lists the upstream commits nobody has triaged yet (Windows/scripts/parity.py).
 name: Upstream drift
 
 on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
   drift:
-    if: github.repository != 'VictorKildahl/cra'
+    if: github.repository != 'VictorKildahl/cra' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -46,3 +49,21 @@ jobs:
             echo "::error::upstream main conflicts with the fork; sync it by hand"
             exit 1
           fi
+
+  parity:
+    name: Feature parity tracker
+    if: github.repository != 'VictorKildahl/cra'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check Windows/PARITY.md
+        run: |
+          git remote add upstream https://github.com/VictorKildahl/cra.git
+          git fetch --quiet upstream main
+          base=()
+          if [ -n "${{ github.base_ref }}" ]; then base=(--base "origin/${{ github.base_ref }}"); fi
+          python3 -I Windows/scripts/parity.py report --upstream upstream/main >> "$GITHUB_STEP_SUMMARY"
+          python3 -I Windows/scripts/parity.py check --upstream upstream/main "${base[@]}"
