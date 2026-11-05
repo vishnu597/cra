@@ -27,6 +27,10 @@
 #   snapshot <View[,n]> <name>  the nth visible view of that class drawn to PNG and compared with
 #                               Tests/Snapshots/<name>.png (CRA_SNAPSHOT_RECORD=1 records it)
 #   fresh                       no seeded settings: onboarding shows, as on a new Mac
+#   seed <file> <json>          that data-folder file before launch (a seeded settings.json
+#                               replaces the default one)
+#   env <NAME=value>            passed to Cra
+#   home                        a throwaway home folder, so downloads stay out of ~/Downloads
 #   requires screen
 #   port <n>                    serve ${PAGE} on a fixed port (snapshots show the address)
 # ${FIXTURES}, ${PAGE} (Tests/Fixtures/Pages/page.html from a local server, so it has a host
@@ -68,8 +72,18 @@ LOG="$DATA/cra.log"
 : > "$CMD"
 STARTED="$OUT/started"
 touch "$STARTED"
+# The scenario's own data files, environment and home folder.
+app_env=(env)
+while read -r _ seed json; do echo "$json" > "$DATA/$seed"; done < <(grep '^seed ' "$FILE")
+while read -r _ kv; do app_env+=("$kv"); done < <(grep '^env ' "$FILE")
+if grep -q '^home$' "$FILE"; then
+  mkdir -p "$DATA/home/Downloads"
+  app_env+=(CFFIXED_USER_HOME="$DATA/home")
+fi
 # Past onboarding, and nothing taken from this Mac's Arc (its toolbar default) unless asked.
-grep -q '^fresh' "$FILE" || echo '{"hasSeenImportPrompt": true, "toolbarDefaultMigrated": true, "showToolbar": false}' > "$DATA/settings.json"
+if ! grep -q '^fresh' "$FILE" && [ ! -f "$DATA/settings.json" ]; then
+  echo '{"hasSeenImportPrompt": true, "toolbarDefaultMigrated": true, "showToolbar": false}' > "$DATA/settings.json"
+fi
 
 PIDS=()
 PID=""
@@ -90,7 +104,7 @@ WEBKIT="http://localhost:${PORT}"
 
 CRA_DATA_DIR="$DATA" CRA_COMMAND_FILE="$CMD" CRA_HITCH_LOG="$HITCH" CRA_TEST_BACKGROUND=1 CRA_WEBKIT_HOSTS=localhost \
   CRA_ARC_DIR="$FIXTURES/Arc" CRA_FLAGS="${CRA_FLAGS:-}" \
-  "$APP/Contents/MacOS/Cra" >"$OUT/stdout.log" 2>&1 &
+  "${app_env[@]}" "$APP/Contents/MacOS/Cra" >"$OUT/stdout.log" 2>&1 &
 PID=$!
 PIDS+=("$PID")
 
@@ -187,7 +201,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
         [ -x "$OUT/compare-png" ] || xcrun swiftc -O "$ROOT/scripts/compare-png.swift" -o "$OUT/compare-png" 2>"$OUT/compare-png.log"
         verdict=$("$OUT/compare-png" "$ref" "$shot" "$OUT/snapshots/$3.diff.png" 2>&1) || problem "snapshot $3: $verdict"
       fi ;;
-    fresh|requires|port) ;;
+    fresh|requires|port|seed|env|home) ;;
     *) problem "unknown scenario line: $line" ;;
   esac
 done < "$FILE"

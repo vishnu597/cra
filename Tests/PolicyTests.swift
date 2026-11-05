@@ -1,7 +1,7 @@
 import Foundation
 
-/// The decisions pulled out of the window controllers: what an extension click does, the
-/// DevTools toggle and the feature flags (the toolbar's buttons moved to CraCore). Table tests,
+/// The decisions pulled out of the window controllers: what an extension click does and the
+/// feature flags (the toolbar's buttons and the DevTools toggle moved to CraCore). Table tests,
 /// no AppKit views.
 @main
 enum PolicyTests {
@@ -10,7 +10,6 @@ enum PolicyTests {
     @MainActor
     static func main() {
         extensionLaunch()
-        devToolsToggle()
         featureFlags()
         print("Policies: \(checks) checks passed")
     }
@@ -34,62 +33,6 @@ enum PolicyTests {
                "no popup: the options page in a tab")
         expect(ExtensionLaunch.decide("bare", available: all, hasPage: false) == .openTab(url: "chrome://extensions/?id=bare"),
                "neither: Chrome's details page for it")
-    }
-
-    private static func devToolsToggle() {
-        var t = DevToolsToggle()
-        expect(t.toggle() == .show && t.state == .opening, "closed: a press opens")
-        t.didOpen()
-        expect(t.toggle() == .close && t.state == .closing(reopen: false), "open: a press closes")
-        expect(t.toggle() == .none && t.state == .closing(reopen: true), "closing: a press is remembered, not sent")
-        expect(t.toggle() == .none && t.state == .closing(reopen: false), "a third press takes it back")
-        expect(t.didClose() == .none && t.state == .closed, "closed with nothing pending stays closed")
-        _ = t.toggle()
-        t.didOpen()
-        _ = t.toggle()
-        expect(t.show() == .none && t.state == .closing(reopen: true), "Inspect Element while closing waits for the close")
-        expect(t.didClose() == .show && t.state == .opening, "and opens them once closed")
-        t.didOpen()
-        expect(t.show() == .show && t.state == .open, "Inspect Element on open DevTools moves them to the element")
-        var external = DevToolsToggle()
-        external.didOpen()
-        expect(external.state == .open && external.toggle() == .close, "DevTools opened from Chromium's menu close on the next press")
-        var userClosed = DevToolsToggle()
-        _ = userClosed.toggle()
-        userClosed.didOpen()
-        expect(userClosed.didClose() == .none && userClosed.toggle() == .show, "closed from DevTools' own button: the next press opens")
-
-        // The developer bar and ⌥⌘J/⌥⌘C (#88): Console and Network switch panels, close only their own (#138).
-        var bar = DevToolsToggle()
-        expect(bar.run(.console) == (.show, "console"), "Console on closed DevTools opens them on the Console")
-        expect(bar.run(.network) == (.none, "network") && bar.state == .opening, "pressed while they open: they open on Network instead")
-        bar.didOpen()
-        bar.didShowPanel("console")
-        expect(bar.run(.network) == (.frontend, "network") && bar.state == .open, "Network on the Console switches panel, DevTools stay open")
-        expect(bar.run(.network) == (.close, nil) && bar.state == .closing(reopen: false),
-               "pressed again before the frontend reports the switch: Network shows, so it closes")
-        expect(bar.run(.network) == (.none, "network") && bar.state == .closing(reopen: true), "pressed while closing: reopened on Network")
-        expect(bar.run(.console) == (.none, nil) && bar.state == .closing(reopen: false), "a second press takes the reopen back")
-        expect(bar.run(.console) == (.none, "console"), "a third asks again, on the Console")
-        expect(bar.didClose() == .show && bar.panel == nil, "once closed they reopen, the old panel forgotten")
-        bar.didOpen()
-        bar.didShowPanel("elements")
-        expect(bar.run(.console) == (.frontend, "console"), "Console on Elements switches")
-        bar.didShowPanel("console")
-        expect(bar.run(.console) == (.close, nil), "Console on the Console closes")
-        expect(bar.didClose() == .none && bar.state == .closed && bar.panel == nil, "and stays closed")
-        bar.didShowPanel("network")
-        expect(bar.panel == nil, "a report from a closed frontend is dropped")
-        var unknown = DevToolsToggle()
-        unknown.didOpen()
-        expect(unknown.run(.console) == (.frontend, "console"), "a frontend that never said its panel: switch, never close")
-        bar = DevToolsToggle()
-        _ = bar.run(.console)
-        bar.didOpen()
-        expect(bar.run(.inspect) == (.show, "inspect") && bar.state == .open, "Inspect never closes: the picker on open DevTools")
-        expect(bar.run(.toggle) == (.close, nil), "⌥⌘I closes")
-        var plain = DevToolsToggle()
-        expect(plain.run(.toggle) == (.show, nil), "⌥⌘I opens DevTools as they were")
     }
 
     private static func featureFlags() {

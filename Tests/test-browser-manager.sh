@@ -10,7 +10,7 @@ xcrun swiftc -swift-version 5 -emit-module -emit-library -module-name CraCEF \
   -emit-module-path "$TEST_DIR/CraCEF.swiftmodule"
 xcrun swiftc -swift-version 5 -parse-as-library ${CRA_TEST_SWIFTC_FLAGS:-} -I "$TEST_DIR" -L "$TEST_DIR" -lCraCEF \
   -Xlinker -rpath -Xlinker "$TEST_DIR" \
-  "$MANAGER_SOURCE" Sources/Cra/Services/NowPlaying.swift Sources/Cra/Services/PageScript.swift Sources/Cra/Services/Scheduler.swift Sources/Cra/Services/DevToolsToggle.swift Sources/Cra/Services/CraLog.swift Sources/Cra/Services/PageProbe.swift Sources/Cra/Services/Persistence.swift Packages/CraCore/Sources/CraCore/Scheduling.swift Packages/CraCore/Sources/CraCore/JSONStore.swift \
+  "$MANAGER_SOURCE" Sources/Cra/Services/NowPlaying.swift Sources/Cra/Services/PageScript.swift Sources/Cra/Services/Scheduler.swift Packages/CraCore/Sources/CraCore/DevToolsToggle.swift Sources/Cra/Services/CraLog.swift Sources/Cra/Services/PageProbe.swift Sources/Cra/Services/Persistence.swift Packages/CraCore/Sources/CraCore/Scheduling.swift Packages/CraCore/Sources/CraCore/JSONStore.swift \
   Sources/Cra/Perf/Perf.swift Packages/CraCore/Sources/CraCore/Perf/*.swift Packages/CraCore/Sources/CraCore/ExtensionPageRetry.swift Packages/CraCore/Sources/CraCore/PermissionPrompt.swift Packages/CraCore/Sources/CraCore/TabSleepPolicy.swift Packages/CraCore/Sources/CraCore/ProtectedMedia.swift Sources/Cra/Services/WebKit/PageEngines.swift Tests/Support/ManualScheduler.swift Tests/BrowserManagerSupport/AppServices.swift \
   Tests/BrowserManagerLifecycleTests.swift -o "$TEST_DIR/lifecycle-tests"
 # A data folder of its own: PageEngines keeps protected-media.json there, not in the real Cra's.

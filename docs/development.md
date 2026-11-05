@@ -96,7 +96,7 @@ to Markdown or `docs/` alone runs nothing.
 - `scripts/test-store.sh`: the real `SidebarStore`, `AppComposition` and importers on a
   `ManualScheduler`, against the made-up Arc and Chromium profiles in `Tests/Fixtures`.
 - `scripts/test-policies.sh`: the decisions pulled out of the window controllers
-  (`ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
+  (`ExtensionLaunch`, `FeatureFlags`).
 - `scripts/test-perf.sh`: the performance recorder on a real main run loop: injected stalls,
   hang files with a `sample` stack, the session marker, ownership, the recording switch
   ([performance.md](performance.md)).
@@ -111,7 +111,8 @@ behave. Check those by hand, and say how in the PR.
 
 Scenario hooks for a command file (`cra://debug?…`): `checkStore=1` logs a fault per broken
 sidebar link, `pageJS=<js>` runs script in the focused page, `installExtension=<folder>` and
-`removeExtension=<id>`, `extensionAction=<id>`, `fullscreen=1|0`, `windowSize=1280x800`,
+`removeExtension=<id>`, `extensionAction=<id>`, `fullscreen=1|0`, `appActive=1|0` (the sidebar drawn as if
+Cra were in front or behind, e.g. the download bin's dimming), `windowSize=1280x800`,
 `snapshot=<ViewClass[,n]>&out=<png>`, `sleepTabs=<seconds>` (the 10 tabs used last too), `memoryPressure=warning|critical` (one
 memory-pressure sweep at that level, if Settings ▸ Tabs has it on), `stall=<ms>` (blocks the main
 thread), `perfReport=<path>` (the recorder's perf.json now), `systemAppearance=light|dark|system`
