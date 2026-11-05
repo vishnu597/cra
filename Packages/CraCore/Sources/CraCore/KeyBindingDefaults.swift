@@ -168,6 +168,11 @@ public enum KeyBindingDefaults {
             "goBack": [KeyChord(KeyChord.left, alt)],
             "goForward": [KeyChord(KeyChord.right, alt)],
             "settings": [KeyChord(",", ctrl)],
+            // Chrome's DevTools keys on Windows. Its Inspect key, Ctrl+Shift+C, is Copy URL here as
+            // in Arc, and Ctrl+Alt+C would take AltGr+C from layouts that type with it: none.
+            "devTools": [KeyChord("i", ctrlShift), KeyChord(KeyChord.function(12), [])],
+            "jsConsole": [KeyChord("j", ctrlShift)],
+            "inspectElement": [],
             "clearCache": [],
             "clearCookies": [],
         ]
