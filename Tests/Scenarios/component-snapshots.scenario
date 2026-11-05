@@ -14,9 +14,24 @@ snapshot FolderRowView pinned-folder
 snapshot TabRowView today-tab-row
 snapshot NewTabRowView new-tab-row
 snapshot SpaceDockView space-dock
+# Collapsed, Cra keeps the space icon at rest (Arc shows the chevron; X DM, 4 Nov).
+cra://debug?collapsePinned=1
+wait 1
+snapshot SpaceHeaderView space-header-collapsed
+cra://debug?collapsePinned=0
+wait 1
+# The command bar lists Check for Updates (X DM, 4 Nov).
+cra://debug?suggest=check%20for%20up
+expect-log Cra suggest check for up .*command\("checkForUpdates"\) Check for Updates
 cra://open?url=${PAGE}?n=snap
 wait 3
 snapshot SidebarURLPill url-pill
+# Developer Mode brings its bar with the toolbar hidden too, as Arc does (#185).
+cra://action/toggleDeveloperMode
+wait 2
+snapshot PaneToolbarView toolbar-developer
+cra://action/toggleDeveloperMode
+wait 1
 cra://action/toggleToolbar
 wait 1
 snapshot PaneToolbarView toolbar
@@ -29,3 +44,6 @@ wait 3
 snapshot PaneToolbarView,0 toolbar-split-pane
 snapshot PaneToolbarView,1 toolbar-split-empty-pane
 snapshot SplitRowView split-row
+cra://action/renameTab   # from a pane, the split's name is edited in its row
+wait 1
+snapshot SplitRowView split-row-renaming

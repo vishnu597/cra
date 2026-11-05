@@ -56,6 +56,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     var currentBrowser: CraBrowser? { browsers.visibleRuntime?.browser }
 
+    /// The window's extension side panel (chrome.sidePanel; Chrome's, which Arc lacks).
+    private(set) lazy var sidePanel = ExtensionSidePanelController(app: app, shell: shell, owner: self)
+
+    /// The side panel's page window joined this window's children: the overlay panels stay above it.
+    func sidePanelPageAttached() { raiseOverlayPanels() }
+
     /// This window's entry in the store (WindowSession): its space, open tabs, frame.
     let windowID: UUID
     /// Pages load in the off-the-record profile; nothing is saved (WindowSession.isIncognito).
@@ -101,7 +107,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
                                             onClose: { [weak self] in self?.hideFindBar() }))
         shell.sidebarWidth = CGFloat(store.prefs.sidebarWidth)
         shell.sidebarVisible = sidebarVisible
-        shell.showToolbar = store.settings.showToolbar
+        shell.showToolbar = store.settings.showsBar(above: selectedTabID.flatMap { store.item($0)?.tab?.url })
         shell.edgeToEdge = store.settings.edgeToEdgeContent
         lastSidebarVisible = sidebarVisible
         window.trafficLightsHidden = !sidebarVisible
@@ -263,6 +269,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         sidebarActions.resetPinnedTab = { [weak self] id in self?.resetPinnedTab(id) }
         sidebarActions.separatePinnedTab = { [weak self] id in self?.separatePinnedTab(id) }
         sidebarActions.editPinnedURL = { [weak self] id in self?.editPinnedURL(id) }
+        sidebarActions.showToast = { [weak self] text in self?.showToast(text) }
         sidebarActions.openURL = { [weak self] url in
             guard let self else { return }
             self.store.createTab(url: url, window: self.windowID)
@@ -304,10 +311,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         // Toolbar buttons are ~34 pt wide and the click lands near the middle: the popup's
         // right edge lines up with the button's (Chrome anchors popups that way).
         sidebarActions.runExtension = { [weak self] id in
+            guard let self else { return }
             let button = Self.extensionButtonUnderPointer()
-            // A pin in the sidebar's grid (toolbar hidden) hangs its popup under its own button.
-            self?.runExtensionAction(id, buttonRightX: button?.maxX ?? NSEvent.mouseLocation.x + 17,
-                                     buttonBottomY: self?.store.settings.showToolbar == false ? button?.minY : nil)
+            // A pin in the sidebar's grid (toolbar hidden) hangs its popup under its own button; one in
+            // a bar above the page (the toolbar, a split pane's, the developer bar) under that bar.
+            let inBar = button.map { self.isInPaneBar($0) } ?? false
+            self.runExtensionAction(id, buttonRightX: button?.maxX ?? NSEvent.mouseLocation.x + 17,
+                                    buttonBottomY: inBar ? self.toolbarBottomOnScreen()?.y
+                                        : self.store.settings.showToolbar == false ? button?.minY : nil)
         }
         sidebarActions.showExtensionsMenu = { [weak self] in self?.showToolbarExtensionsMenu() }
         sidebarActions.paneRunExtension = { [weak self] pane, id in
@@ -328,6 +339,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         }
         ExtensionActions.shared.watchActions { [weak app] in
             app?.mainWindows.flatMap { $0.browsers.runtimes.values.map { (tab: $0.tabID, browser: $0.browser) } } ?? []
+        }
+        ExtensionActions.shared.sidePanelHandler = { [weak app] request, tab in
+            guard let app else { return }
+            ExtensionSidePanelController.route(request, tab: tab, app: app)
         }
         browsers.nowPlaying = sidebarUI.nowPlaying
         sidebarUI.nowPlaying.perform = { [weak self] id, action in
@@ -399,7 +414,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
             // alert and popover it presents, and those follow macOS as Arc's do, whatever the
             // space colour (#171).
             shell.appearance = NSAppearance(named: palette.isDark ? .darkAqua : .aqua)
-            commandPanel?.appearance = shell.appearance
+            // The command bar follows macOS (#187); only its highlight is the space's, also when
+            // the space changes under an open bar.
+            commandBar.highlight = palette.commandHighlight
             // Vibrant themes see through to the desktop like Arc; others are opaque.
             shell.vibrancy.isHidden = !palette.vibrant
             shell.vibrancyLift.isHidden = !palette.vibrant
@@ -417,7 +434,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         let split = selected.flatMap { store.splitContaining($0) }
         let factors = SplitPaneLayout.normalizedFactors(ids: panes, stored: split?.split?.widthFactors ?? [:])
         let empty = Set(panes.filter { store.item($0)?.isEmptyTab == true })
-        if shell.showToolbar != store.settings.showToolbar { shell.showToolbar = store.settings.showToolbar }
+        // A lone page's bar: the toolbar, or the developer bar on a Developer Mode site (#185).
+        let loneBar = store.settings.showsBar(above: panes.count == 1 ? store.item(panes[0])?.tab?.url : nil)
+        if shell.showToolbar != loneBar { shell.showToolbar = loneBar }
         if shell.edgeToEdge != store.settings.edgeToEdgeContent { shell.edgeToEdge = store.settings.edgeToEdgeContent }
         // Before setPanes: a pane whose page is not live yet gets its bar colour now, not white.
         let bars = toolbarColors(panes: panes)
@@ -503,9 +522,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         var nav: [UUID: TabNavState] = [:]
         for id in ids {
             guard let rt = browsers.runtime(for: id) else { continue }
-            nav[id] = TabNavState(canGoBack: rt.browser.canGoBack, canGoForward: rt.browser.canGoForward, isLoading: rt.browser.isLoading, themeColor: rt.themeColor)
+            nav[id] = TabNavState(canGoBack: rt.browser.canGoBack, canGoForward: rt.browser.canGoForward, isLoading: rt.browser.isLoading,
+                                  themeColor: rt.themeColor, protectedMedia: PageEngines.protectedMediaService(of: rt.browser))
         }
         if nav != sidebarUI.navStates { sidebarUI.navStates = nav }
+        if let id = browsers.visibleTabID, let service = nav[id]?.protectedMedia { tellAboutProtectedMedia(service) }
     }
 
     // MARK: Split view
@@ -585,6 +606,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     func browserManager(download: CraDownloadInfo) {
         let name = (download.fullPath as NSString).lastPathComponent.isEmpty ? download.suggestedName : (download.fullPath as NSString).lastPathComponent
+        if let tab = browsers.downloadSourceTab, let item = store.item(tab), let t = item.tab {
+            TidyDownloadsService.shared.noteSource(download.identifier, title: item.displayTitle, url: t.url)
+        }
         if windowDownloads.insert(download.identifier).inserted {
             ChromeDownloadAnimation.suppress()
             showDownloadInSidebar(download, name: name)
@@ -596,6 +620,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         updateRecentDownload(download)
         if download.state == .complete, !download.fullPath.isEmpty, finishedDownloads.insert(download.identifier).inserted {
             DownloadHistory.shared.add(path: download.fullPath)
+            let id = download.identifier
+            TidyDownloadsService.shared.finished(id, path: download.fullPath, downloadURL: download.url, window: windowID, store: store) { [weak self] path in
+                guard let self, var recent = self.sidebarUI.recentDownload, recent.id == id else { return }
+                recent.path = path
+                self.sidebarUI.recentDownload = recent
+            }
         }
         if download.state == .inProgress, downloadWatchdog == nil {
             downloadWatchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -937,7 +967,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         guard EmbeddedPages.isEnabled, let window, let responder = window.firstResponder as? NSView,
               NSStringFromClass(type(of: responder)) == "RenderWidgetHostViewCocoa" else { return }
         let focused = browsers.visibleTabID.flatMap { browsers.runtime(for: $0)?.hostWindow }.flatMap(EmbeddedPages.pageViews(of:)) ?? []
-        if !focused.contains(where: { responder.isDescendant(of: $0) }) { window.makeFirstResponder(nil) }
+        // The extension side panel's page keeps the keys it has.
+        let panel = sidePanel.isShowing ? sidePanel.embeddedViews : []
+        if !(focused + panel).contains(where: { responder.isDescendant(of: $0) }) { window.makeFirstResponder(nil) }
     }
 
     /// The tab whose embedded page should take keyboard focus once it is in its card.
@@ -2145,6 +2177,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         return rect.maxY - CraMetrics.titleAreaHeight - 2 - 36
     }
 
+    /// Whether a button (screen rect) sits in a bar above a page rather than in the sidebar.
+    private func isInPaneBar(_ button: NSRect) -> Bool {
+        guard shell.panesShowBars, let window else { return false }
+        let mid = NSPoint(x: button.midX, y: button.midY)
+        return shell.paneCards.contains { card in
+            window.convertToScreen(card.toolbarHost.convert(card.toolbarHost.bounds, to: nil)).contains(mid)
+        }
+    }
+
     /// Under the extension's pinned toolbar button when the toolbar shows one, else under the
     /// toolbar at the card's right end.
     fileprivate func extensionPopupAnchor(_ id: String) -> NSPoint? {
@@ -2164,7 +2205,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         let browser = currentBrowser
         let anchor = bar.map { bar in
             // Under the URL bar, or under a grid pin lower down.
-            buttonRightX.map { x in NSPoint(x: x, y: min(buttonBottomY ?? .infinity, urlBarBottomOnScreen() ?? bar.y)) } ?? extensionPopupAnchor(id) ?? NSPoint(x: bar.cardMaxX - 8, y: bar.y)
+            buttonRightX.map { x in NSPoint(x: x, y: buttonBottomY ?? urlBarBottomOnScreen() ?? bar.y) } ?? extensionPopupAnchor(id) ?? NSPoint(x: bar.cardMaxX - 8, y: bar.y)
         }
         let available = profileExtensions
         switch ExtensionLaunch.decide(id, available: available, hasPage: bar != nil && browser != nil) {
@@ -2253,13 +2294,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     /// Arc's sliders button (toolbar and URL pill): the Site Control Center, hung under the
     /// button that was clicked (buttons are 32 × 28), not wherever the pointer is in it.
-    private func showToolbarExtensionsMenu() {
+    /// The Site Control Center as if its sliders button was clicked, wherever the request came from
+    /// (the protected media toast's Why?): under the toolbar's button, else under the sidebar's URL
+    /// field at its right end, where that button sits. The arrow shows where to find it next time.
+    private func showSiteControlsFromTheirButton() {
+        if let button = (shell.focusedCard?.toolbarHost as? PaneToolbarView)?.siteControlsButtonFrameOnScreen() {
+            return showToolbarExtensionsMenu(from: button, inToolbar: true)
+        }
+        guard let button = (shell.sidebarHost as? SidebarView)?.siteControlsButtonFrameOnScreen else { return showToolbarExtensionsMenu() }
+        showToolbarExtensionsMenu(from: button, inToolbar: false)
+    }
+
+    private func showToolbarExtensionsMenu(from anchor: NSRect? = nil, inToolbar: Bool = false) {
+        // Decided now, while the click is the current event: the page is asked a question below.
+        if siteControlCenter.closesInstead() { return }
         // A split pane's bar has the sliders even with the toolbar hidden: hang under that bar then.
-        let pressed = Self.buttonFrameUnderPointer { $0 is ToolbarGlyphButton }
+        let pressed = anchor.map { inToolbar ? $0 : nil } ?? Self.buttonFrameUnderPointer { $0 is ToolbarGlyphButton }
         guard let window, let content = window.contentView,
               let y = pressed != nil && shell.panesShowBars ? toolbarBottomOnScreen()?.y : urlBarBottomOnScreen() else { return }
         ExtensionStore.shared.reload()
-        let midX = (pressed ?? Self.buttonFrameUnderPointer { $0 is SidebarGlyphButton })?.midX ?? NSEvent.mouseLocation.x
+        let midX = (anchor ?? pressed ?? Self.buttonFrameUnderPointer { $0 is SidebarGlyphButton })?.midX ?? NSEvent.mouseLocation.x
         // Arc's popover overlaps the bar by 4 pt (popover top 71 under a bar ending at 75).
         let onScreen = NSRect(x: midX - 16, y: y + 4, width: 32, height: 28)
         let rect = content.convert(window.convertFromScreen(onScreen), from: nil)
@@ -2282,9 +2336,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         actions.siteSettings = { [weak self] in
             if let settings = SiteControlCenter.siteSettingsURL(for: url) { self?.openTab(settings) }
         }
+        actions.learnAboutProtectedMedia = { [weak self] in self?.openTab(Self.protectedMediaHelp) }
+        actions.chooseSafariEngine = { [weak self] on in self?.chooseSafariEngine(on, for: url) }
         siteControlCenterSpaceID = focusedSpaceID
-        siteControlCenter.show(relativeTo: rect, of: content, url: url, secure: secure, dark: SystemAppearance.shared.isDark,
-                               profile: profileDirectoryName, tab: selectedTabID, store: store, actions: actions)
+        let show = { [weak self] (safariEngine: Bool?) in
+            guard let self, let window = self.window, window.isVisible else { return }
+            self.siteControlCenter.show(relativeTo: rect, of: content, url: url, secure: secure, dark: SystemAppearance.shared.isDark,
+                                        profile: self.profileDirectoryName, tab: self.selectedTabID,
+                                        protectedMedia: self.browsers.visibleTabID.flatMap { self.sidebarUI.navState(for: $0).protectedMedia },
+                                        safariEngine: safariEngine, toggleChecked: true, store: self.store, actions: actions)
+        }
+        // The Safari's Engine switch: on for a WebKit page; for a Chromium page only once it asked
+        // for Widevine (PageScript's `drm`), else no switch. Asked in Cra's world; a page that
+        // doesn't answer within 0.3 s opens without it.
+        guard let b = currentBrowser, url.hasPrefix("http") else { return show(nil) }
+        if b is WebKitBrowser { return show(true) }
+        var shown = false
+        let once = { (value: Bool?) in if !shown { shown = true; show(value) } }
+        b.evaluate(inIsolatedWorld: PageScript.world, params: #"{"expression":"window.__cra?.drm === true","returnByValue":true}"#) { result, _ in
+            let drm = result.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                .flatMap { $0["result"] as? [String: Any] }?["value"] as? Bool == true
+            DispatchQueue.main.async { once(drm ? false : nil) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { once(nil) }
+    }
+
+    func debugChooseSafariEngine(_ on: Bool) {
+        if let url = currentBrowser?.currentURL { chooseSafariEngine(on, for: url) }
+    }
+
+    /// The Site Control Center's Safari's Engine switch: the site plays in WebKit (or Chromium)
+    /// from now on, and the focused page opens again there. Choosing it is knowing about it: no toast.
+    private func chooseSafariEngine(_ on: Bool, for url: String) {
+        PageEngines.choose(on ? .webKit : .chromium, for: url)
+        if on, let service = PageEngines.sites.serviceName(for: url) { PageEngines.told(service) }
+        if let id = browsers.visibleTabID { browsers.reopenInItsEngine(id) }
+    }
+
+    /// The help centre's page on why Spotify, Netflix and the others play in Safari's engine.
+    static let protectedMediaHelp = "https://crabrowser.app/help/protected-media"
+
+    func debugSiteControlsShown() -> Bool { siteControlCenter.isShown
     }
 
     private func openTab(_ url: String) {
@@ -2426,9 +2518,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         // Always centred in the window, also when opened from the toolbar.
         commandBar.attached = false
         commandBar.panelWidth = min(CraMetrics.commandBarWidth, window.frame.width - 80)
-        // Light or dark with the space's theme, as the sidebar is: a child panel would otherwise
-        // follow macOS, a dark bar over a light space while the Mac runs dark (reported on X).
-        commandPanel.appearance = shell.appearance
+        // The panel keeps no appearance of its own, so it follows macOS like the menus, sheets and
+        // popovers (#171): Arc's bar is dark over a light space while the Mac runs dark (#187).
         positionCommandPanel()
         if commandPanel.parent == nil { window.addChildWindow(commandPanel, ordered: .above) }
         commandBarOpenedAt = Date()
@@ -2583,6 +2674,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         return url?.isEmpty == false ? url : nil
     }
 
+    /// The first time a service plays in a WebKit page (docs/protected-media.md): "Spotify plays
+    /// with Safari's engine", with Why? (the Site Control Center says what that means). It stays
+    /// until its ✕ is pressed, Why? included, so Cra knows it was seen; only then is the service told
+    /// for good. Shown once a session per service: one left open shows again next launch.
+    private func tellAboutProtectedMedia(_ service: String) {
+        guard !PageEngines.wasTold(service), !offeredProtectedMedia.contains(service), window?.isVisible == true else { return }
+        offeredProtectedMedia.insert(service)
+        let told = { PageEngines.told(service) }
+        // A moment after the page shows, so it isn't lost in the tab switch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, let window = self.window, let id = self.browsers.visibleTabID,
+                  self.sidebarUI.navState(for: id).protectedMedia == service else {
+                self?.offeredProtectedMedia.remove(service)
+                return
+            }
+            let page = self.shell.webContainer.convert(self.shell.webContainer.bounds, to: nil)
+            self.toast.show("\(service) plays with Safari's engine",
+                            action: ShinyToast.Action(title: "Why?") { [weak self] in self?.showSiteControlsFromTheirButton() },
+                            page: page, in: window, theme: self.focusedSpace.theme, onClose: told)
+        }
+    }
+
+    /// Services whose toast was offered this session (they show once a session until answered).
+    private var offeredProtectedMedia: Set<String> = []
+
     /// Arc's toast at the top right of the page (ShinyToast): Cra's confirmations.
     func showToast(_ text: String, action: ShinyToast.Action? = nil) {
         guard let window else { return }
@@ -2717,6 +2833,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         if commandBar.isOpen { positionCommandPanel() }
         floatingSidebar?.reposition()
         for p in peeks { p.repositionPeek() }
+        // A toast that stays (the protected media one) follows the page's corner, once laid out.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            self.toast.follow(page: self.shell.webContainer.convert(self.shell.webContainer.bounds, to: nil), in: window)
+        }
         saveFrame()
     }
 
@@ -2855,6 +2976,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     func tearDown() {
         isTornDown = true
         dismissTransientUI()
+        sidePanel.hide()
         for p in peeks { p.closeWindow() }
         // A page another window shows behind its blurred stand-in moves there with its history
         // and state; closed with this window, that window loaded it again from scratch.

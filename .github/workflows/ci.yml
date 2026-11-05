@@ -1,13 +1,14 @@
 name: CI
 
-# A change only to the Windows port (Windows/, its workflow and notes) cannot affect the Mac app,
-# so it does not wait for a macOS runner. Packages/CraCore is not listed: the Mac app builds on it.
+# A change only to docs or to the Windows port (Windows/ and its workflow) cannot affect the Mac
+# app, so it runs nothing here (and doesn't cancel the run in progress). Packages/CraCore is not
+# listed: the Mac app builds on it.
 on:
   push:
     branches: [main]
-    paths-ignore: ["Windows/**", ".github/workflows/windows.yml", "docs/windows.md"]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', 'Windows/**', '.github/workflows/windows.yml']
   pull_request:
-    paths-ignore: ["Windows/**", ".github/workflows/windows.yml", "docs/windows.md"]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', 'Windows/**', '.github/workflows/windows.yml']
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,15 +27,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: CraCore, harnesses and lint
-        run: scripts/test.sh
+      - name: Lint
+        run: scripts/lint.py
 
-      # Changed lines under test >= 70 %, CraCore >= 85 % (docs/testing.md).
-      - name: Coverage
+      # Every test once, compiled with coverage; a failing test fails this step with its output.
+      # Gates: changed lines under test >= 70 %, CraCore >= 85 % (docs/testing.md).
+      - name: CraCore, harnesses and coverage
         if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
         run: |
           set -o pipefail
           scripts/coverage.py --base "${{ github.event.pull_request.base.sha || github.event.before }}" | tee coverage.md
+
+      # A new branch's first push has no base to measure changed lines against.
+      - name: CraCore and harnesses
+        if: github.event_name != 'pull_request' && github.event.before == '0000000000000000000000000000000000000000'
+        run: scripts/test.sh
 
       # Fork pull requests get a read-only token: the job summary has the same table.
       - name: Coverage comment

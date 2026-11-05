@@ -176,9 +176,12 @@ public struct SidebarItem: Identifiable, Codable, Equatable {
     public var folderIcon: FolderIconStyle? = nil
     /// Set on a folder that fills itself (Arc: list.automaticLiveFolderData).
     public var liveFolder: LiveFolderData? = nil
+    /// A Today folder shown as a group header, as Tidy Tabs makes them (Arc: SidebarItemData.tabGroup,
+    /// its title in `title`). Kept on a folder so a Cra that predates groups still reads the file.
+    public var tabGroup: Bool? = nil
 
     public init(id: UUID, parentID: UUID?, title: String?, children: [UUID], isUnread: Bool, createdAt: Date, data: ItemData,
-                folderIcon: FolderIconStyle? = nil, liveFolder: LiveFolderData? = nil) {
+                folderIcon: FolderIconStyle? = nil, liveFolder: LiveFolderData? = nil, tabGroup: Bool? = nil) {
         self.id = id
         self.parentID = parentID
         self.title = title
@@ -188,6 +191,7 @@ public struct SidebarItem: Identifiable, Codable, Equatable {
         self.data = data
         self.folderIcon = folderIcon
         self.liveFolder = liveFolder
+        self.tabGroup = tabGroup
     }
 
     public var tab: TabData? {
@@ -197,6 +201,7 @@ public struct SidebarItem: Identifiable, Codable, Equatable {
     public var isTab: Bool { tab != nil }
     public var isFolder: Bool { if case .folder = data { return true }; return false }
     public var isLiveFolder: Bool { isFolder && liveFolder != nil }
+    public var isTabGroup: Bool { isFolder && tabGroup == true }
     public var split: SplitData? {
         if case .split(let s) = data { return s }
         return nil
@@ -236,6 +241,11 @@ public struct SidebarItem: Identifiable, Codable, Equatable {
     public static func folder(_ name: String, parent: UUID?) -> SidebarItem {
         SidebarItem(id: UUID(), parentID: parent, title: name, children: [], isUnread: false,
                     createdAt: Date(), data: .folder)
+    }
+
+    public static func tabGroup(_ name: String, parent: UUID?) -> SidebarItem {
+        SidebarItem(id: UUID(), parentID: parent, title: name, children: [], isUnread: false,
+                    createdAt: Date(), data: .folder, tabGroup: true)
     }
 
     public static func container(_ kind: ContainerKind, id: UUID = UUID()) -> SidebarItem {
@@ -465,6 +475,9 @@ public struct AppSettings: Codable, Equatable {
     /// Arc's "Open a Peek window when clicking on links with Shift held"
     /// (shiftClickModalEntryPointEnabled).
     public var peekOnShiftClick: Bool = true
+    /// GitHub #183, not in Arc (Chrome's way): a page's "Open Link in New Tab" leaves the page in
+    /// front and the new tab loading behind it (LinkMenu). Off like Arc, which switches to it.
+    public var openLinksInBackground: Bool = false
     /// Arc's Previews ▸ Folders (folderPreviewEnabled): resting the pointer on a closed folder
     /// lists its tabs, most recent first, with a search field.
     public var folderPreviews: Bool = true
@@ -508,6 +521,15 @@ public struct AppSettings: Codable, Equatable {
     public static let perfRecordingDefault = true
     /// Settings ▸ Performance ▸ "Hide site names": every site in the diagnostics zip becomes site-N.
     public var perfHidesSiteNames: Bool = false
+    /// Arc Max's Tidy Tabs (tidyTabsEnabled), done by the Mac's Apple Intelligence model: the Today
+    /// divider's Tidy button. On by default; the button only shows while Apple Intelligence is on.
+    public var tidyTabs: Bool = true
+    /// Arc Max's Tidy Tab Titles (renamePinnedTabsEnabled): a tab you pin gets a shorter name from the
+    /// Mac's Apple Intelligence model. Off by default: it renames, where Tidy waits for a click.
+    public var tidyTabTitles: Bool = false
+    /// Arc Max's Tidy Downloads (renameDownloadsEnabled): a finished download gets a readable name from
+    /// the Mac's Apple Intelligence model. Off by default, like Arc Max.
+    public var tidyDownloads: Bool = false
 
     public init() {}
 
@@ -521,6 +543,12 @@ public struct AppSettings: Codable, Equatable {
         set { defaultLinkDestination = newValue ? .littleWindow : .mostRecentSpace }
     }
     public func isDeveloperMode(url: String) -> Bool { AppSettings.siteKey(for: url).map(developerHosts.contains) ?? false }
+    /// Whether a page shown alone carries a bar above it: the toolbar while it is shown, and
+    /// Arc's developer bar on a Developer Mode site even with the toolbar hidden (#185). A
+    /// split's panes always carry bars (#178); the shell adds that rule.
+    public func showsBar(above url: String?) -> Bool {
+        showToolbar || url.map(isDeveloperMode) == true
+    }
     public mutating func toggleDeveloperMode(url: String) {
         guard let k = AppSettings.siteKey(for: url) else { return }
         if developerHosts.contains(k) { developerHosts.remove(k) } else { developerHosts.insert(k) }
@@ -656,6 +684,7 @@ extension AppSettings {
         peekLinksToOtherSites = try c.decodeIfPresent(Bool.self, forKey: .peekLinksToOtherSites) ?? true
         peekInEveryTab = try c.decodeIfPresent(Bool.self, forKey: .peekInEveryTab) ?? false
         peekOnShiftClick = try c.decodeIfPresent(Bool.self, forKey: .peekOnShiftClick) ?? true
+        openLinksInBackground = try c.decodeIfPresent(Bool.self, forKey: .openLinksInBackground) ?? false
         folderPreviews = try c.decodeIfPresent(Bool.self, forKey: .folderPreviews) ?? true
         hapticFeedbackOnReorder = try c.decodeIfPresent(Bool.self, forKey: .hapticFeedbackOnReorder) ?? true
         warnBeforeQuitting = try c.decodeIfPresent(Bool.self, forKey: .warnBeforeQuitting) ?? false
@@ -670,6 +699,9 @@ extension AppSettings {
         edgeToEdgeContent = try c.decodeIfPresent(Bool.self, forKey: .edgeToEdgeContent) ?? false
         perfRecording = try c.decodeIfPresent(Bool.self, forKey: .perfRecording) ?? Self.perfRecordingDefault
         perfHidesSiteNames = try c.decodeIfPresent(Bool.self, forKey: .perfHidesSiteNames) ?? false
+        tidyTabs = try c.decodeIfPresent(Bool.self, forKey: .tidyTabs) ?? true
+        tidyTabTitles = try c.decodeIfPresent(Bool.self, forKey: .tidyTabTitles) ?? false
+        tidyDownloads = try c.decodeIfPresent(Bool.self, forKey: .tidyDownloads) ?? false
     }
 }
 

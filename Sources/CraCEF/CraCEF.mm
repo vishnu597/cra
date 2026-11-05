@@ -85,6 +85,9 @@ static CefString CefStringFromNS(NSString* s) {
 
 /// Page context menus shown by Cra (RunContextMenu) instead of Chrome.
 static BOOL g_ownContextMenus = NO;
+// The two "open link" items on a page's context menu, from CraCore's LinkMenu (GitHub #183).
+static NSArray<NSString*>* g_linkMenuTitles = @[@"Open Link in New Tab", @"Open Link in Background Tab"];
+static NSArray<NSNumber*>* g_linkMenuBackground = @[@NO, @YES];
 
 /// Page.addScriptToEvaluateOnNewDocument params every page browser gets once it exists
 /// (the page's world, then Cra's isolated world).
@@ -140,8 +143,8 @@ static NSMenu* CraMenuFromModel(CefRefPtr<CefMenuModel> model, CraMenuPick* pick
 }
 
 enum CraMenuCommand {
-    kMenuOpenLinkInNewTab = MENU_ID_USER_FIRST + 1,
-    kMenuOpenLinkInBackgroundTab,
+    kMenuOpenLinkFirst = MENU_ID_USER_FIRST + 1,
+    kMenuOpenLinkSecond,
     kMenuCopyLink,
     kMenuInspectElement,
     kMenuOpenImageInNewTab,
@@ -1152,9 +1155,13 @@ class CraClient : public CefClient,
                   public CefDownloadHandler,
                   public CefFocusHandler,
                   public CefPermissionHandler,
-                  public CefFindHandler {
+                  public CefFindHandler,
+                  public CefJSDialogHandler {
 public:
     CraBrowser* owner() { return owner_; }
+    /// Cra closed this page (-[CraBrowser close]). Kept here rather than read from the owner:
+    /// the CraBrowser can be gone before Chromium asks.
+    void SetCloseRequested() { close_requested_ = true; }
     explicit CraClient(CraBrowser* owner) : owner_(owner) { CraClientRegistry().insert(static_cast<const void*>(static_cast<CefClient*>(this))); }
     ~CraClient() override { CraClientRegistry().erase(static_cast<const void*>(static_cast<CefClient*>(this))); }
 
@@ -1168,6 +1175,21 @@ public:
     CefRefPtr<CefFocusHandler> GetFocusHandler() override { return this; }
     CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
     CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+    CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return this; }
+
+    // JS dialogs ----------------------------------------------------------
+
+    // Cra closes pages with CloseBrowser(true), which skips beforeunload. With DevTools docked
+    // Chromium still asked "Leave site?" (a shop with something in its cart): DevTools close
+    // first and the page's beforeunload ran anyway. The tab was already gone, so its page window
+    // stayed over the next tab, and after Cancel it never closed. A page Cra closes leaves.
+    // Everything else (reloads, navigations, other dialogs) keeps Chrome's own prompts.
+    bool OnBeforeUnloadDialog(CefRefPtr<CefBrowser> browser, const CefString& message_text, bool is_reload,
+                              CefRefPtr<CefJSDialogCallback> callback) override {
+        if (!close_requested_) return false;
+        callback->Continue(true, CefString());
+        return true;
+    }
 
     // Life span -----------------------------------------------------------
 
@@ -1474,6 +1496,11 @@ public:
         CraBrowser* o = owner_;
         if (!o || !frame->IsMain()) return false;
         if (OpensPeek(o, request, user_gesture, is_redirect)) return true;
+        // A page Cra shows in another engine (ProtectedMediaSites, WebKit for DRM services):
+        // cancelled before the request goes out, so a sign-in's one-time code isn't spent here.
+        if ([o.delegate respondsToSelector:@selector(browser:handsOffNavigationToURL:method:)]
+            && [o.delegate browser:o handsOffNavigationToURL:NSStringFromCef(request->GetURL())
+                            method:NSStringFromCef(request->GetMethod())]) return true;
         // A new page, also one started while the last is still loading: the loading bar waits
         // for its answer again.
         if (!is_redirect) SetCommittedLoad(o, NO);
@@ -1590,8 +1617,11 @@ public:
                              CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model) override {
         size_t index = 0;
         if (!params->GetLinkUrl().empty()) {
-            model->InsertItemAt(index++, kMenuOpenLinkInNewTab, "Open Link in New Tab");
-            model->InsertItemAt(index++, kMenuOpenLinkInBackgroundTab, "Open Link in Background Tab");
+            model->InsertItemAt(index++, kMenuOpenLinkFirst, g_linkMenuTitles[0].UTF8String);
+            model->InsertItemAt(index++, kMenuOpenLinkSecond, g_linkMenuTitles[1].UTF8String);
+            // Chrome-style menus carry Chrome's own "Open Link in New Tab" further down, which
+            // always opens in the background: one item by that name, the one the setting rules (#183).
+            model->Remove(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB);
             model->InsertItemAt(index++, kMenuCopyLink, "Copy Link");
             model->InsertSeparatorAt(index++);
         }
@@ -1617,11 +1647,10 @@ public:
         CraBrowser* o = owner_;
         if (!o) return false;
         switch (command_id) {
-            case kMenuOpenLinkInNewTab:
-                [o.delegate browser:o requestsNewTabWithURL:NSStringFromCef(params->GetLinkUrl()) inBackground:NO];
-                return true;
-            case kMenuOpenLinkInBackgroundTab:
-                [o.delegate browser:o requestsNewTabWithURL:NSStringFromCef(params->GetLinkUrl()) inBackground:YES];
+            case kMenuOpenLinkFirst:
+            case kMenuOpenLinkSecond:
+                [o.delegate browser:o requestsNewTabWithURL:NSStringFromCef(params->GetLinkUrl())
+                       inBackground:g_linkMenuBackground[command_id - kMenuOpenLinkFirst].boolValue];
                 return true;
             case kMenuOpenImageInNewTab:
                 [o.delegate browser:o requestsNewTabWithURL:NSStringFromCef(params->GetSourceUrl()) inBackground:NO];
@@ -1768,6 +1797,7 @@ private:
     // True while a prompt's answer runs (UI thread only).
     static inline bool answering_prompt_ = false;
     __weak CraBrowser* owner_;
+    bool close_requested_ = false;
     CefRefPtr<FaviconState> favicon_ = new FaviconState();
     CefRefPtr<CefResourceRequestHandler> blocker_ = new CraContentBlockingHandler();
     IMPLEMENT_REFCOUNTING(CraClient);
@@ -2393,6 +2423,7 @@ static NSView* FindRenderWidgetHostView(NSView* root) {
 - (void)close {
     if (_isClosed || _parked) return;
     self.closeRequested = YES;
+    if (CraClient* c = _browser ? AsCraClient(_browser->GetHost()->GetClient().get()) : nullptr) c->SetCloseRequested();
     if (_browser && _activeDownloads.count && !g_quitting) {
         [self park];
     } else if (_browser) {
@@ -2465,6 +2496,11 @@ static void MarkProfileExitedCleanly(NSString* profileDir) {
 
 + (void)setChromeHosting:(BOOL)enabled { g_chromeHosting = enabled; }
 + (void)setOwnContextMenus:(BOOL)enabled { g_ownContextMenus = enabled; }
++ (void)setLinkMenuTitles:(NSArray<NSString*>*)titles opensInBackground:(NSArray<NSNumber*>*)background {
+    if (titles.count != 2 || background.count != 2) return;
+    g_linkMenuTitles = [titles copy];
+    g_linkMenuBackground = [background copy];
+}
 + (void)setDocumentStartScript:(NSString*)script isolatedScript:(NSString*)isolatedScript world:(NSString*)world {
     NSMutableArray<NSString*>* all = [NSMutableArray array];
     for (NSDictionary* params in @[@{@"source": script ?: @"", @"runImmediately": @YES},

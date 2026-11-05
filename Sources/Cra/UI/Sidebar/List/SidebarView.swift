@@ -11,6 +11,9 @@ final class SidebarView: NSView {
     private let favicons: FaviconCache
     private let tabs = FlippedView()
     private let topBar: SidebarTopBarView
+
+    /// The URL field's sliders button (screen rect), nil while the toolbar has it.
+    var siteControlsButtonFrameOnScreen: NSRect? { topBar.siteControlsButtonFrameOnScreen }
     private let pager: SpacePagerView
     private let trayHost: DownloadsTrayView
     private let player: NowPlayingTrayView
@@ -44,6 +47,57 @@ final class SidebarView: NSView {
         player.onCountChange = { [weak self] in self?.needsLayout = true }
         ui.observeLibraryReveal { [weak self] in self?.applyLibraryReveal() }
         observe()
+        observeRenameCard()
+    }
+
+    // MARK: Tidy Downloads' card
+
+    private var renameCard: DownloadRenameCard?
+
+    /// The card for a download this window renamed: in over the bin, out after 8 s or a click.
+    private func observeRenameCard() {
+        let window = ui.windowID
+        observeChanges(of: { TidyDownloadsService.shared.card.flatMap { $0.window == window ? $0 : nil } }) { [weak self] card in
+            self?.showRenameCard(card)
+        }
+    }
+
+    private func showRenameCard(_ mine: TidyDownloadsService.Rename?) {
+        guard mine?.id != renameCard?.rename.id else { return }
+        if let old = renameCard {
+            renameCard = nil
+            old.disappear { old.removeFromSuperview() }
+        }
+        guard let r = mine else { return }
+        let v = DownloadRenameCard(rename: r, colors: SidebarColors(palette))
+        let service = TidyDownloadsService.shared
+        let toast = actions.showToast
+        let ui = self.ui
+        v.onClose = { service.dismiss() }
+        v.onHover = { service.hold($0) }
+        v.onOpen = { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: r.newPath)]) }
+        v.onRevert = {
+            let ok = service.revert(r) { _, back in
+                if var recent = ui.recentDownload, recent.id == r.download {
+                    recent.path = back
+                    ui.recentDownload = recent
+                }
+            }
+            if ok { toast("Download name reverted!") }
+        }
+        tabs.addSubview(v)
+        renameCard = v
+        layoutRenameCard()
+        v.appear()
+    }
+
+    private func layoutRenameCard() {
+        guard let v = renameCard, let anchor = ui.libraryAnchor as? LibraryButtonView else { return }
+        let bin = anchor.convert(anchor.binFrame, to: tabs)
+        // Arc: the tail's tip ends 1 pt above the bin's 38 pt box, ~4 pt above its 32 pt thumbnail.
+        let w = tabs.bounds.width - 16
+        v.frame = NSRect(x: 8, y: bin.minY - 4 - DownloadRenameCard.height, width: w, height: DownloadRenameCard.height)
+        v.tailX = bin.midX - 8
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -218,6 +272,7 @@ final class SidebarView: NSView {
         let trayH = DownloadsTrayMetrics.listHeight(rows: rows) + 4
         trayHost.frame = NSRect(x: 0, y: pager.frame.maxY - trayH, width: b.width, height: trayH)
         updateTrayMask(open: ui.downloadsListOpen, rows: rows)
+        if renameCard?.layer?.animationKeys()?.isEmpty ?? true { layoutRenameCard() }
     }
 }
 
@@ -250,6 +305,14 @@ final class SidebarTopBarView: NSView {
     private var rowButtons: [SidebarGlyphButton] = []
     private var chevron: NSView?
     private let pill = SidebarURLPill()
+
+    /// Where the URL field's sliders button is or appears on hover (screen rect): its last
+    /// accessory, 28 pt ending 5 pt in. nil while the field isn't shown (the toolbar has it).
+    var siteControlsButtonFrameOnScreen: NSRect? {
+        guard !pill.isHiddenOrHasHiddenAncestor, let window else { return nil }
+        let f = window.convertToScreen(pill.convert(pill.bounds, to: nil))
+        return NSRect(x: f.maxX - 5 - 28, y: f.minY + (f.height - 28) / 2, width: 28, height: 28)
+    }
     private var hoverHeader = false { didSet { if hoverHeader != oldValue { pill.showAccessories = hoverHeader } } }
     private var syncQueued = false
 
@@ -355,7 +418,7 @@ final class SidebarTopBarView: NSView {
                 }
             }
             pill.show(text: text, url: url, hasTab: tab != nil, colors: colors, active: active,
-                      pinned: pinned, hasExtensions: !entries.isEmpty)
+                      pinned: pinned, hasExtensions: !entries.isEmpty, protectedMedia: tab.flatMap { ui.navState(for: $0.id).protectedMedia })
         }
         needsLayout = true
         if wasCompact != compact { superview?.superview?.needsLayout = true }
@@ -485,7 +548,8 @@ final class SidebarURLPill: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     func show(text: String, url: String, hasTab: Bool, colors: SidebarColors, active: Bool,
-              pinned: [(String, String, NSImage?)], hasExtensions: Bool) {
+              pinned: [(String, String, NSImage?)], hasExtensions: Bool, protectedMedia: String? = nil) {
+        self.protectedMedia = protectedMedia
         self.colors = colors
         self.hasTab = hasTab
         tip.text = url
@@ -503,6 +567,8 @@ final class SidebarURLPill: NSView {
 
     /// Whether the pins go in this field (else in the grid over the favorites), for its width.
     private var pinsInField = true
+    /// A WebKit page's service: the pins dim and say why (docs/protected-media.md).
+    private var protectedMedia: String?
 
     /// Arc's URL-bar accessories: pinned extensions (while they leave the address room), Copy
     /// Link, then the site controls.
@@ -513,8 +579,9 @@ final class SidebarURLPill: NSView {
         pinsInField = PinnedExtensionGrid.fitsInURLField(count: m.pinned.count, fieldWidth: bounds.width)
         for (id, _, icon) in pinsInField ? m.pinned : [] {
             let b = ToolbarGlyphButton()
-            // Arc's pinned extension buttons have no tooltip (#106).
-            b.configure(symbol: nil, image: icon, help: "", enabled: true, width: 28, iconSize: 16, tint: colors.textSecondary)
+            // Arc's pinned extension buttons have no tooltip (#106), unless they can't run here.
+            b.configure(symbol: nil, image: icon, help: protectedMedia.map(ExtensionStore.offOnProtectedMedia) ?? "",
+                        enabled: protectedMedia == nil, width: 28, iconSize: 16, tint: colors.textSecondary)
             b.action = { actions.runExtension(id) }
             b.menuProvider = { ExtensionStore.shared.entries.first { $0.extensionID == id }.map(ExtensionsMenu.iconMenu) }
             accessories.append(b)
@@ -980,6 +1047,8 @@ final class LibraryButtonView: NSView {
     private var hovering = false { didSet { if hovering != oldValue { refresh() } } }
     var colors = SidebarColors() { didSet { if colors != oldValue { glyph.image = LibraryGlyph.image(dark: colors.isDark); refresh() } } }
     static let binOffset = CGSize(width: 9, height: -12)
+    /// The download bin's frame, for Tidy Downloads' card to point at.
+    var binFrame: NSRect { bin.frame }
 
     init(ui: SidebarUIState, actions: SidebarActions) {
         self.ui = ui

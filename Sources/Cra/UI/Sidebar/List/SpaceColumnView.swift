@@ -92,7 +92,9 @@ final class SpaceColumnView: NSView {
 /// The space's emoji and name. Arc 1.171 (live, 1 Nov): a click collapses or expands the pinned
 /// tabs; on hover the fill comes in, the chevron takes the icon's place and the ••• button
 /// (sidebarSpaceEditButton) shows at the trailing edge, all in one frame. The ••• and a
-/// right-click open the same space menu at the pointer. Collapsed, the chevron stays and points right.
+/// right-click open the same space menu at the pointer. Collapsed, the chevron points right. Arc keeps
+/// it in the icon's place while collapsed; Cra shows the icon at rest and the chevron only on hover
+/// (X DM, 4 Nov), except for a space without an icon, where the chevron is all that shows the state.
 final class SpaceHeaderView: NSView, NSTextFieldDelegate {
     private let spaceID: UUID
     private let store: SidebarStore
@@ -181,7 +183,8 @@ final class SpaceHeaderView: NSView, NSTextFieldDelegate {
         done.textColor = colors.textTertiary
         chevron.contentTintColor = colors.textSecondary
         more.tint = colors.textSecondary
-        let showsChevron = lit || collapsed
+        let hasIcon = !(emoji.stringValue.isEmpty && symbol.image == nil)
+        let showsChevron = lit || (collapsed && !hasIcon)
         chevron.alphaValue = showsChevron ? 1 : 0
         emoji.alphaValue = showsChevron ? 0 : 1
         symbol.alphaValue = showsChevron ? 0 : 1
@@ -497,6 +500,7 @@ final class FavoritesGridView: NSView {
         var palette: SpacePalette?
         var dismissed = true
         var pins: [Pin] = []
+        var protectedMedia: String?
         withObservationTracking {
             guard let space = store.space(spaceID) else { return }
             palette = space.theme.palette
@@ -506,6 +510,7 @@ final class FavoritesGridView: NSView {
                 let profile = store.profileDirectoryName(space: spaceID)
                 let entries = ext.entries(inProfile: profile)
                 let tab = store.selectedTabID(in: spaceID, window: ui.windowID)
+                protectedMedia = tab.flatMap { ui.navState(for: $0).protectedMedia }
                 pins = ext.pinnedIDs(inProfile: profile).compactMap { id in
                     entries.first { $0.extensionID == id }.map {
                         Pin(id: id, name: $0.name, icon: ext.toolbarIcon(for: $0, profile: profile, tab: tab),
@@ -543,7 +548,7 @@ final class FavoritesGridView: NSView {
         let showsCard = ids.isEmpty && !dismissed
         // Arc drops the card and moves the list up in one frame, like a first tile coming in.
         let countChanged = ids.count != order.count || showsCard == card.isHidden || pins.count != extensionOrder.count
-        showExtensions(pins, palette: palette)
+        showExtensions(pins, palette: palette, protectedMedia: protectedMedia)
         for (id, t) in tiles where !ids.contains(id) {
             t.removeFromSuperview()
             tiles[id] = nil
@@ -572,7 +577,7 @@ final class FavoritesGridView: NSView {
     /// The pinned extensions' buttons, in pin order; none while the toolbar shows them. Arc 1.171
     /// (4 Nov) draws each cell like a favorite tile, the tile's fill at rest and its hover fill,
     /// the 18 pt icon centred, and names it in a tooltip (its toolbar pins have none, #106).
-    private func showExtensions(_ pins: [Pin], palette: SpacePalette?) {
+    private func showExtensions(_ pins: [Pin], palette: SpacePalette?, protectedMedia: String?) {
         let colors = palette.map(SidebarColors.init) ?? SidebarColors()
         let dark = palette?.isDark ?? false
         let ids = pins.map(\.id)
@@ -588,7 +593,9 @@ final class FavoritesGridView: NSView {
                 addSubview(b)
                 return b
             }()
-            b.configure(symbol: nil, image: ext.badged(p.icon, p.badge, tint: colors.textSecondary), help: p.name, enabled: true,
+            // On a WebKit page they dim and say why (docs/protected-media.md).
+            b.configure(symbol: nil, image: ext.badged(p.icon, p.badge, tint: colors.textSecondary),
+                        help: protectedMedia.map(ExtensionStore.offOnProtectedMedia) ?? p.name, enabled: protectedMedia == nil,
                         width: 28, iconSize: 18, tint: colors.textSecondary,
                         hover: dark ? NSColor.white.withAlphaComponent(0.15) : NSColor.black.withAlphaComponent(0.09))
             b.restFill = palette.map { NSColor($0.pillFill) } ?? .clear
@@ -842,7 +849,7 @@ final class FavoritesDropStrip: FavoritesDropTarget {
 /// "Drag to add Favorites" and a line on what they are, in the space's own ink. It takes a dragged
 /// tab, and its × (sidebarFavoritesEmptyStateDismissButton) closes it for good. Measured at 2x:
 /// the fill sits where the first tile would (8 pt in, 12 pt corners) and is 93.5 pt tall; a 1 pt
-/// dashed line (5.5 on, 4.5 off) runs just outside it; the header goes 4 pt further down than
+/// dashed line (5.5 on, 4.5 off) runs just outside it (in Cra, on its edge: see layout); the header goes 4 pt further down than
 /// under a row of tiles. No hover state; a tab dragged over it makes the line solid, lightens the
 /// fill and dims the rest to half.
 final class FavoritesEmptyCard: FavoritesDropTarget {
@@ -924,7 +931,10 @@ final class FavoritesEmptyCard: FavoritesDropTarget {
         fill.frame = bounds
         border.frame = bounds
         fill.path = CGPath(roundedRect: card, cornerWidth: 12, cornerHeight: 12, transform: nil)
-        border.path = CGPath(roundedRect: card.insetBy(dx: -0.5, dy: -0.5), cornerWidth: 12.5, cornerHeight: 12.5, transform: nil)
+        // Arc's line runs just outside the fill, but the card sits at the top of the space pager,
+        // which clips its pages for swipes, so a line outside the fill loses its top edge. It runs
+        // on the fill's outer point instead, 1 pt in from Arc's.
+        border.path = CGPath(roundedRect: card.insetBy(dx: 0.5, dy: 0.5), cornerWidth: 11.5, cornerHeight: 11.5, transform: nil)
         content.frame = card
         // Arc's centres and frames, from the fill's top-left: badge centre 19.75 pt down, title 33.5–49.5,
         // subtitle 53–83 (two 15 pt lines, 150 pt wide), × centred 15 pt in from the top-right corner.

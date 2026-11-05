@@ -6,13 +6,14 @@ import Observation
 /// (system integration) and Extensions take rows instead. Each app draws the panes it has
 /// (the Mac all of them; Windows `windowsPanes` so far) and gives them its own glyphs.
 public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
-    case general, tabs, privacy, profiles, extensions, shortcuts, performance, advanced
+    case general, tabs, max, privacy, profiles, extensions, shortcuts, performance, advanced
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .general: return "General"
         case .tabs: return "Tabs"
+        case .max: return "Max"
         case .privacy: return "Privacy"
         case .profiles: return "Profiles"
         case .extensions: return "Extensions"

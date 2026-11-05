@@ -40,6 +40,15 @@ enum SidebarMenus {
         NSPasteboard.general.setString(string, forType: .string)
     }
 
+    // MARK: Tab groups
+
+    /// Arc's Tab Group Context Menu: one item, "Remove header" (the tabs stay, loose).
+    static func tabGroup(_ id: UUID, list: SpaceListView) -> NSMenu {
+        let menu = menu()
+        add(menu, "Remove header") { list.store.removeGroupHeader(id) }
+        return menu
+    }
+
     // MARK: Tabs
 
     static func tab(_ m: TabRowModel, list: SpaceListView) -> NSMenu {
@@ -255,6 +264,8 @@ enum SidebarMenus {
             paneItems(submenu(menu, c.title), c.id, store: store, actions: actions)
         }
         menu.addItem(.separator())
+        // Arc's way back to the panes from a renamed split.
+        if store.item(id)?.title != nil { add(menu, "Reset Name and Icon") { store.rename(id, to: nil) } }
         add(menu, "Rename…") { ui.renamingID = id }
         menu.addItem(.separator())
         let spaces = submenu(menu, "Move to")
