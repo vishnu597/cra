@@ -30,6 +30,8 @@ final class SidebarView {
     /// so they stay centred whatever the button shows.
     private let footer = Grid()
     private let store: SidebarStore
+    /// The window it draws: its space, its selected tab (SidebarStore.WindowSession).
+    private let windowID: UUID
     private let favicons: Favicons
     private weak var actions: SidebarActions?
     private var palette = SidebarPalette(SpaceTheme.presets[0])
@@ -38,8 +40,9 @@ final class SidebarView {
     private static let spaceEmoji = ["🌱", "💼", "🎮", "📚", "🎨", "🏠", "✈️", "🧪"]
     private static let favoritesPerRow = 4
 
-    init(store: SidebarStore, actions: SidebarActions, favicons: Favicons = .shared) {
+    init(store: SidebarStore, windowID: UUID, actions: SidebarActions, favicons: Favicons = .shared) {
         self.store = store
+        self.windowID = windowID
         self.favicons = favicons
         self.actions = actions
         for height in [UI.auto, UI.auto, UI.star, UI.auto] { root.rowDefinitions.append(UI.row(height)) }
@@ -65,12 +68,12 @@ final class SidebarView {
 
     /// Draws the focused space. Everything it reads from the store is what a change redraws.
     func build() {
-        let space = store.focusedSpace
+        let space = store.focusedSpace(window: windowID)
         palette = SidebarPalette(space.theme)
         buildFavorites(space)
         buildHeader(space)
         list.children.clear()
-        for item in store.listedPinnedItems(in: space) { addRow(item, depth: 0) }
+        for item in store.listedPinnedItems(in: space, window: windowID) { addRow(item, depth: 0) }
         addDivider()
         // Settings ▸ Tabs ▸ "Show the New Tab button above tabs": else it follows Today's last tab.
         let newTabAtTop = store.settings.newTabButtonAtTop
@@ -88,7 +91,7 @@ final class SidebarView {
     }
 
     var fill: Brush { palette.fill }
-    var isDark: Bool { store.focusedSpace.theme.isDark }
+    var isDark: Bool { store.focusedSpace(window: windowID).theme.isDark }
     var textColor: Brush { palette.text }
     var secondaryTextColor: Brush { palette.secondaryText }
 
@@ -104,7 +107,7 @@ final class SidebarView {
         let perRow = Self.favoritesPerRow
         for _ in 0..<perRow { favorites.columnDefinitions.append(UI.column(UI.star)) }
         for _ in 0..<((items.count + perRow - 1) / perRow) { favorites.rowDefinitions.append(UI.row(UI.pixels(44))) }
-        let open = store.selectedTabID.map { store.splitContaining($0)?.id ?? $0 }
+        let open = store.selectedTabID(window: windowID).map { store.splitContaining($0)?.id ?? $0 }
         for (i, item) in items.enumerated() {
             let label = tileIcon(item)
             label.horizontalAlignment = .center
@@ -147,7 +150,7 @@ final class SidebarView {
         // Arc: clicking the space's name folds its pinned tabs away.
         let title = UI.button(name, padding: Thickness(left: 6, top: 4, right: 6, bottom: 4)) { [weak self] in
             guard let self else { return }
-            self.store.togglePinnedCollapsed(self.store.focusedSpaceID)
+            self.store.togglePinnedCollapsed(self.store.focusedSpaceID(window: self.windowID))
         }
         title.horizontalAlignment = .stretch
         title.horizontalContentAlignment = .left
@@ -162,7 +165,7 @@ final class SidebarView {
             addFolderRow(item, depth: depth)
         } else if item.isSplit {
             let titles = store.children(of: item.id).map(\.displayTitle).joined(separator: " | ")
-            let selected = store.selectedTabID.map { store.splitContaining($0)?.id == item.id } ?? false
+            let selected = store.selectedTabID(window: windowID).map { store.splitContaining($0)?.id == item.id } ?? false
             // A click opens the split on the pane last focused in it (Arc: focusItemID).
             let panes = store.paneTabIDs(for: item.children.first ?? item.id)
             let focus = item.split?.focusTabID.flatMap { panes.contains($0) ? $0 : nil } ?? panes.first
@@ -172,7 +175,7 @@ final class SidebarView {
             }
         } else if item.isTab {
             let closable = item.id
-            appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, depth: depth, selected: store.isSelected(item.id, window: nil),
+            appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, depth: depth, selected: store.isSelected(item.id, window: windowID),
                       unread: item.isUnread, closable: closable, menu: tabMenu(item)) { [weak self] in
                 self?.select(item.id)
             }
@@ -287,7 +290,7 @@ final class SidebarView {
     }
 
     private func select(_ id: UUID) {
-        store.selectTab(id)
+        store.selectTab(id, window: windowID)
     }
 
     // MARK: Menus
@@ -305,7 +308,8 @@ final class SidebarView {
         if item.isTab {
             menu.items.append(UI.menuItem("Duplicate") { [weak self] in _ = self?.store.duplicateTab(id) })
         }
-        let others = store.orderedSpaces.filter { $0.id != store.spaceID(ofItem: id) }
+        // An incognito window's tabs stay in it.
+        let others = store.isIncognito(item: id) ? [] : store.orderedSpaces.filter { $0.id != store.spaceID(ofItem: id) }
         if !others.isEmpty {
             let move = MenuFlyoutSubItem()
             move.text = "Move to Space"
@@ -356,7 +360,9 @@ final class SidebarView {
             guard let self else { return }
             self.store.createFolder(named: "New Folder", in: space.pinnedContainerID)
         })
-        menu.items.append(UI.menuItem("New Space") { [weak self] in self?.newSpace() })
+        if !store.isIncognito(space: space.id) {
+            menu.items.append(UI.menuItem("New Space") { [weak self] in self?.newSpace() })
+        }
         menu.items.append(UI.menuItem("Clear Today") { [weak self] in self?.store.clearToday(space.id) })
         if store.spaceOrder.count == 1 && !store.isIncognito(space: space.id) {
             menu.items.append(UI.menuItem("Hide Space Header") { [weak self] in self?.store.settings.showSpaceHeaderOnSingleSpace = false })
@@ -372,16 +378,18 @@ final class SidebarView {
 
     private func buildSpacesBar(_ focused: Space) {
         spacesBar.children.clear()
-        for space in store.orderedSpaces where !store.hidesSpaceHeader(space.id) {
+        // An incognito window pages only its own space (SidebarStore.pagedSpaces).
+        for space in store.pagedSpaces(window: windowID) where !store.hidesSpaceHeader(space.id) {
             let mark = UI.text(space.emoji.isEmpty ? String(space.title.prefix(1)) : space.emoji, size: 15, color: palette.text, trimmed: false)
             let dot = UI.button(mark, fill: space.id == focused.id ? palette.selected : nil,
                                 padding: Thickness(left: 6, top: 3, right: 6, bottom: 3)) { [weak self] in
-                self?.store.focusSpace(space.id)
+                self?.store.focusSpace(space.id, window: self?.windowID)
             }
             try? ToolTipService.setToolTip(dot, space.title)
             dot.contextFlyout = spaceMenu(space)
             spacesBar.children.append(dot)
         }
+        guard !store.isIncognito(space: focused.id) else { return }
         let add = UI.button("+", color: palette.secondaryText) { [weak self] in self?.newSpace() }
         try? ToolTipService.setToolTip(add, "New Space")
         spacesBar.children.append(add)

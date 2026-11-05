@@ -1,3 +1,4 @@
+import CraCore
 import Foundation
 import UWP
 import WinAppSDK
@@ -35,6 +36,11 @@ final class HostWindow {
     /// that when the window becomes active (at launch, Alt+Tab back, a dialog or the command bar
     /// going away). Give it to what should have it, or keys go nowhere.
     var onFocus: (() -> Void)?
+    /// The window became the active one (a click, Alt+Tab, the taskbar): the store's active
+    /// window follows it, as AppKit's key window does on the Mac.
+    var onActivate: (() -> Void)?
+    /// A move or resize by the user ended (its frame is then worth saving).
+    var onMoveEnded: (() -> Void)?
     /// The window's own client area shows wherever no page and no XAML covers it: between split
     /// panes and in an empty pane. It is painted in this colour.
     var background: HostColor = HostColor(r: 28, g: 36, b: 43) { didSet { if background != oldValue { invalidate() } } }
@@ -56,7 +62,9 @@ final class HostWindow {
         weak var window: HostWindow?
     }
 
-    init(content: UIElement, sidebarWidth: Double, width: Double = 1280, height: Double = 820) throws {
+    /// `frame`: where to open, in screen pixels (a restored or cascaded window); nil opens a
+    /// `width` × `height` window where Windows puts it.
+    init(content: UIElement, sidebarWidth: Double, frame: WindowFrame? = nil, width: Double = 1280, height: Double = 820) throws {
         appWindow = try AppWindow.create()
         hwnd = UInt(appWindow.id.value)
         self.sidebarWidth = sidebarWidth
@@ -74,7 +82,12 @@ final class HostWindow {
                 _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { [weak self] in self?.close() }
             }
         }
-        try appWindow.resize(SizeInt32(width: Int32(width * scale), height: Int32(height * scale)))
+        if let frame {
+            try appWindow.moveAndResize(RectInt32(x: Int32(frame.x.rounded()), y: Int32(frame.y.rounded()),
+                                                  width: Int32(frame.width.rounded()), height: Int32(frame.height.rounded())))
+        } else {
+            try appWindow.resize(SizeInt32(width: Int32(width * scale), height: Int32(height * scale)))
+        }
         layout()
         hookWindowProcedure()
         try appWindow.show()
@@ -83,6 +96,48 @@ final class HostWindow {
     var title: String {
         get { appWindow.title }
         set { appWindow.title = newValue }
+    }
+
+    /// The window's outer frame on screen, in physical pixels.
+    var frame: WindowFrame {
+        let p = appWindow.position, s = appWindow.size
+        return WindowFrame(x: Double(p.x), y: Double(p.y), width: Double(s.width), height: Double(s.height))
+    }
+
+    /// The work area (the screen less the taskbar) of the monitor the window is on.
+    var workArea: WindowFrame? {
+        guard let window = HWND(bitPattern: hwnd), let monitor = MonitorFromWindow(window, DWORD(MONITOR_DEFAULTTONEAREST)) else { return nil }
+        return HostWindow.workArea(of: monitor)
+    }
+
+    /// Every monitor's work area (where a restored window may open).
+    static var workAreas: [WindowFrame] {
+        var areas: [WindowFrame] = []
+        let collect: MONITORENUMPROC = { monitor, _, _, context in
+            guard let monitor, let list = UnsafeMutablePointer<[WindowFrame]>(bitPattern: Int(context)),
+                  let area = HostWindow.workArea(of: monitor) else { return true }
+            list.pointee.append(area)
+            return true
+        }
+        withUnsafeMutablePointer(to: &areas) { pointer in
+            _ = EnumDisplayMonitors(nil, nil, collect, LPARAM(Int(bitPattern: pointer)))
+        }
+        return areas
+    }
+
+    private static func workArea(of monitor: HMONITOR) -> WindowFrame? {
+        var info = MONITORINFO()
+        info.cbSize = DWORD(MemoryLayout<MONITORINFO>.size)
+        guard GetMonitorInfoW(monitor, &info) else { return nil }
+        let r = info.rcWork
+        return WindowFrame(x: Double(r.left), y: Double(r.top), width: Double(r.right - r.left), height: Double(r.bottom - r.top))
+    }
+
+    /// Brings the window to the front with the keyboard.
+    func activate() {
+        guard let window = HWND(bitPattern: hwnd) else { return }
+        if IsIconic(window) { _ = ShowWindow(window, SW_RESTORE) }
+        _ = SetForegroundWindow(window)
     }
 
     /// Physical pixels per DIP.
@@ -130,6 +185,7 @@ final class HostWindow {
     private static let wmSetCursor: UINT = 0x0020, wmPaint: UINT = 0x000F, wmEraseBackground: UINT = 0x0014
     private static let wmMouseMove: UINT = 0x0200, wmLeftDown: UINT = 0x0201, wmLeftUp: UINT = 0x0202
     private static let wmCaptureChanged: UINT = 0x0215
+    private static let wmActivate: UINT = 0x0006, wmExitSizeMove: UINT = 0x0232
     private static let clipChildren: UInt32 = 0x0200_0000  // WS_CLIPCHILDREN
     private static let hitClient = 1  // HTCLIENT
     private static let doubleClickWidth: Int32 = 36, doubleClickHeight: Int32 = 37  // SM_CXDOUBLECLK, SM_CYDOUBLECLK
@@ -175,6 +231,13 @@ final class HostWindow {
         case Self.wmCaptureChanged:
             // Taken away mid-drag (Alt+Tab, a menu): the drag ends where it is.
             onMouse?(.cancelled)
+            return nil
+        case Self.wmActivate:
+            // WA_INACTIVE is 0; WA_ACTIVE and WA_CLICKACTIVE are not.
+            if wParam & 0xFFFF != 0 { onActivate?() }
+            return nil
+        case Self.wmExitSizeMove:
+            onMoveEnded?()
             return nil
         default:
             return nil

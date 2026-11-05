@@ -6,13 +6,14 @@ import WinSDK
 import WinUI
 
 /// The Windows app: starts Chromium, loads the shared SidebarStore from %LOCALAPPDATA%\Cra
-/// (the Mac's data folder layout, read by the same CraCore code) and opens a BrowserWindow on it.
+/// (the Mac's data folder layout, read by the same CraCore code) and opens a BrowserWindow for
+/// each window session it saved (AppDelegate's mainWindows on the Mac).
 @main
 public final class CraApp: SwiftApplication {
     // XAML objects can only be made once the app is launched, on its UI thread (making them in
     // init fails with RPC_E_WRONG_THREAD).
     @MainActor private var store: SidebarStore?
-    @MainActor private var browser: BrowserWindow?
+    @MainActor private var windows: WindowList?
     @MainActor private var clock: WinScheduler?
     /// Auto-archive, as the Mac runs it (AppComposition): kept until the app quits.
     @MainActor private var periodic: [ScheduledWork] = []
@@ -43,7 +44,10 @@ public final class CraApp: SwiftApplication {
         }
         // Saved and shut down while XAML is still up; then the process ends (MessageLoop.finish).
         MessageLoop.willQuit = { [weak self] in
-            onMain { self?.store?.saveAll() }
+            onMain {
+                self?.windows?.saveFrames()
+                self?.store?.saveAll()
+            }
             cra_cef_shutdown()
             MessageLoop.finish()
         }
@@ -55,11 +59,9 @@ public final class CraApp: SwiftApplication {
             periodic = [clock.every(30 * 60) { store.runAutoArchive() }]
             self.clock = clock
             self.store = store
-            do {
-                browser = try BrowserWindow(store: store, dispatcher: dispatcher)
-            } catch {
-                print("The window could not be made: \(error)")
-            }
+            let windows = WindowList(store: store, dispatcher: dispatcher)
+            self.windows = windows
+            windows.restore()
         }
     }
 

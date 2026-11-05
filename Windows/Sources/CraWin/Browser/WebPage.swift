@@ -124,11 +124,13 @@ final class WebPage: @unchecked Sendable {
     private(set) var isClosed = false
     private var handle: OpaquePointer?
 
-    /// A page loading `url` now.
-    init(parent: UInt, frame: PixelRect, url: String, delegate: WebPageDelegate?) {
+    /// A page loading `url` now; `incognito` in the off-the-record profile private windows share.
+    init(parent: UInt, frame: PixelRect, url: String, incognito: Bool = false, delegate: WebPageDelegate?) {
         self.delegate = delegate
         self.frame = frame
-        handle = url.withCString { cra_browser_create(UInt(parent), frame.x, frame.y, frame.width, frame.height, $0, callbacks()) }
+        handle = url.withCString {
+            cra_browser_create_in(UInt(parent), frame.x, frame.y, frame.width, frame.height, $0, incognito ? 1 : 0, callbacks())
+        }
     }
 
     /// A popup host: return it from `page(_:popupHostForURL:inBackground:)` and the popup

@@ -29,6 +29,8 @@ final class CommandBarView {
     let root = Grid()
     private let engine: SuggestionEngine
     private let store: SidebarStore
+    /// The window it opens in.
+    private let windowID: UUID
     private let favicons: Favicons
 
     private(set) var isOpen = false
@@ -74,7 +76,8 @@ final class CommandBarView {
     private let rowsPanel = StackPanel()
     private var rows: [Row] = []
 
-    init(engine: SuggestionEngine, store: SidebarStore, favicons: Favicons = .shared) {
+    init(engine: SuggestionEngine, store: SidebarStore, windowID: UUID, favicons: Favicons = .shared) {
+        self.windowID = windowID
         self.engine = engine
         self.store = store
         self.favicons = favicons
@@ -97,7 +100,7 @@ final class CommandBarView {
         pendingCompletion = nil
         pendingSets = 0
         lastTyped = query
-        result = engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID)
+        result = engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID(window: windowID))
         isOpen = true
         applyTheme()
         showText(query, selected: true)
@@ -143,7 +146,7 @@ final class CommandBarView {
         if let scope {
             switch scope {
             case .site(let site): result = engine.suggestions(for: newQuery, in: site)
-            case .tabs: result = engine.suggestions(for: newQuery, inTabsOf: store.focusedSpaceID, currentTabID: store.selectedTabID)
+            case .tabs: result = engine.suggestions(for: newQuery, inTabsOf: store.focusedSpaceID(window: windowID), currentTabID: store.selectedTabID(window: windowID))
             }
             render()
             return
@@ -154,7 +157,7 @@ final class CommandBarView {
             guard let self, self.isOpen, self.query == typed else { return }
             self.relist()
         }
-        result = engine.suggestions(for: newQuery, mode: mode, currentTabID: store.selectedTabID)
+        result = engine.suggestions(for: newQuery, mode: mode, currentTabID: store.selectedTabID(window: windowID))
         if !allowCompletion { result.inlineCompletion = nil }
         render()
         applyCompletion()
@@ -164,7 +167,7 @@ final class CommandBarView {
     private func relist() {
         guard scope == nil else { return }
         let selectedID = result.items.indices.contains(selectedIndex) ? result.items[selectedIndex].id : nil
-        result = engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID)
+        result = engine.suggestions(for: query, mode: mode, currentTabID: store.selectedTabID(window: windowID))
         if !allowCompletion { result.inlineCompletion = nil }
         if let i = result.items.firstIndex(where: { $0.id == selectedID }) {
             selectedIndex = i
