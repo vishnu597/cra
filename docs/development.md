@@ -96,7 +96,7 @@ to Markdown or `docs/` alone runs nothing.
 - `scripts/test-store.sh`: the real `SidebarStore`, `AppComposition` and importers on a
   `ManualScheduler`, against the made-up Arc and Chromium profiles in `Tests/Fixtures`.
 - `scripts/test-policies.sh`: the decisions pulled out of the window controllers
-  (`ExtensionLaunch`, `DevToolsToggle`, `FeatureFlags`).
+  (`ExtensionLaunch`, `FeatureFlags`).
 - `scripts/test-perf.sh`: the performance recorder on a real main run loop: injected stalls,
   hang files with a `sample` stack, the session marker, ownership, the recording switch
   ([performance.md](performance.md)).
