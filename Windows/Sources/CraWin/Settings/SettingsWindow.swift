@@ -31,6 +31,9 @@ final class SettingsWindow {
     /// Puts the shown pane's controls in step with the settings (changed elsewhere, or by them).
     private var syncPane: () -> Void = {}
     private var refreshQueued = false
+    /// Settings ▸ Profiles ▸ Create Profile…: Create a new Profile in the browser window that
+    /// last opened Settings.
+    var onNewProfile: () -> Void = {}
 
     init(store: SidebarStore) throws {
         self.store = store
@@ -231,6 +234,7 @@ final class SettingsWindow {
         let built: SettingsPaneContent
         switch pane {
         case .tabs: built = SettingsPanes.tabs(store: store, palette: palette)
+        case .profiles: built = SettingsPanes.profiles(store: store, palette: palette) { [weak self] in self?.onNewProfile() }
         case .shortcuts:
             let view = ShortcutsPaneView(bindings: WinKeyBindings.shared, palette: palette)
             built = SettingsPaneContent(element: view.root) { view.render() }

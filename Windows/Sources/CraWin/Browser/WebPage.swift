@@ -124,20 +124,37 @@ final class WebPage: @unchecked Sendable {
     private(set) var isClosed = false
     private var handle: OpaquePointer?
 
-    /// A page loading `url` now; `incognito` in the off-the-record profile private windows share.
-    init(parent: UInt, frame: PixelRect, url: String, incognito: Bool = false, delegate: WebPageDelegate?) {
+    /// The profile folder the page loads in (SidebarStore.profilePath); nil is Default, and
+    /// always for an incognito page. A page can't change profile: one in the wrong one is closed
+    /// and made again (BrowserManager.pruneMissingTabs on the Mac).
+    let profilePath: String?
+    let isIncognito: Bool
+
+    /// A page loading `url` now; `incognito` in the off-the-record profile private windows share,
+    /// else in `profilePath`'s profile.
+    init(parent: UInt, frame: PixelRect, url: String, incognito: Bool = false, profilePath: String? = nil,
+         delegate: WebPageDelegate?) {
         self.delegate = delegate
         self.frame = frame
-        handle = url.withCString {
-            cra_browser_create_in(UInt(parent), frame.x, frame.y, frame.width, frame.height, $0, incognito ? 1 : 0, callbacks())
+        self.isIncognito = incognito
+        self.profilePath = incognito ? nil : profilePath
+        let profile = self.profilePath ?? ""
+        handle = url.withCString { url in
+            profile.withCString { profile in
+                cra_browser_create_in(UInt(parent), frame.x, frame.y, frame.width, frame.height, url, incognito ? 1 : 0, profile,
+                                      callbacks())
+            }
         }
     }
 
     /// A popup host: return it from `page(_:popupHostForURL:inBackground:)` and the popup
-    /// opens in it.
-    init(popupHostIn parent: UInt, frame: PixelRect, delegate: WebPageDelegate?) {
+    /// opens in it, in its opener's profile (which `incognito` and `profilePath` record).
+    init(popupHostIn parent: UInt, frame: PixelRect, incognito: Bool = false, profilePath: String? = nil,
+         delegate: WebPageDelegate?) {
         self.delegate = delegate
         self.frame = frame
+        self.isIncognito = incognito
+        self.profilePath = incognito ? nil : profilePath
         handle = cra_browser_create(UInt(parent), frame.x, frame.y, frame.width, frame.height, nil, callbacks())
     }
 

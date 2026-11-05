@@ -14,6 +14,8 @@ protocol SidebarActions: AnyObject {
     func addPane(toSplit id: UUID)
     /// A pane's "Close": the pane's tab goes and the split keeps the others.
     func closeSplitPane(_ id: UUID)
+    /// Set Profile ▸ New Profile…: Create a new Profile, with this space ticked.
+    func newProfile(forSpace id: UUID)
 }
 
 /// Arc's sidebar on the shared SidebarStore: favorites as tiles, the space's name, its pinned
@@ -364,6 +366,7 @@ final class SidebarView {
             menu.items.append(UI.menuItem("New Space") { [weak self] in self?.newSpace() })
         }
         menu.items.append(UI.menuItem("Clear Today") { [weak self] in self?.store.clearToday(space.id) })
+        if !store.isIncognito(space: space.id) { menu.items.append(profileMenu(space)) }
         if store.spaceOrder.count == 1 && !store.isIncognito(space: space.id) {
             menu.items.append(UI.menuItem("Hide Space Header") { [weak self] in self?.store.settings.showSpaceHeaderOnSingleSpace = false })
         }
@@ -372,6 +375,24 @@ final class SidebarView {
             menu.items.append(UI.menuItem("Delete Space") { [weak self] in self?.store.deleteSpace(space.id) })
         }
         return menu
+    }
+
+    /// Arc's Set Profile: Default, the profiles (the space's ticked), New Profile….
+    private func profileMenu(_ space: Space) -> MenuFlyoutSubItem {
+        let sub = MenuFlyoutSubItem()
+        sub.text = "Set Profile"
+        func choice(_ title: String, _ id: UUID?) -> ToggleMenuFlyoutItem {
+            let item = ToggleMenuFlyoutItem()
+            item.text = title
+            item.isChecked = space.profileID == id
+            item.click.addHandler { [weak self] _, _ in self?.store.setProfile(id, forSpace: space.id) }
+            return item
+        }
+        sub.items.append(choice("Default", nil))
+        for p in store.profiles { sub.items.append(choice(p.name, p.id)) }
+        sub.items.append(MenuFlyoutSeparator())
+        sub.items.append(UI.menuItem("New Profile…") { [weak self] in self?.actions?.newProfile(forSpace: space.id) })
+        return sub
     }
 
     // MARK: Spaces
@@ -397,6 +418,9 @@ final class SidebarView {
 
     private func newSpace() {
         let n = store.spaceOrder.count
-        store.createSpace(title: "Space \(n + 1)", emoji: Self.spaceEmoji[n % Self.spaceEmoji.count])
+        // Arc's New Space starts on the profile of the space it was opened from.
+        let profile = SpaceProfiles.forNewSpace(from: store.focusedSpace(window: windowID), profiles: store.profiles)
+        let space = store.createSpace(title: "Space \(n + 1)", emoji: Self.spaceEmoji[n % Self.spaceEmoji.count])
+        if profile != nil { store.setProfile(profile, forSpace: space.id) }
     }
 }

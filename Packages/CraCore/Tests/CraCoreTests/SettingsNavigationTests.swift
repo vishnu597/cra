@@ -48,7 +48,7 @@ struct SettingsNavigationTests {
         #expect(SettingsPane.windowsPanes.allSatisfy { SettingsPane.allCases.contains($0) })
         let order = SettingsPane.windowsPanes.compactMap { SettingsPane.allCases.firstIndex(of: $0) }
         #expect(order == order.sorted(), "in the Mac's order")
-        #expect(SettingsPane.windowsPanes == [.general, .tabs, .shortcuts])
+        #expect(SettingsPane.windowsPanes == [.general, .tabs, .profiles, .shortcuts])
     }
 
     /// Dia's measurements: the content column fits beside the sidebar, the form's controls start

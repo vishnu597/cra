@@ -195,6 +195,9 @@ final class DownloadsTray {
         private let name = TextBlock()
         private let subtitle = TextBlock()
         private var path: String?
+        /// Kept here: a WinRT object built from Swift is only a wrapper, so a weak capture of it
+        /// is nil once nothing in Swift holds it, however long XAML keeps the control.
+        private let menu = MenuFlyout()
 
         init() {
             root.height = 40
@@ -233,12 +236,12 @@ final class DownloadsTray {
                 args?.handled = true
                 Shell.open(path)
             }
-            let menu = MenuFlyout()
             menu.items.append(UI.menuItem("Open") { [weak self] in self?.path.map(Shell.open) })
             menu.items.append(UI.menuItem("Show in Folder") { [weak self] in self?.path.map(Shell.showInFolder) })
-            menu.opening.addHandler { [weak self, weak menu] _, _ in
+            menu.opening.addHandler { [weak self] _, _ in
                 // Running, failed and cancelled downloads have no file to open yet.
-                if self?.path == nil { try? menu?.hide() }
+                guard let self, self.path == nil else { return }
+                try? self.menu.hide()
             }
             root.contextFlyout = menu
         }
