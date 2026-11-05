@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let installed = ExtensionStore.shared.entries.map(\.extensionID)
         let hasNewExtension = !Set(installed).isSubset(of: welcomed)
         try? JSONEncoder().encode(installed.sorted()).write(to: welcomedFile, options: .atomic)
+        DownloadDestinations.install(store: store)
         CraCEFRuntime.setStrayPageHandler { [weak self] url, profile in
             Task { @MainActor in
                 guard let self else { return }
@@ -774,7 +775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if let c = dict["combine"], let content = main.window?.contentView {
                 let tabs = store.children(of: store.focusedSpace.todayContainerID).filter { $0.tab != nil }
                 guard tabs.count > 1 else { return }
-                let kind: CombineDropPreview.Kind = c == "folder" ? .folder : .split(leading: c == "leading")
+                let kind = CombineDropPreview.Kind.split(leading: c == "leading")
                 let pal = store.focusedSpace.theme.palette
                 let v = CombineDropPreview(kind: kind, target: tabs[0], dragged: tabs[1], depth: 0, palette: pal, favicons: favicons)
                 v.frame = NSRect(x: 10, y: content.bounds.height - 420, width: 300, height: CraMetrics.rowHeight)

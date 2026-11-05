@@ -2206,6 +2206,26 @@ Theme palettes in a hand-built space can be borrowed; only the `background` styl
   zoom (16/12/31 → 41/33/50 on its default theme) and steps ~2 levels when the Space settles (45/30/43 → 43/30/45), and
   Cra does the same (189/112/120 → 216/133/137 at the start, 220/124/123 → 218/124/126 at the end), so no fullscreen
   difference against Arc reproduced on this Mac.
+- [O] Space switches, Stage Manager and AppKit's capture settings (5 Nov 2026, issue #156 on 0.1.30; built-in XDR
+  display; a probe app with a hudWindow NSVisualEffectView logging every 4 ms and on each notification: app active,
+  key, main, `NSWindow._hasActiveAppearance`, the view's `_shouldUseActiveAppearance` and its layer tree; ⌃← / ⌃→
+  posted as HID events). A full screen window keeps its active appearance when its Space slides away: the app resigns
+  active and the window loses key and main, but `_hasActiveAppearance` and the material stay active, the desktop tint
+  at opacity 1 throughout. So Arc's sidebar never leaves its active look on a ⌃← / ⌃→ round trip, while Cra's rule (app
+  active and key or main) went to the flat fill and came back at `didBecomeActive`, ~4 ms after the Space change, which
+  is after the slide: the reporter's lighter frames, ~5 frames past the animation. Windowed, the material goes inactive
+  as the window resigns main, as before. AppKit tells its views through `-[NSView _windowChangedKeyState]`. Cra now asks
+  a zero-size NSVisualEffectView that follows its window (`ActiveAppearanceProbe`) and ORs that answer into
+  `SidebarBackdrop.windowActive`. The rule's own half stays, because AppKit's answer doesn't count Cra's page windows.
+  Layer dump of the windowed hudWindow material: `CABackdropLayer` scale 0.125, `windowServerAware`, group
+  `NSCGSWindowBehindWindowCaptureBackdropGroup`, `allowsSubstituteColor` 1, `substituteColor` nil, filters
+  `sdrNormalize`, `gaussianBlur` (radius 30, normalize edges), `colorSaturate` 1.6; then the fill (0.157 grey at 0.4),
+  the tone (0.08 grey, lighten) and the `CAChameleonLayer` at 0.05. Inactive it drops only the capture, the fill and
+  tone go opaque, and the chameleon stays in at 0.05. Side by side over a stripe window, AppKit's settings on a bare
+  layer blur like the material and Cra's full-scale 40 pt blur spread a 20 pt band about twice as wide and greyer. Cra
+  now builds the capture with AppKit's settings (an eighth of the pixels for the window server to rebuild when a window
+  comes back, the dropout the reporter saw out of Stage Manager on an M1) and keeps the desktop tint in the tree at 0.05
+  under the capture, at 1 in full screen, out only with Reduce transparency. Stage Manager itself was not tested here.
 - [O] Tab list scroller: AppKit overlay scroller (AXScrollBar, 17 pt track) shown while scrolling, then faded;
   the knob is 4 pt wide, 3 pt in from the sidebar edge, white 49 % on a dark theme, no track. Cra:
   `SidebarScroller`, 10 pt wide so it stays in the gutter right of the rows (knob on Arc's exact columns).
@@ -3162,3 +3182,25 @@ Arc Max's renameDownloads: a finished download is renamed on disk and a card abo
   window under a press key first (installChildClickMonitor), but a Peek's page is a grandchild of the browser window, and a
   Little Window has no such monitor. LittleWindow.sendEvent now does the same for its children. A press while the browser
   window itself was key always worked (its monitor made the Peek key), which is why it looked intermittent.
+
+## Theme editor hover, tab-on-tab drops, Download location (Arc 1.171, static, 5 Nov 2026, #189–#191)
+Read from the arm64 slice's Swift field metadata (`__swift5_fieldmd`, case and field names only; no numbers).
+- [O metadata] SpaceStyleEditor module: `ColorPillButtonStyle { colorSet, _isHovered, addComplimentary }` (the preset
+  swatches are a ButtonStyle with a hover state), `SpaceStyleButtonStyle { _isHovered, _isEnabled, hoverColor,
+  hoverStyleEnabled }` (paging arrows, `EditColorButtonsView` − / +, `LightDarkToggleView`, each with
+  `shouldEnableButtonHover`), `PadWheel { _isDraggingKnob, _isKnobHovered, _knobPositionAtDragBegin }`,
+  `SpaceStyleColorPadView { _isPadButtonsHovered, _isDraggingKnob, _isKnobHovered }`.
+  [?] Not measured: the hover/press scales and the hover colour. Cra (#189): swatches and knobs scale 1.08 hovered,
+  0.92 pressed (ease-out 0.12 / 0.10 s, the reporter's estimates); arrows, − / +, Auto / Light / Dark get +0.3 white
+  on hover; pointing hand on the arrows, open hand over a knob, closed hand while dragging one; none with Reduce Motion.
+- [O metadata] Sidebar drops: `SidebarDropTarget = tabList(…) | appTray`, `SidebarDropTargetRegion = left | right`,
+  `SidebarDropOperation = move | copy`, the window action `draggedToCombineSplitCompatibleItems(…)`. No drop makes a
+  folder: `createFolderFromItems` / `createFolderFromSelection` are the menus' "New Folder with N Items". Cra (#191):
+  a tab dropped on the middle of any tab row, pinned or Today, offers the split (the pinned tab stays, the split
+  opens in Today with a copy, `SidebarStore.createSplit`); Cra's own "New Folder" drop on pinned rows is gone.
+  [?] Not observed live: Arc's drop on a pinned row.
+- [O strings/metadata] Settings ▸ Profiles "Download location" is per profile: `DownloadLocationView { store,
+  _selectedTag, _panelOpen }` with tags `arc.folder`, `arc.promptForDownload`, `arc.other` ("Button to confirm
+  selection of directory for file downloads"). [?] The menu's own labels aren't in the strings. Cra (#190):
+  AppSettings.downloadLocations per profile (folder or ask), a Downloads card under Profiles with the folder,
+  "Ask Where to Save Each File" and "Other…"; save panels queue one at a time as sheets on Cra's window.
