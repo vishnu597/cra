@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import CraCEF
 import SwiftUI
 
@@ -55,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         CraCEFRuntime.setOwnContextMenus(EmbeddedPages.isEnabled)
         CraCEFRuntime.setDocumentStartScript(PageScript.mainWorld, isolatedScript: PageScript.isolatedWorld, world: PageScript.world)
         startContentBlocking()
+        observeGlobalShortcut()
         SoftwareUpdater.shared.start(app: self)
         buildMenus()
         store.hasPage = { [unowned self] in self.runtime(for: $0).map { !$0.discarded } ?? false }
@@ -245,6 +247,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             CraCEFRuntime.setLinkMenuTitles(items.map(\.title), opensInBackground: items.map { NSNumber(value: $0.opensInBackground) })
         }
     }
+
+    /// Arc's "Open Little Arc when I press ⌥⌘N" (#195): New Little Window's shortcut from any app,
+    /// following the setting, the shortcut's binding and the keyboard layout. A test copy in the
+    /// background leaves the shortcut to the installed Cra.
+    private func observeGlobalShortcut() {
+        guard !HitchMonitor.background else { return }
+        let hotkey = GlobalHotkey { [weak self] in self?.perform("newLittleWindow") }
+        globalHotkey = hotkey
+        let chord = { [store, bindings] in
+            GlobalShortcut.registrable(bindings.action("newLittleWindow")?.shortcuts ?? [], enabled: store.settings.littleWindowShortcutEverywhere)
+        }
+        observeChanges(of: chord) { hotkey.set($0) }
+        // The same chord on another layout can be another key.
+        DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+                                                            object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                hotkey.set(nil)
+                hotkey.set(chord())
+            }
+        }
+    }
+
+    private var globalHotkey: GlobalHotkey?
 
     private func observeContentBlocking() {
         observeChanges(of: { [store] in store.settings.blockAdsAndTrackers }, apply: CraCEFRuntime.setContentBlockingEnabled)
@@ -629,6 +654,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 TestGesture.openMenu(at: NSPoint(x: g[0], y: w.frame.height - g[1]), in: w, right: dict["button"] == "right")
                 return
             }
+            // clickAt=x,y: a click there through the event queue, as the pointer's would go (#195);
+            // target=little as for menuAt.
+            if let g = dict["clickAt"]?.split(separator: ",").compactMap({ Double($0) }), g.count == 2,
+               let w = dict["target"] == "little" ? littleWindows.last?.window : main.window {
+                TestGesture.click(at: NSPoint(x: g[0], y: w.frame.height - g[1]), in: w)
+                return
+            }
             if let st = dict["status"] { main.browserManager(statusMessage: st); return }
             // tidy: the divider's Tidy on the window's space, without hovering it; undoTidy: ⌘Z's.
             if dict["tidy"] != nil { TidyTabsService.shared.tidy(store.focusedSpace(window: main.windowID).id, store: store); return }
@@ -697,6 +729,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             // Opens what normally needs a pointer or a held key, for screenshots.
             if let v = dict["downloads"] { main.sidebarUI.downloadsListOpen = v == "1"; return }
+            // The sidebar as if Cra were in front (1) or behind (0), until the app's next activation change:
+            // a background test copy is in either state depending on what it was sent.
+            if let v = dict["appActive"] { main.sidebarUI.appActive = v == "1"; return }
             if let v = dict["banner"] { SoftwareUpdater.shared.debugUpdated(v == "none" ? nil : v); return }
             if let v = dict["bannerReady"] { SoftwareUpdater.shared.debugReady(v == "none" ? nil : v); return }
             if dict["switcher"] != nil { main.debugTabSwitcher(); return }

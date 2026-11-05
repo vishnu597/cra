@@ -6,7 +6,7 @@ what decides something goes in CraCore once and both shells call it (CLAUDE.md, 
 
 <!-- upstream-reviewed: f6b9fb6 -->
 Upstream reviewed through **f6b9fb6** (VictorKildahl/cra main, 5 Nov 2026). Fork main has
-merged upstream through 098376c; the four commits after it are in [Waiting in upstream](#waiting-in-upstream).
+merged upstream through 25d236a; the commit after it is in [Waiting in upstream](#waiting-in-upstream).
 
 **Status:** ✅ on Windows · 🟡 partly · 🔜 in review · ❌ not yet · ➖ Mac only, or replaced by a
 Windows counterpart
@@ -29,13 +29,13 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
 | Profiles, privacy and site data | 3 | 1 | 0 | 6 | 0 |
-| DevTools and Developer Mode | 0 | 0 | 1 | 2 | 0 |
+| DevTools and Developer Mode | 1 | 0 | 0 | 2 | 0 |
 | Extensions | 0 | 0 | 0 | 5 | 0 |
 | Settings | 4 | 1 | 0 | 4 | 0 |
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 6 | 2 |
-| **All** | 27 | 15 | 1 | 55 | 8 |
+| **All** | 28 | 15 | 0 | 55 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -104,7 +104,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ❌ | `LittleWindowController.swift`, `GlobalHotkey.swift` (upstream, not merged yet) | `SpaceWindow`, `GlobalShortcut` (upstream, not merged yet) | Next in the Phase 2 list. Global hotkey on Windows: RegisterHotKey. |
+| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ❌ | `LittleWindowController.swift`, `GlobalHotkey.swift` | `SpaceWindow`, `GlobalShortcut` | Next in the Phase 2 list. Global hotkey on Windows: RegisterHotKey. |
 | Peek: card over the page with its own bar, Close, Expand, Add To Split | ❌ | `PeekChrome.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation` | With Little Windows. Layout and trigger are shared. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
 | Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
@@ -151,7 +151,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| DevTools docked in the page's place (`devTools`, `inspectElement`, `jsConsole`) | 🔜 [#20] | `DevToolsToggle.swift`, `MainWindowController.swift` | | `DevToolsToggle.swift` is a known exception (pure policy): move it to CraCore in the DevTools PR. |
+| DevTools docked in the page's place (`devTools`, `inspectElement`, `jsConsole`), Chrome's dock sides and undocking | ✅ [#20] | `MainWindowController.swift` | `DevToolsToggle` | Moved to CraCore in #20; both apps decide each press with it. |
 | Developer Mode bar for a site (`toggleDeveloperMode`): striped bar, Console, Network, Inspect | ❌ | `PaneToolbarView.swift` | `ToolbarComposition` | Next after DevTools in the Phase 2 list. |
 | Performance recorder, Settings ▸ Performance, Export Diagnostics | ❌ | `PerformancePane.swift`, `Perf.swift`, `PerfCEF.swift`, `PerfFiles.swift`, `PerfRecorder.swift`, `PerfSamplers.swift`, `MainLoopObserver.swift`, `HitchMonitor.swift`, `Diagnostics.swift`, `CraLog.swift` | `PerfHistory`, `PerfInsights`, `PerfMetric`, `PerfProcessTable`, `PerfReport`, `PerfSampleStack`, `PerfSession`, `PerfStall`, `PerfState`, `LogHistogram`, `SiteNames`, `DiagnosticsRedaction`, `DisplayDiagnostics` | The recorder's model is shared; samplers are per platform. `CraLog.swift` is Foundation only: move it to CraCore so both apps log the same way. |
 
@@ -220,8 +220,8 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 Code that decides something without a window, written once for both apps. In order of what
 the next Windows PRs need:
 
-1. `DevToolsToggle.swift` (DevTools PR) and `FloatingSidebarGeometry.swift` (hidden sidebar):
-   CLAUDE.md's known exceptions, already Foundation only.
+1. `FloatingSidebarGeometry.swift` (hidden sidebar): a CLAUDE.md known exception, already
+   Foundation only. (`DevToolsToggle` moved in #20.)
 2. `Services/Import/` parsers (Import PR): replace `NSImage` with PNG `Data` and the
    `~/Library` paths with a passed-in root, keep the Mac's fixture tests.
 3. `GitHubLiveClient.swift`, `PageScript.swift`, `CraLog.swift`, `NativeMessagingHosts.swift`,
@@ -234,12 +234,10 @@ Windows code that repeats Mac logic instead of calling CraCore is a bug to fix t
 
 ## Waiting in upstream
 
-Upstream commits after the fork's last sync (098376c), triaged:
+Upstream commits after the fork's last sync (25d236a, in #20), triaged:
 
 | Commit | What | Windows |
 |---|---|---|
-| 9f5c14b, 9bd7b7a | Tidy Downloads' card and the download bin | ➖ until Arc Max; bin with the download flight |
-| 25d236a | Peek and Little Window bars take clicks, Capture scrolls, ⌥⌘N from any app: adds `GlobalHotkey.swift` and CraCore `GlobalShortcut` | Little Windows row |
 | f6b9fb6 | Sidebar active look through a full-screen switch, blur built like AppKit's: adds `ActiveAppearanceProbe.swift`, changes `SidebarBackdrop` | Sidebar blur row |
 
 ## Keeping this current

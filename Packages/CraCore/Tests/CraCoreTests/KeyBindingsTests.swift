@@ -61,6 +61,9 @@ struct KeyBindingsTests {
         #expect(win["closeWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+W")
         #expect(win["clearCookies"]?.shortcuts == [])
         #expect(win["changeProfile"]?.shortcuts == [] && win["changeProfile"]?.inCommandBar == true)
+        #expect(win["devTools"]?.shortcuts.map(\.windowsDisplay) == ["Ctrl+Shift+I", "F12"])
+        #expect(win["jsConsole"]?.primary?.windowsDisplay == "Ctrl+Shift+J")
+        #expect(win["inspectElement"]?.shortcuts == [])
     }
 
     @Test func everyActionHasADescription() {

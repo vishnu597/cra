@@ -72,6 +72,8 @@ protocol WebPageDelegate: AnyObject {
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage?
     /// Reserved shortcuts, before the page sees the key. Return true to consume it.
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool
+    /// A key press while the page's DevTools have the keyboard. Return true to consume it.
+    func page(_ page: WebPage, handleDevToolsKey key: KeyPress) -> Bool
     /// Keys the page did not handle. Return true to consume it.
     func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool
     func page(_ page: WebPage, didUpdateDownload download: DownloadInfo)
@@ -98,6 +100,7 @@ extension WebPageDelegate {
     func page(_ page: WebPage, requestsNewTabWithURL url: String, inBackground background: Bool) {}
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage? { nil }
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool { false }
+    func page(_ page: WebPage, handleDevToolsKey key: KeyPress) -> Bool { false }
     func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool { false }
     func page(_ page: WebPage, didUpdateDownload download: DownloadInfo) {}
     func page(_ page: WebPage, requestsPermissionForOrigin origin: String, kinds: PermissionKinds,
@@ -192,8 +195,31 @@ final class WebPage: @unchecked Sendable {
     func stopFinding(clearSelection: Bool) { if let handle { cra_browser_stop_finding(handle, clearSelection ? 1 : 0) } }
     func setAudioMuted(_ muted: Bool) { if let handle { cra_browser_set_audio_muted(handle, muted ? 1 : 0) } }
     func executeJavaScript(_ script: String) { if let handle { script.withCString { cra_browser_execute_javascript(handle, $0) } } }
-    func showDevTools() { if let handle { cra_browser_show_dev_tools(handle) } }
-    func closeDevTools() { if let handle { cra_browser_close_dev_tools(handle) } }
+    /// Whether the page's DevTools are open, closing or asked for (the Mac's TabRuntime.devTools).
+    private(set) var devTools = DevToolsToggle()
+    var hasDevTools: Bool { handle.map { cra_browser_has_dev_tools($0) != 0 } ?? false }
+
+    /// Ctrl+Shift+I, Ctrl+Shift+J, Inspect Elements (BrowserManager.runDevTools on the Mac).
+    /// DevTools open docked in the page's place, Chrome's frontend laying the page out beside them.
+    func runDevTools(_ command: DevToolsToggle.Command) {
+        guard let handle, !isClosed else { return }
+        let (effect, frontend) = devTools.run(command)
+        // A press made while DevTools close is done when they reopen (DevToolsToggle.didClose),
+        // one made while they open once the frontend is up.
+        if let frontend { frontend.withCString { cra_browser_set_dev_tools_action(handle, $0) } } else { cra_browser_set_dev_tools_action(handle, nil) }
+        performDevTools(effect)
+    }
+
+    private func performDevTools(_ effect: DevToolsToggle.Effect) {
+        guard let handle, !isClosed else { return }
+        switch effect {
+        case .show: cra_browser_show_dev_tools(handle)
+        case .close: cra_browser_close_dev_tools(handle)
+        case .frontend: cra_browser_apply_dev_tools_action(handle)
+        case .none: break
+        }
+    }
+
     func printPage() { if let handle { cra_browser_print(handle) } }
     func viewSource() { if let handle { cra_browser_view_source(handle) } }
 
@@ -350,6 +376,21 @@ final class WebPage: @unchecked Sendable {
         }
         cb.focus_received = { ctx in
             WebPage.with(ctx) { $0.delegate?.pageDidReceiveFocus($0) }
+        }
+        cb.dev_tools_opened = { ctx in
+            WebPage.with(ctx) { $0.devTools.didOpen() }
+        }
+        cb.dev_tools_closed = { ctx in
+            WebPage.with(ctx) { page in page.performDevTools(page.devTools.didClose()) }
+        }
+        cb.dev_tools_panel = { ctx, panel in
+            let panel = string(panel)
+            WebPage.with(ctx) { $0.devTools.didShowPanel(panel) }
+        }
+        cb.dev_tools_key_event = { ctx, event in
+            guard let event else { return 0 }
+            let key = KeyPress(event.pointee)
+            return WebPage.with(ctx, false) { $0.delegate?.page($0, handleDevToolsKey: key) ?? false } ? 1 : 0
         }
         cb.closed = { ctx in
             guard let ctx else { return }

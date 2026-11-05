@@ -581,6 +581,9 @@ final class BrowserWindow {
         case "capturePage": capture(fullPage: false)
         case "clearCache": shownPage?.clearSiteDataAndReload(cookies: false)
         case "clearCookies": shownPage?.clearSiteDataAndReload(cookies: true)
+        case "devTools": shownPage?.runDevTools(.toggle)
+        case "jsConsole": shownPage?.runDevTools(.console)
+        case "inspectElement": shownPage?.runDevTools(.inspect)
         case "goBack": shownPage?.goBack()
         case "goForward": shownPage?.goForward()
         case "addSplitView": addSplitPane()
@@ -1251,6 +1254,21 @@ extension BrowserWindow: WebPageDelegate {
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool {
         guard !key.isRepeat || key.keyCode == 0x09 else { return false }
         return handleShortcut(key)
+    }
+
+    /// In DevTools only their own commands, on the page they inspect: every other key is the
+    /// frontend's (Ctrl+F searches the panel, Ctrl+R reloads the page from there, as in Chrome).
+    func page(_ page: WebPage, handleDevToolsKey key: KeyPress) -> Bool {
+        guard !key.isRepeat,
+              let chord = KeyChord(windowsVirtualKey: key.keyCode, control: key.control, shift: key.shift, alt: key.alt),
+              let action = WinKeyBindings.shared.action(matching: chord) else { return false }
+        switch action.id {
+        case "devTools": page.runDevTools(.toggle)
+        case "jsConsole": page.runDevTools(.console)
+        case "inspectElement": page.runDevTools(.inspect)
+        default: return false
+        }
+        return true
     }
 
     func page(_ page: WebPage, didFindMatches count: Int, activeMatch: Int) {
