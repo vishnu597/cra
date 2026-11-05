@@ -120,4 +120,12 @@ Mac's format: a key's `.control` bit is Ctrl on Windows, `.option` is Alt. The p
 command bar's rows and Settings ▸ Shortcuts (Dia's list and shortcut field: click it, press the
 new keys, Esc cancels, Backspace removes) all read the registry.
 
+DevTools: Ctrl+Shift+I or F12 (Developer Tools), Ctrl+Shift+J (JavaScript Console), the
+command bar, or the page's own Inspect menu item. They dock the way Chrome's do: the DevTools
+browser is a child window in the page's place, its frontend (loaded with `can_dock=true`) draws
+the split and the device toolbar, and the bridge lays the page window over the part it leaves
+for the page. The frontend's dock menu picks the side; undocking moves them into a window of
+their own (they close and open again there), and docking moves them back. CraCore's
+`DevToolsToggle` decides what each press does, as on the Mac.
+
 The parity checklist and phases are in the porting plan.

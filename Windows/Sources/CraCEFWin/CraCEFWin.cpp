@@ -33,7 +33,9 @@
 #include "include/cef_command_handler.h"
 #include "include/cef_devtools_message_observer.h"
 #include "include/cef_id_mappers.h"
+#include "include/cef_parser.h"
 #include "include/cef_request_context.h"
+#include "include/cef_task.h"
 #include "include/cef_values.h"
 #include "include/cef_version.h"
 #include "include/wrapper/cef_helpers.h"
@@ -318,6 +320,7 @@ void CreatePumpWindow() {
 // MARK: - Globals
 
 class CraClient;
+class DevToolsClient;
 
 bool g_contextInitialized = false;
 bool g_anotherInstanceNotified = false;
@@ -325,6 +328,12 @@ void *g_relaunchContext = nullptr;
 CraRelaunchHandler g_relaunchHandler = nullptr;
 std::set<CraBrowser *> g_browsers;
 std::vector<CraBrowser *> g_pendingCreation;
+uint64_t g_nextBrowserSerial = 1;
+/// DevTools browsers Chromium hasn't finished closing (shutdown waits for them too).
+int g_liveDevTools = 0;
+/// The user undocked DevTools into a window of their own (the frontend's dock menu, which keeps
+/// the choice in its own preferences): DevTools open there until they are docked again.
+bool g_devToolsUndocked = false;
 
 }  // namespace
 
@@ -358,14 +367,76 @@ struct CraBrowser {
     CefRefPtr<DevToolsObserver> devtools;
     CefRefPtr<CefRegistration> devtools_registration;
     int next_devtools_id = 100000;  // clear of the ids Chromium's own clients use
+    uint64_t serial = g_nextBrowserSerial++;  // tells a freed CraBrowser from a new one at its address
+
+    // DevTools, the way Chrome docks them: the DevTools browser is a child window in the page's
+    // place (`frame`), and its frontend (loaded with can_dock=true) draws the dock split and says
+    // where the page goes (`devtools_bounds`, DIPs from its top left); the page window sits there,
+    // above it, as Chrome's BrowserView lays the tab's contents over DevTools. Undocked, DevTools
+    // are a window of their own and the page keeps its frame.
+    CefRefPtr<CefBrowser> devtools_browser;
+    CefRefPtr<DevToolsClient> devtools_client;
+    bool devtools_hosted_docked = true;  // where the DevTools browser was made
+    bool devtools_has_bounds = false;
+    CefRect devtools_bounds;
+    bool devtools_relocating = false;  // closing to open again docked or undocked
+    bool devtools_quiet = false;  // that reopening: Swift heard of neither the close nor the open
+    std::string devtools_action;
+
+    /// Physical pixels per DIP on the parent window's monitor.
+    double Scale() const {
+        UINT dpi = parent ? GetDpiForWindow(parent) : 0;
+        return dpi ? dpi / 96.0 : 1.0;
+    }
+
+    HWND DockedDevToolsWindow() const {
+        return devtools_browser && devtools_hosted_docked ? devtools_browser->GetHost()->GetWindowHandle() : nullptr;
+    }
 
     void ApplyFrame() {
         if (!browser) return;
         HWND hwnd = browser->GetHost()->GetWindowHandle();
         if (!hwnd) return;
+        UINT flags = SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+        HWND devtools = DockedDevToolsWindow();
+        CefRect page = frame;
+        if (devtools && devtools_has_bounds) {
+            double s = Scale();
+            int x = static_cast<int>(devtools_bounds.x * s + 0.5), y = static_cast<int>(devtools_bounds.y * s + 0.5);
+            int right = static_cast<int>((devtools_bounds.x + devtools_bounds.width) * s + 0.5);
+            int bottom = static_cast<int>((devtools_bounds.y + devtools_bounds.height) * s + 0.5);
+            x = std::clamp(x, 0, frame.width);
+            y = std::clamp(y, 0, frame.height);
+            right = std::clamp(right, x, frame.width);
+            bottom = std::clamp(bottom, y, frame.height);
+            page = CefRect(frame.x + x, frame.y + y, right - x, bottom - y);
+        }
         // Above WinUI's content bridge window, which covers the whole client area.
-        SetWindowPos(hwnd, HWND_TOP, frame.x, frame.y, frame.width, frame.height,
-                     SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+        SetWindowPos(hwnd, HWND_TOP, page.x, page.y, page.width, page.height, flags);
+        // Docked DevTools fill the page's place, under the page.
+        if (devtools) SetWindowPos(devtools, hwnd, frame.x, frame.y, frame.width, frame.height, flags);
+    }
+
+    /// The frontend's own API, which Chrome's DevToolsWindow::DoAction calls through DevToolsAPI.
+    void RunDevToolsAction() {
+        if (devtools_action.empty() || !devtools_browser) return;
+        std::string action = devtools_action;
+        devtools_action.clear();
+        std::string call;
+        if (action == "inspect") {
+            call = "enterInspectElementMode()";
+        } else if (action == "console" || action == "network" || action == "elements") {
+            call = "showPanel('" + action + "')";
+        } else {
+            return;
+        }
+        // Hooked frontends run it on loadCompleted (or at once once loaded); one loaded before the
+        // hooks went in never reports it, so the call goes out after 3 s regardless.
+        std::string js = "(function(){var h=window.InspectorFrontendHost,done=false;"
+                         "function run(){if(done)return;done=true;var a=window.InspectorFrontendAPI;if(a)a." + call + ";}"
+                         "if(!h||h.__craLoaded){run();return;}(h.__craRun=h.__craRun||[]).push(run);setTimeout(run,3000);})();";
+        CefRefPtr<CefFrame> f = devtools_browser->GetMainFrame();
+        if (f) f->ExecuteJavaScript(js, f->GetURL(), 0);
     }
 
     void Create();
@@ -395,6 +466,270 @@ private:
     CraBrowser *owner_;
     std::string url_;
     IMPLEMENT_REFCOUNTING(FaviconCallback);
+};
+
+/// Chrome's own tab and window commands, which a Chrome-style browser (a page, or its DevTools)
+/// runs for a key Cra leaves alone (Ctrl+T once the user moves New Tab elsewhere, Ctrl+N,
+/// Ctrl+H...): each would open a bare Chromium window beside Cra's. Cra has its own versions.
+bool IsBlockedChromeCommand(int command_id) {
+    static const std::set<int> blocked = [] {
+        std::set<int> ids;
+        for (const char *name : {"IDC_NEW_TAB", "IDC_NEW_WINDOW", "IDC_NEW_INCOGNITO_WINDOW", "IDC_RESTORE_TAB",
+                                 "IDC_CLOSE_TAB", "IDC_CLOSE_WINDOW", "IDC_EXIT", "IDC_SELECT_NEXT_TAB",
+                                 "IDC_SELECT_PREVIOUS_TAB", "IDC_SELECT_TAB_0", "IDC_SELECT_TAB_1", "IDC_SELECT_TAB_2",
+                                 "IDC_SELECT_TAB_3", "IDC_SELECT_TAB_4", "IDC_SELECT_TAB_5", "IDC_SELECT_TAB_6",
+                                 "IDC_SELECT_TAB_7", "IDC_SELECT_LAST_TAB", "IDC_MOVE_TAB_NEXT", "IDC_MOVE_TAB_PREVIOUS",
+                                 "IDC_DUPLICATE_TAB", "IDC_PIN_TARGET_TAB", "IDC_SHOW_HISTORY", "IDC_SHOW_DOWNLOADS",
+                                 "IDC_SHOW_BOOKMARK_MANAGER", "IDC_BOOKMARK_THIS_TAB", "IDC_BOOKMARK_ALL_TABS",
+                                 "IDC_SHOW_BOOKMARK_BAR", "IDC_OPTIONS", "IDC_CLEAR_BROWSING_DATA", "IDC_FOCUS_LOCATION",
+                                 "IDC_FOCUS_SEARCH", "IDC_FOCUS_TOOLBAR", "IDC_FOCUS_BOOKMARKS", "IDC_SHOW_APP_MENU",
+                                 "IDC_MANAGE_EXTENSIONS", "IDC_TASK_MANAGER", "IDC_HELP_PAGE_VIA_KEYBOARD",
+                                 "IDC_FEEDBACK", "IDC_SHOW_AVATAR_MENU", "IDC_TOGGLE_FULLSCREEN_TOOLBAR"}) {
+            int id = cef_id_for_command_id_name(name);
+            if (id > 0) ids.insert(id);  // a name this Chromium lacks maps to -1
+        }
+        return ids;
+    }();
+    return blocked.count(command_id) > 0;
+}
+
+/// A key press as the C surface reports it.
+CraKeyEvent KeyEventOf(const CefKeyEvent &event, CefEventHandle os_event) {
+    CraKeyEvent e{};
+    e.key_code = event.windows_key_code;
+    e.modifiers = event.modifiers & (EVENTFLAG_SHIFT_DOWN | EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN);
+    // Bit 30 of a WM_KEYDOWN's lParam: the key was already down.
+    if (os_event) e.is_repeat = (os_event->lParam & (1 << 30)) ? 1 : 0;
+    return e;
+}
+
+// MARK: - DevTools
+
+// Chrome's DevTools the way Arc (plain Chromium) shows them, as on the Mac (CraCEF.mm): the
+// frontend runs with can_dock=true, draws the dock split and the device toolbar itself, and tells
+// the embedder where the page goes (InspectorFrontendHost.setInspectedPageBounds). CEF opens
+// Chrome-style DevTools as an undockable popup, so the frontend is loaded again once with
+// can_dock=true and its embedder calls are mirrored to the bridge as console messages. Its dock
+// state comes from its own preferences when it loads, then from setIsDocked when the user picks
+// another side or undocks.
+const char kDevToolsHooks[] =
+    "(function(){var h=window.InspectorFrontendHost;if(!h||h.__cra)return;h.__cra=1;"
+    "function find(root,sel){var r=root.querySelector(sel);if(r)return r;var all=root.querySelectorAll('*');"
+    "for(var i=0;i<all.length;i++){if(all[i].shadowRoot){var f=find(all[i].shadowRoot,sel);if(f)return f;}}return null;}"
+    "h.closeWindow=function(){console.log('__cra_devtools_close');};"
+    // Chrome asks the frontend for a panel or the element picker once it reports loadCompleted
+    // (DevToolsWindow::DoAction); RunDevToolsAction queues on __craRun until then.
+    "var lc=h.loadCompleted;h.loadCompleted=function(){var r=lc&&lc.apply(h,arguments);h.__craLoaded=1;"
+    "var q=h.__craRun||[];h.__craRun=[];q.forEach(function(f){f();});return r;};"
+    // The panel on show, so Console and Network can tell a switch from a close (GitHub #138):
+    // the main tab bar is the one with Elements; its selected tab is #tab-<panel>.
+    "(function(){var now=null,n=0,w=setInterval(function(){var e=find(document,'#tab-elements'),tabs=e&&e.parentNode;"
+    "if(tabs){clearInterval(w);var report=function(){var t=tabs.querySelector('.tabbed-pane-header-tab.selected');"
+    "var p=t&&t.id.indexOf('tab-')==0?t.id.slice(4):null;if(p&&p!==now){now=p;console.log('__cra_devtools_panel:'+p);}};"
+    "report();new MutationObserver(report).observe(tabs,{attributes:true,subtree:true,attributeFilter:['class']});return;}"
+    "if(++n>200)clearInterval(w);},150);})();"
+    "if(!/[?&]can_dock=/.test(location.search))return;"
+    "var sent=false;"
+    "h.setInspectedPageBounds=function(b){sent=true;try{console.log('__cra_devtools_bounds:'+JSON.stringify({x:b.x,y:b.y,width:b.width,height:b.height}));}catch(e){}};"
+    // Chrome never hears about docking: the bridge owns the layout. The frontend only needs the
+    // acknowledgement (DockController waits for it before relayout).
+    "h.setIsDocked=function(d,cb){console.log('__cra_devtools_docked:'+(d?1:0));if(cb)setTimeout(function(){cb();},0);};"
+    // Docked frontends re-send the placeholder on resize.
+    "window.dispatchEvent(new Event('resize'));"
+    // Where the frontend means to be: its saved dock side ('\"right\"', '\"undocked\"'...; right
+    // when it has none). Without getPreferences, a frontend that sent no placeholder is undocked.
+    "var told=false;function tell(d){if(told)return;told=true;console.log('__cra_devtools_docked:'+(d?1:0));}"
+    "if(h.getPreferences){try{h.getPreferences(function(p){var d=true;try{var s=p&&p.currentDockState;"
+    "if(s)d=JSON.parse(s)!=='undocked';}catch(e){}tell(d);});}catch(e){tell(true);}}"
+    "else{setTimeout(function(){tell(sent);},600);}"
+    "})();";
+
+/// Opens a page's DevTools again after they closed to move (docked to undocked or back). Posted:
+/// a browser can't open DevTools from inside its DevTools' close.
+class ReopenDevTools : public CefTask {
+public:
+    ReopenDevTools(CraBrowser *owner, uint64_t serial) : owner_(owner), serial_(serial) {}
+    void Execute() override {
+        CraBrowser *o = owner_;
+        if (!g_browsers.count(o) || o->serial != serial_ || o->close_requested || !o->browser) return;
+        o->browser->GetHost()->ShowDevTools(CefWindowInfo(), nullptr, CefBrowserSettings(), CefPoint());
+    }
+
+private:
+    CraBrowser *owner_;
+    uint64_t serial_;
+    IMPLEMENT_REFCOUNTING(ReopenDevTools);
+};
+
+/// A page's DevTools browser (made through OnBeforeDevToolsPopup). Detached when its page goes.
+class DevToolsClient : public CefClient,
+                       public CefLifeSpanHandler,
+                       public CefLoadHandler,
+                       public CefDisplayHandler,
+                       public CefKeyboardHandler,
+                       public CefCommandHandler {
+public:
+    explicit DevToolsClient(CraBrowser *owner) : owner_(owner) {}
+    void Detach() { owner_ = nullptr; }
+
+    CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+    CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+    CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
+    CefRefPtr<CefCommandHandler> GetCommandHandler() override { return this; }
+
+    // The frontend's own helper pages (device_mode_emulation_frame.html) would become stray
+    // windows; Chrome never shows them either. A link it opens (a source map, a doc page) goes to
+    // a new tab.
+    bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int popup_id,
+                       const CefString &target_url, const CefString &target_frame_name,
+                       WindowOpenDisposition target_disposition, bool user_gesture,
+                       const CefPopupFeatures &popupFeatures, CefWindowInfo &windowInfo, CefRefPtr<CefClient> &client,
+                       CefBrowserSettings &settings, CefRefPtr<CefDictionaryValue> &extra_info,
+                       bool *no_javascript_access) override {
+        std::string url = target_url.ToString();
+        if (url.rfind("devtools://", 0) == 0 || url.empty() || url == "about:blank") return true;
+        CraBrowser *o = Live();
+        if (o && o->callbacks.new_tab_requested) o->callbacks.new_tab_requested(o->callbacks.context, url.c_str(), 0);
+        return true;
+    }
+
+    void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+        CEF_REQUIRE_UI_THREAD();
+        g_liveDevTools++;
+        CraBrowser *o = Live();
+        if (!o) return;  // its page is closing, and takes DevTools with it
+        o->devtools_browser = browser;
+        o->devtools_has_bounds = false;
+        o->ApplyFrame();
+        // The frontend may already be loaded by now.
+        CefRefPtr<CefFrame> main = browser->GetMainFrame();
+        if (main && !browser->IsLoading()) Prepare(main);
+        if (o->devtools_quiet) {
+            o->devtools_quiet = false;
+        } else if (o->callbacks.dev_tools_opened) {
+            o->callbacks.dev_tools_opened(o->callbacks.context);
+        }
+    }
+
+    bool DoClose(CefRefPtr<CefBrowser> browser) override { return false; }
+
+    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+        CEF_REQUIRE_UI_THREAD();
+        g_liveDevTools--;
+        CefRefPtr<DevToolsClient> keep(this);  // the owner may hold the last other reference
+        CraBrowser *o = owner_;
+        if (!o) return;
+        if (o->devtools_browser && o->devtools_browser->IsSame(browser)) o->devtools_browser = nullptr;
+        if (o->devtools_client.get() == this) o->devtools_client = nullptr;
+        owner_ = nullptr;
+        o->devtools_has_bounds = false;
+        if (o->close_requested) return;
+        o->ApplyFrame();  // the page takes its whole place again
+        if (o->devtools_relocating) {
+            o->devtools_relocating = false;
+            o->devtools_quiet = true;
+            CefPostTask(TID_UI, new ReopenDevTools(o, o->serial));
+            return;
+        }
+        o->devtools_quiet = false;
+        if (o->callbacks.dev_tools_closed) o->callbacks.dev_tools_closed(o->callbacks.context);
+    }
+
+    void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) override {
+        // Chrome picks the frontend URL, so the earliest point to swap in can_dock=true is the
+        // first load's start: the frontend app then loads once instead of twice.
+        if (frame->IsMain()) MakeDockable(frame);
+    }
+
+    void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override {
+        if (frame->IsMain()) Prepare(frame);
+    }
+
+    bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString &message,
+                          const CefString &source, int line) override {
+        static const std::string kClose = "__cra_devtools_close", kBounds = "__cra_devtools_bounds:",
+                                 kDocked = "__cra_devtools_docked:", kPanel = "__cra_devtools_panel:";
+        std::string m = message.ToString();
+        bool bounds = m.rfind(kBounds, 0) == 0, docked = m.rfind(kDocked, 0) == 0, panel = m.rfind(kPanel, 0) == 0;
+        if (m != kClose && !bounds && !docked && !panel) return false;
+        CraBrowser *o = Live();
+        if (!o || !o->browser || !o->devtools_browser || !o->devtools_browser->IsSame(browser)) return true;
+        if (m == kClose) {
+            o->devtools_relocating = false;
+            o->browser->GetHost()->CloseDevTools();
+        } else if (bounds) {
+            CefRefPtr<CefValue> value = CefParseJSON(m.substr(kBounds.size()), JSON_PARSER_RFC);
+            if (value && value->GetType() == VTYPE_DICTIONARY) {
+                CefRefPtr<CefDictionaryValue> d = value->GetDictionary();
+                auto number = [&](const char *key) {
+                    return d->GetType(key) == VTYPE_INT ? d->GetInt(key) : static_cast<int>(d->GetDouble(key) + 0.5);
+                };
+                o->devtools_bounds = CefRect(number("x"), number("y"), number("width"), number("height"));
+                o->devtools_has_bounds = true;
+                o->ApplyFrame();
+            }
+        } else if (docked) {
+            bool dock = m.size() > kDocked.size() && m[kDocked.size()] == '1';
+            g_devToolsUndocked = !dock;
+            if (o->devtools_relocating) return true;
+            if (dock != o->devtools_hosted_docked) {
+                // In the wrong place: close and open again where the frontend wants to be.
+                o->devtools_relocating = true;
+                o->browser->GetHost()->CloseDevTools();
+            } else if (!dock) {
+                o->devtools_has_bounds = false;
+                o->ApplyFrame();
+            }
+        } else if (o->callbacks.dev_tools_panel) {
+            o->callbacks.dev_tools_panel(o->callbacks.context, m.c_str() + kPanel.size());
+        }
+        return true;
+    }
+
+    bool OnPreKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent &event, CefEventHandle os_event,
+                       bool *is_keyboard_shortcut) override {
+        CraBrowser *o = Live();
+        if (!o || event.type != KEYEVENT_RAWKEYDOWN || !o->callbacks.dev_tools_key_event) return false;
+        CraKeyEvent e = KeyEventOf(event, os_event);
+        return o->callbacks.dev_tools_key_event(o->callbacks.context, &e) != 0;
+    }
+
+    bool OnChromeCommand(CefRefPtr<CefBrowser> browser, int command_id, cef_window_open_disposition_t disposition) override {
+        return IsBlockedChromeCommand(command_id);
+    }
+
+private:
+    CraBrowser *Live() const { return owner_ && !owner_->close_requested ? owner_ : nullptr; }
+
+    static bool IsFrontend(const std::string &url) {
+        // Only the main frontend; helper pages it opens must not report dock state or bounds.
+        return url.rfind("devtools://", 0) == 0 &&
+               (url.find("/devtools_app.html") != std::string::npos || url.find("/inspector.html") != std::string::npos);
+    }
+
+    // A Chrome-style frontend opens undockable; load it again with can_dock=true (once).
+    bool MakeDockable(CefRefPtr<CefFrame> frame) {
+        std::string url = frame->GetURL().ToString();
+        if (reloaded_ || !IsFrontend(url) || url.find("can_dock=") != std::string::npos) return false;
+        reloaded_ = true;
+        frame->LoadURL(url + (url.find('?') == std::string::npos ? "?" : "&") + "can_dock=true");
+        return true;
+    }
+
+    // Hooks the dockable frontend once it has loaded, then runs the action waiting for it.
+    void Prepare(CefRefPtr<CefFrame> frame) {
+        std::string url = frame->GetURL().ToString();
+        if (!IsFrontend(url) || MakeDockable(frame)) return;
+        // The undockable load that MakeDockable replaced still reports its end.
+        if (reloaded_ && url.find("can_dock=") == std::string::npos) return;
+        frame->ExecuteJavaScript(kDevToolsHooks, frame->GetURL(), 0);
+        if (CraBrowser *o = Live()) o->RunDevToolsAction();
+    }
+
+    CraBrowser *owner_;
+    bool reloaded_ = false;
+    IMPLEMENT_REFCOUNTING(DevToolsClient);
 };
 
 /// One page (or a popup host waiting for its popup). Holds its CraBrowser until OnBeforeClose.
@@ -473,6 +808,38 @@ public:
         CraPageSettings(settings);
         windowInfo.SetAsChild(host->parent, host->frame);
         return false;  // CEF creates it in the host's place, with the opener kept
+    }
+
+    /// The page's DevTools, from cra_browser_show_dev_tools or Chromium's own Inspect: docked in
+    /// the page's place (a child window under it, ApplyFrame), or in a window of their own once
+    /// the user undocked them.
+    void OnBeforeDevToolsPopup(CefRefPtr<CefBrowser> browser, CefWindowInfo &windowInfo, CefRefPtr<CefClient> &client,
+                               CefBrowserSettings &settings, CefRefPtr<CefDictionaryValue> &extra_info,
+                               bool *use_default_window) override {
+        CEF_REQUIRE_UI_THREAD();
+        CraBrowser *o = Live();
+        if (!o) return;
+        o->devtools_client = new DevToolsClient(o);
+        client = o->devtools_client;
+        o->devtools_hosted_docked = !g_devToolsUndocked;
+        o->devtools_has_bounds = false;
+        if (o->devtools_hosted_docked) {
+            windowInfo.SetAsChild(o->parent, o->frame);
+            if (!o->visible) windowInfo.style &= ~static_cast<DWORD>(WS_VISIBLE);
+        } else {
+            // Chrome's undocked DevTools: a normal window, 80% of the browser window's size.
+            HWND root = GetAncestor(o->parent, GA_ROOT);
+            RECT r{};
+            if (!root || !GetWindowRect(root, &r)) r = RECT{100, 100, 1380, 920};
+            double s = o->Scale();
+            int ww = r.right - r.left, wh = r.bottom - r.top;
+            int w = std::clamp(ww * 8 / 10, static_cast<int>(700 * s), static_cast<int>(1100 * s));
+            int h = std::clamp(wh * 8 / 10, static_cast<int>(500 * s), static_cast<int>(800 * s));
+            windowInfo.SetAsPopup(nullptr, "DevTools");
+            windowInfo.bounds = CefRect(r.left + (ww - w) / 2 + static_cast<int>(40 * s),
+                                        r.top + (wh - h) / 2 + static_cast<int>(20 * s), w, h);
+        }
+        *use_default_window = false;
     }
 
     // Display -------------------------------------------------------------
@@ -610,43 +977,23 @@ public:
                        bool *is_keyboard_shortcut) override {
         CraBrowser *o = Live();
         if (!o || event.type != KEYEVENT_RAWKEYDOWN || !o->callbacks.key_event) return false;
-        CraKeyEvent e = KeyEvent(event, os_event);
+        CraKeyEvent e = KeyEventOf(event, os_event);
         return o->callbacks.key_event(o->callbacks.context, &e) != 0;
     }
 
     bool OnKeyEvent(CefRefPtr<CefBrowser> browser, const CefKeyEvent &event, CefEventHandle os_event) override {
         CraBrowser *o = Live();
         if (!o || event.type != KEYEVENT_RAWKEYDOWN || !o->callbacks.unhandled_key_event) return false;
-        CraKeyEvent e = KeyEvent(event, os_event);
+        CraKeyEvent e = KeyEventOf(event, os_event);
         return o->callbacks.unhandled_key_event(o->callbacks.context, &e) != 0;
     }
 
     // Chrome commands -----------------------------------------------------
 
-    /// Chrome's own tab and window commands, which a page's Chrome-style browser runs for a key
-    /// Cra leaves alone (Ctrl+T once the user moves New Tab elsewhere, Ctrl+N, Ctrl+H...): each
-    /// would open a bare Chromium window beside Cra's. Cra has its own versions, so they stop
-    /// here. Find, print, zoom, DevTools and the edit commands keep Chrome's behaviour.
+    /// Chrome's own tab and window commands stop here (IsBlockedChromeCommand). Find, print, zoom,
+    /// DevTools and the edit commands keep Chrome's behaviour.
     bool OnChromeCommand(CefRefPtr<CefBrowser> browser, int command_id, cef_window_open_disposition_t disposition) override {
-        static const std::set<int> blocked = [] {
-            std::set<int> ids;
-            for (const char *name : {"IDC_NEW_TAB", "IDC_NEW_WINDOW", "IDC_NEW_INCOGNITO_WINDOW", "IDC_RESTORE_TAB",
-                                     "IDC_CLOSE_TAB", "IDC_CLOSE_WINDOW", "IDC_EXIT", "IDC_SELECT_NEXT_TAB",
-                                     "IDC_SELECT_PREVIOUS_TAB", "IDC_SELECT_TAB_0", "IDC_SELECT_TAB_1", "IDC_SELECT_TAB_2",
-                                     "IDC_SELECT_TAB_3", "IDC_SELECT_TAB_4", "IDC_SELECT_TAB_5", "IDC_SELECT_TAB_6",
-                                     "IDC_SELECT_TAB_7", "IDC_SELECT_LAST_TAB", "IDC_MOVE_TAB_NEXT", "IDC_MOVE_TAB_PREVIOUS",
-                                     "IDC_DUPLICATE_TAB", "IDC_PIN_TARGET_TAB", "IDC_SHOW_HISTORY", "IDC_SHOW_DOWNLOADS",
-                                     "IDC_SHOW_BOOKMARK_MANAGER", "IDC_BOOKMARK_THIS_TAB", "IDC_BOOKMARK_ALL_TABS",
-                                     "IDC_SHOW_BOOKMARK_BAR", "IDC_OPTIONS", "IDC_CLEAR_BROWSING_DATA", "IDC_FOCUS_LOCATION",
-                                     "IDC_FOCUS_SEARCH", "IDC_FOCUS_TOOLBAR", "IDC_FOCUS_BOOKMARKS", "IDC_SHOW_APP_MENU",
-                                     "IDC_MANAGE_EXTENSIONS", "IDC_TASK_MANAGER", "IDC_HELP_PAGE_VIA_KEYBOARD",
-                                     "IDC_FEEDBACK", "IDC_SHOW_AVATAR_MENU", "IDC_TOGGLE_FULLSCREEN_TOOLBAR"}) {
-                int id = cef_id_for_command_id_name(name);
-                if (id > 0) ids.insert(id);  // a name this Chromium lacks maps to -1
-            }
-            return ids;
-        }();
-        return blocked.count(command_id) > 0;
+        return IsBlockedChromeCommand(command_id);
     }
 
     // Downloads -----------------------------------------------------------
@@ -756,15 +1103,6 @@ private:
     /// The owner, unless it asked to close: then only `closed` still fires.
     CraBrowser *Live() const { return owner_ && !owner_->close_requested ? owner_ : nullptr; }
 
-    static CraKeyEvent KeyEvent(const CefKeyEvent &event, CefEventHandle os_event) {
-        CraKeyEvent e{};
-        e.key_code = event.windows_key_code;
-        e.modifiers = event.modifiers & (EVENTFLAG_SHIFT_DOWN | EVENTFLAG_CONTROL_DOWN | EVENTFLAG_ALT_DOWN);
-        // Bit 30 of a WM_KEYDOWN's lParam: the key was already down.
-        if (os_event) e.is_repeat = (os_event->lParam & (1 << 30)) ? 1 : 0;
-        return e;
-    }
-
     CraBrowser *owner_;
     IMPLEMENT_REFCOUNTING(CraClient);
 };
@@ -836,6 +1174,9 @@ void CraBrowser::Finish() {
     if (!g_browsers.erase(this)) return;
     std::erase(g_pendingCreation, this);
     client->Detach();
+    if (devtools_client) devtools_client->Detach();
+    devtools_client = nullptr;
+    devtools_browser = nullptr;
     for (auto &[id, cb] : prompt_callbacks) cb->Continue(CEF_PERMISSION_RESULT_DISMISS);
     for (auto &[id, pair] : media_callbacks) pair.first->Cancel();
     prompt_callbacks.clear();
@@ -891,7 +1232,7 @@ extern "C" void cra_cef_shutdown(void) {
     // Let Chromium destroy the pages: pump its work and the windows' messages until they are
     // gone, for at most five seconds.
     ULONGLONG deadline = GetTickCount64() + 5000;
-    while (!g_browsers.empty() && GetTickCount64() < deadline) {
+    while ((!g_browsers.empty() || g_liveDevTools > 0) && GetTickCount64() < deadline) {
         CefDoMessageLoopWork();
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -1061,11 +1402,24 @@ extern "C" void cra_browser_execute_javascript(CraBrowser *b, const char *script
 }
 
 extern "C" void cra_browser_show_dev_tools(CraBrowser *b) {
-    // In Chromium's own window for now; docking in the content card comes with phase 2.
-    if (b && b->browser) b->browser->GetHost()->ShowDevTools(CefWindowInfo(), nullptr, CefBrowserSettings(), CefPoint());
+    if (!b || !b->browser || b->close_requested) return;
+    bool open = b->devtools_browser != nullptr;
+    // Opens them through OnBeforeDevToolsPopup, or brings open ones forward.
+    b->browser->GetHost()->ShowDevTools(CefWindowInfo(), nullptr, CefBrowserSettings(), CefPoint());
+    // Open DevTools take the action now; new ones once their frontend has loaded (Prepare).
+    if (open && b->devtools_browser && !b->devtools_browser->IsLoading()) b->RunDevToolsAction();
 }
 extern "C" void cra_browser_close_dev_tools(CraBrowser *b) {
-    if (b && b->browser) b->browser->GetHost()->CloseDevTools();
+    if (!b || !b->browser) return;
+    b->devtools_relocating = false;
+    b->browser->GetHost()->CloseDevTools();
+}
+extern "C" int cra_browser_has_dev_tools(CraBrowser *b) { return b && b->devtools_browser ? 1 : 0; }
+extern "C" void cra_browser_set_dev_tools_action(CraBrowser *b, const char *action) {
+    if (b) b->devtools_action = action ? action : "";
+}
+extern "C" void cra_browser_apply_dev_tools_action(CraBrowser *b) {
+    if (b && b->devtools_browser && !b->devtools_browser->IsLoading()) b->RunDevToolsAction();
 }
 extern "C" void cra_browser_print(CraBrowser *b) {
     if (b && b->browser) b->browser->GetHost()->Print();
@@ -1172,6 +1526,8 @@ extern "C" void cra_browser_close(CraBrowser *b) {
     if (!b || !g_browsers.count(b) || b->close_requested) return;
     b->close_requested = true;
     if (b->browser) {
+        // DevTools first, as Chrome closes a tab's; they never outlive their page.
+        if (b->devtools_browser) b->browser->GetHost()->CloseDevTools();
         b->browser->GetHost()->CloseBrowser(true);  // OnBeforeClose finishes it
     } else if (b->is_popup_host || !g_contextInitialized) {
         b->Finish();  // no page was ever made

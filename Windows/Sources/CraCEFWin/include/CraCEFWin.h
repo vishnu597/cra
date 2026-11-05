@@ -191,6 +191,18 @@ typedef struct CraBrowserCallbacks {
     void (*find_result)(void *context, int count, int active_match);
     void (*media_capture_changed)(void *context, int capturing);
     void (*focus_received)(void *context);
+    /// The page's DevTools opened: from cra_browser_show_dev_tools, or from Chromium itself (the
+    /// page's Inspect menu item, F12 in the frontend). They open docked in the page's place, where
+    /// Chrome's frontend lays the page out beside them, or in a window of their own once the user
+    /// undocked them; moving between the two is not reported.
+    void (*dev_tools_opened)(void *context);
+    /// They closed (their own close button, cra_browser_close_dev_tools, or the window's).
+    void (*dev_tools_closed)(void *context);
+    /// The frontend shows `panel` ("elements", "console", "network", ...): when it loads, and when
+    /// the user or cra_browser_set_dev_tools_action switches.
+    void (*dev_tools_panel)(void *context, const char *panel);
+    /// A key press while DevTools have the keyboard. Return nonzero to consume it.
+    int (*dev_tools_key_event)(void *context, const CraKeyEvent *event);
     /// Chromium is done with the page; the CraBrowser is freed after this returns.
     void (*closed)(void *context);
 } CraBrowserCallbacks;
@@ -237,8 +249,18 @@ void cra_browser_stop_finding(CraBrowser *browser, int clear_selection);
 void cra_browser_set_audio_muted(CraBrowser *browser, int muted);
 void cra_browser_answer_permission(CraBrowser *browser, uint64_t request_id, int allowed);
 void cra_browser_execute_javascript(CraBrowser *browser, const char *script);
+/// Opens the page's DevTools, or brings them forward when open (then the pending action runs).
 void cra_browser_show_dev_tools(CraBrowser *browser);
 void cra_browser_close_dev_tools(CraBrowser *browser);
+/// 1 while the page's DevTools are open.
+int cra_browser_has_dev_tools(CraBrowser *browser);
+/// What the frontend does once it is up, as Chrome's DevToolsToggleAction: "console", "network"
+/// or "elements" shows that panel, "inspect" starts the element picker. It runs when the frontend
+/// next loads (cra_browser_show_dev_tools) or on cra_browser_apply_dev_tools_action, then clears.
+/// NULL clears it.
+void cra_browser_set_dev_tools_action(CraBrowser *browser, const char *action);
+/// Runs the pending action in DevTools already open, without bringing them forward.
+void cra_browser_apply_dev_tools_action(CraBrowser *browser);
 void cra_browser_print(CraBrowser *browser);
 void cra_browser_view_source(CraBrowser *browser);
 /// Runs a DevTools protocol method ("Page.captureScreenshot") with `params` (a JSON object, NULL
