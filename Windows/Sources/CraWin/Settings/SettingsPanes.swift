@@ -118,6 +118,137 @@ enum SettingsPanes {
         return SettingsPaneContent(element: form.grid) { for sync in syncs { sync() } }
     }
 
+    // MARK: Profiles
+
+    /// Dia's Profiles pane (ProfilesPane on the Mac): Default and each profile with the spaces on
+    /// it, Rename… and Delete… on a profile, Create Profile… under the card. Arc only deletes
+    /// profiles no space uses, and never Default. `newProfile` opens Create a new Profile in the
+    /// browser window in use.
+    static func profiles(store: SidebarStore, palette: SettingsPalette, newProfile: @escaping @MainActor () -> Void) -> SettingsPaneContent {
+        let stack = StackPanel()
+        stack.orientation = .vertical
+        stack.margin = Thickness(left: Double(SettingsMetrics.paneInset), top: Double(SettingsMetrics.paneTop),
+                                 right: Double(SettingsMetrics.paneInset), bottom: 20)
+        stack.children.append(header("Profiles", palette: palette))
+        let holder = Border()
+        stack.children.append(holder)
+
+        let create = Button()
+        create.content = UI.text("Create Profile…", trimmed: false)
+        create.margin = Thickness(left: 0, top: 10, right: 0, bottom: 0)
+        create.click.addHandler { _, _ in newProfile() }
+        stack.children.append(create)
+        let footnote = UI.text("Profiles help keep your data separate across Spaces, like logins, cookies and site data. You can use any Profile across one or more Spaces: choose Change Profile in the command bar, or Set Profile on a Space’s menu. Spaces on the same Profile share their logins. Only Profiles not assigned to any Spaces can be deleted.",
+                               size: 11, color: palette.secondaryText, trimmed: false)
+        footnote.textWrapping = .wrap
+        footnote.margin = Thickness(left: Double(SettingsMetrics.cardRowInset), top: 10, right: 0, bottom: 0)
+        stack.children.append(footnote)
+
+        // Rebuilt when a profile, or which spaces use one, changes (not on every space edit, so an
+        // open Rename flyout stays).
+        var shown = ""
+        func rebuild() {
+            let rows: [(String, BrowserProfile?, [Space])] = [("Default", nil, store.spaces(usingProfile: nil))]
+                + store.profiles.map { ($0.name, $0, store.spaces(usingProfile: $0.id)) }
+            let signature = rows.map { "\($0.1?.id.uuidString ?? "-")|\($0.0)|" + $0.2.map { "\($0.emoji)\($0.title)" }.joined(separator: ",") }
+                .joined(separator: "\n")
+            guard signature != shown else { return }
+            shown = signature
+            holder.child = card(rows.map { name, profile, spaces in
+                profileRow(name: name, profile: profile, spaces: spaces, store: store, palette: palette)
+            }, palette: palette)
+        }
+        rebuild()
+        return SettingsPaneContent(element: stack) { rebuild() }
+    }
+
+    private static func profileRow(name: String, profile: BrowserProfile?, spaces: [Space], store: SidebarStore,
+                                   palette: SettingsPalette) -> Grid {
+        let row = Grid()
+        row.minHeight = Double(SettingsMetrics.cardRowHeight) + 8
+        row.padding = Thickness(left: Double(SettingsMetrics.cardRowInset), top: 6, right: Double(SettingsMetrics.cardRowInset), bottom: 6)
+        row.columnDefinitions.append(UI.column(UI.star))
+        row.columnDefinitions.append(UI.column(UI.auto))
+        let labels = StackPanel()
+        labels.orientation = .vertical
+        labels.verticalAlignment = .center
+        labels.children.append(UI.text(name, color: palette.text))
+        let used = spaces.isEmpty ? "No Spaces" : spaces.map { "\($0.emoji) \($0.title)" }.joined(separator: ", ")
+        labels.children.append(UI.text(used, size: 11, color: palette.secondaryText))
+        row.children.append(labels)
+        guard let profile else { return row }
+
+        let buttons = StackPanel()
+        buttons.orientation = .horizontal
+        buttons.spacing = 6
+        buttons.verticalAlignment = .center
+
+        // Rename…: the name in a field under the button, Return or Rename to keep it.
+        let rename = Button()
+        rename.content = UI.text("Rename…", trimmed: false)
+        let renameFlyout = Flyout()
+        let field = TextBox()
+        field.text = profile.name
+        field.minWidth = 220
+        try? AutomationProperties.setName(field, "Profile name")
+        let apply = Button()
+        apply.content = UI.text("Rename", trimmed: false)
+        let commit = { [weak renameFlyout, weak field] in
+            guard let field else { return }
+            let name = field.text.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty { store.renameProfile(profile.id, to: name) }
+            try? renameFlyout?.hide()
+        }
+        apply.click.addHandler { _, _ in commit() }
+        field.keyDown.addHandler { _, args in
+            guard let args, Int32(truncatingIfNeeded: args.key.rawValue) == 0x0D else { return }
+            args.handled = true
+            commit()
+        }
+        let renamePanel = StackPanel()
+        renamePanel.orientation = .vertical
+        renamePanel.spacing = 8
+        renamePanel.children.append(UI.text("Rename Profile", color: palette.text))
+        renamePanel.children.append(field)
+        apply.horizontalAlignment = .right
+        renamePanel.children.append(apply)
+        renameFlyout.content = renamePanel
+        rename.flyout = renameFlyout
+        buttons.children.append(rename)
+
+        // Delete…: only a profile no space uses, after Arc's warning.
+        let delete = Button()
+        delete.content = UI.text("Delete…", trimmed: false)
+        delete.isEnabled = spaces.isEmpty
+        let deleteFlyout = Flyout()
+        let warning = StackPanel()
+        warning.orientation = .vertical
+        warning.spacing = 8
+        warning.maxWidth = 300
+        let question = UI.text("Delete “\(profile.name)”?", color: palette.text, trimmed: false)
+        question.fontWeight = UWP.FontWeight(weight: 600)
+        warning.children.append(question)
+        let detail = UI.text("Deleting this Profile will permanently remove any cookies, history, preferences, and logins that belong to it.",
+                             size: 12, color: palette.secondaryText, trimmed: false)
+        detail.textWrapping = .wrap
+        warning.children.append(detail)
+        let confirm = Button()
+        confirm.content = UI.text("Delete", trimmed: false)
+        confirm.horizontalAlignment = .right
+        confirm.click.addHandler { [weak deleteFlyout] _, _ in
+            try? deleteFlyout?.hide()
+            store.deleteProfile(profile.id)
+        }
+        warning.children.append(confirm)
+        deleteFlyout.content = warning
+        delete.flyout = deleteFlyout
+        buttons.children.append(delete)
+
+        row.children.append(buttons)
+        try? Grid.setColumn(buttons, 1)
+        return row
+    }
+
     // MARK: Pieces
 
     /// Labels end 178.5 DIPs in and controls start at 202, as in Dia's form panes.

@@ -202,9 +202,11 @@ typedef struct CraBrowserCallbacks {
 /// popup returned for it from popup_host_requested.
 CraBrowser *cra_browser_create(uintptr_t parent, int x, int y, int width, int height, const char *url,
                                CraBrowserCallbacks callbacks);
-/// The same, in the off-the-record profile private windows share when `incognito` is non-zero.
+/// The same, in the off-the-record profile private windows share when `incognito` is non-zero,
+/// else in the profile whose folder is `profile_path` (under the cache root; NULL or empty is
+/// Default).
 CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int width, int height, const char *url,
-                                  int incognito, CraBrowserCallbacks callbacks);
+                                  int incognito, const char *profile_path, CraBrowserCallbacks callbacks);
 void cra_browser_set_frame(CraBrowser *browser, int x, int y, int width, int height);
 /// Shows or hides the page (a background tab is hidden; Chromium also throttles it).
 void cra_browser_set_visible(CraBrowser *browser, int visible);

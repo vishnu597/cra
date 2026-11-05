@@ -84,6 +84,9 @@ final class BrowserWindow {
     private let permissionPrompt = PermissionPromptView()
     private var permissionWindow: FloatingWindow?
     private var permissionHeight = 120.0
+    private let profileDialog = ProfileDialogView()
+    private var profileWindow: FloatingWindow?
+    private var profileDialogHeight = 400.0
     /// The sliders button at the end of the address pill, and the Site Control Center it opens.
     private var sliders: Button!
     private let slidersGlyph = FontIcon()
@@ -154,6 +157,7 @@ final class BrowserWindow {
         makeCommandBar()
         makeFindBar()
         makePermissionPrompt()
+        makeProfileDialog()
         makeSiteControlCenter()
         toast = ToastView(owner: window) { [weak self] in self?.pageOnScreen() }
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
@@ -242,7 +246,10 @@ final class BrowserWindow {
     }
 
     private func syncPages() {
-        for (id, page) in pages where store.item(id)?.isTab != true {
+        // A page can't change its Chromium profile: one whose tab moved to a space on another
+        // profile, or whose space changed profile, closes and loads its address again there
+        // (BrowserManager.pruneMissingTabs on the Mac).
+        for (id, page) in pages where store.item(id)?.isTab != true || !inRightProfile(page, tab: id) {
             page.close()
             pages[id] = nil
         }
@@ -263,8 +270,13 @@ final class BrowserWindow {
         window.title = Self.title(selected?.displayTitle, incognito: isIncognito)
     }
 
+    private func inRightProfile(_ page: WebPage, tab id: UUID) -> Bool {
+        page.isIncognito || page.profilePath == store.profilePath(item: id)
+    }
+
     private func makePage(for id: UUID, url: String) -> WebPage {
-        let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, incognito: isIncognito, delegate: self)
+        let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, incognito: isIncognito,
+                           profilePath: store.profilePath(item: id), delegate: self)
         livePages.insert(ObjectIdentifier(page))
         page.userInfo = id
         page.isVisible = false
@@ -552,6 +564,7 @@ final class BrowserWindow {
         case "newWindow": host?.openNewWindow(incognito: false)
         case "newIncognitoWindow": host?.openNewWindow(incognito: true)
         case "closeWindow": requestClose()
+        case "changeProfile": if !isIncognito { showChangeProfile(forSpace: store.focusedSpaceID(window: windowID)) }
         case "newTab": beginNewTab()
         case "editURL": openCommandBar(.editURL)
         case "reopenClosedTab": reopenClosedTab()
@@ -698,6 +711,7 @@ final class BrowserWindow {
                 return
             }
         }
+        Self.settingsWindow?.onNewProfile = { [weak self] in self?.showNewProfile(ticked: []) }
         Self.settingsWindow?.show(over: window)
     }
 
@@ -894,6 +908,74 @@ final class BrowserWindow {
         permissionWindow.place(origin: PointInt32(x: corner.x, y: corner.y), size: SizeInt32(width: width, height: height))
     }
 
+    // MARK: Profiles
+
+    private func makeProfileDialog() {
+        profileDialog.onCreate = { [weak self] name, spaces in
+            self?.store.createProfile(name: name, forSpaces: spaces)
+            self?.hideProfileDialog()
+        }
+        profileDialog.onChange = { [weak self] space, profile in
+            self?.store.setProfile(profile, forSpace: space)
+            self?.hideProfileDialog()
+        }
+        profileDialog.onCancel = { [weak self] in self?.hideProfileDialog() }
+        profileDialog.onResize = { [weak self] height in
+            self?.profileDialogHeight = height
+            self?.placeProfileDialog()
+        }
+        do {
+            profileWindow = try FloatingWindow(owner: window, content: profileDialog.root)
+            // Alt+F4 on the dialog cancels it.
+            profileWindow?.onClose = { [weak self] in self?.hideProfileDialog() }
+        } catch {
+            print("The profile dialog's window could not be made: \(error)")
+        }
+    }
+
+    /// Create a new Profile (Set Profile ▸ New Profile…, Settings ▸ Profiles ▸ Create Profile…),
+    /// with `ticked` spaces chosen on its second step.
+    func showNewProfile(ticked: Set<UUID>) {
+        guard !closing else { return }
+        profileDialogHeight = profileDialog.showNew(spaces: store.profileSpaces, ticked: ticked)
+        presentProfileDialog()
+    }
+
+    /// Spaces ▸ Change Profile for the space.
+    func showChangeProfile(forSpace id: UUID) {
+        guard !closing, let space = store.space(id), !store.isIncognito(space: id) else { return }
+        profileDialogHeight = profileDialog.showChange(space: space, profiles: store.profiles, spaces: store.profileSpaces)
+        presentProfileDialog()
+    }
+
+    /// After the event that asked for it (a menu item, a key), as the command bar opens.
+    private func presentProfileDialog() {
+        _ = try? dispatcher.tryEnqueue { [weak self] in
+            guard let self, let profileWindow = self.profileWindow, !self.closing else { return }
+            self.placeProfileDialog()
+            profileWindow.show { [weak self] in self?.profileDialog.focus() }
+        }
+    }
+
+    private func hideProfileDialog() {
+        guard profileWindow?.isVisible == true else { return }
+        profileWindow?.hide()
+        if let window = HWND(bitPattern: hwnd) { _ = SetForegroundWindow(window) }
+        focusContent()
+    }
+
+    /// Centred on the window, as Arc's card is.
+    private func placeProfileDialog() {
+        guard let profileWindow, let window else { return }
+        let scale = window.scale
+        let position = window.appWindow.position, size = window.appWindow.size
+        let width = (ProfileDialogView.width * scale).rounded(), height = (profileDialogHeight * scale).rounded()
+        let left = Double(position.x) + (Double(size.width) - width) / 2
+        let top = Double(position.y) + max(0, (Double(size.height) - height) / 2)
+        profileWindow.place(origin: PointInt32(x: Int32(left.rounded()), y: Int32(top.rounded())),
+                            size: SizeInt32(width: Int32(width), height: Int32(height)))
+    }
+
     // MARK: Site Control Center
 
     private func makeSiteControlCenter() {
@@ -1075,6 +1157,9 @@ final class BrowserWindow {
 // MARK: - Sidebar → window
 
 extension BrowserWindow: SidebarActions {
+    /// Set Profile ▸ New Profile… on a space's menu: the space starts ticked.
+    func newProfile(forSpace id: UUID) { showNewProfile(ticked: [id]) }
+
     /// Today tabs are archived. Pinned tabs and favorites stay; they unload and return to
     /// their pinned page (Arc's close-on-pinned behaviour, MainWindowController.closeTab).
     func closeTab(_ id: UUID) {
@@ -1149,7 +1234,8 @@ extension BrowserWindow: WebPageDelegate {
         // The popup gets a tab of its own; its page is the host Chromium opens it in.
         let space = tabID(of: page).flatMap { store.spaceID(ofItem: $0) }
         let tab = store.createTab(url: url, in: space, select: false, window: windowID)
-        let host = WebPage(popupHostIn: hwnd, frame: contentFrame(), delegate: self)
+        let host = WebPage(popupHostIn: hwnd, frame: contentFrame(), incognito: page.isIncognito, profilePath: page.profilePath,
+                           delegate: self)
         livePages.insert(ObjectIdentifier(host))
         host.userInfo = tab.id
         host.isVisible = false

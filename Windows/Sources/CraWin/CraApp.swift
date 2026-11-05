@@ -54,7 +54,9 @@ public final class CraApp: SwiftApplication {
         onMain {
             CoreLog.fault = { print("Cra fault: \($0)") }
             let clock = WinScheduler(queue: dispatcher)
-            let store = SidebarStore(directory: WinPaths.supportDir, chromiumCache: WinPaths.chromiumCache, clock: clock)
+            let deleted = DeletedProfiles(directory: WinPaths.supportDir, chromiumCache: WinPaths.chromiumCache)
+            let store = SidebarStore(directory: WinPaths.supportDir, chromiumCache: WinPaths.chromiumCache, clock: clock,
+                                     onProfileDeleted: deleted.schedule)
             store.runAutoArchive()
             periodic = [clock.every(30 * 60) { store.runAutoArchive() }]
             self.clock = clock
@@ -69,6 +71,8 @@ public final class CraApp: SwiftApplication {
         let exe = CommandLine.arguments[0]
         let helper = URL(fileURLWithPath: exe).deletingLastPathComponent().appendingPathComponent("CraHelper.exe").path
         CrashRecovery.prepare(cache: WinPaths.chromiumCache)
+        // Deleted profiles' folders, while Chromium has none of them open.
+        DeletedProfiles(directory: WinPaths.supportDir, chromiumCache: WinPaths.chromiumCache).run()
         let cache = WinPaths.chromiumCache.path
         let log = WinPaths.log.path
         return helper.withCString { h in

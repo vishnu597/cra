@@ -130,6 +130,31 @@ CefRefPtr<CefRequestContext> IncognitoContext() {
     return g_incognitoContext;
 }
 
+/// Arc's Profiles: a space's own cookies, logins, storage and cache in a folder next to Default
+/// (it must sit under root_cache_path), one request context per folder so spaces on the same
+/// profile share their sign-ins (ProfileContext in CraCEF.mm). An empty path is the global
+/// Default profile. CreateBrowser waits for a context still loading from disk.
+class ProfileContextHandler : public CefRequestContextHandler {
+public:
+    void OnRequestContextInitialized(CefRefPtr<CefRequestContext> context) override { HideDownloadBubble(context); }
+private:
+    IMPLEMENT_REFCOUNTING(ProfileContextHandler);
+};
+
+std::unordered_map<std::wstring, CefRefPtr<CefRequestContext>> g_profileContexts;
+
+CefRefPtr<CefRequestContext> ProfileContext(const std::wstring &path) {
+    if (path.empty()) return nullptr;
+    auto it = g_profileContexts.find(path);
+    if (it != g_profileContexts.end()) return it->second;
+    CefRequestContextSettings settings;
+    CefString(&settings.cache_path) = path;
+    settings.persist_session_cookies = true;
+    CefRefPtr<CefRequestContext> context = CefRequestContext::CreateContext(settings, new ProfileContextHandler());
+    g_profileContexts[path] = context;
+    return context;
+}
+
 std::wstring DownloadsFolder() {
     PWSTR path = nullptr;
     std::wstring out;
@@ -315,6 +340,7 @@ struct CraBrowser {
     std::string pending_url;  // to create once Chromium's context is up
     bool is_popup_host = false;
     bool incognito = false;  // in the off-the-record profile
+    std::wstring profile_path;  // a profile's folder; empty is Default
     bool close_requested = false;
     bool closed_by_page = false;
     bool focus_pending = false;  // focused before Chromium made the page: focus it once it is
@@ -802,7 +828,7 @@ void CraBrowser::Create() {
     CefBrowserSettings settings;
     CraPageSettings(settings);
     CefBrowserHost::CreateBrowser(info, client, pending_url.empty() ? "about:blank" : pending_url, settings, nullptr,
-                                  incognito ? IncognitoContext() : nullptr);
+                                  incognito ? IncognitoContext() : ProfileContext(profile_path));
 }
 
 /// Chromium is done with the page (or never had one): tell Swift, then free it.
@@ -875,6 +901,7 @@ extern "C" void cra_cef_shutdown(void) {
         Sleep(10);
     }
     g_incognitoContext = nullptr;
+    g_profileContexts.clear();
     KillPumpTimer();
     if (g_pumpWindow) DestroyWindow(g_pumpWindow);
     g_pumpWindow = nullptr;
@@ -898,13 +925,14 @@ extern "C" const char *cra_cef_version(void) { return CEF_VERSION; }
 
 extern "C" CraBrowser *cra_browser_create(uintptr_t parent, int x, int y, int width, int height, const char *url,
                                           CraBrowserCallbacks callbacks) {
-    return cra_browser_create_in(parent, x, y, width, height, url, 0, callbacks);
+    return cra_browser_create_in(parent, x, y, width, height, url, 0, nullptr, callbacks);
 }
 
 extern "C" CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int width, int height, const char *url,
-                                             int incognito, CraBrowserCallbacks callbacks) {
+                                             int incognito, const char *profile_path, CraBrowserCallbacks callbacks) {
     auto *b = new CraBrowser;
     b->incognito = incognito != 0;
+    if (!b->incognito) b->profile_path = Wide(profile_path);
     b->client = new CraClient(b);
     b->callbacks = callbacks;
     b->parent = reinterpret_cast<HWND>(parent);
