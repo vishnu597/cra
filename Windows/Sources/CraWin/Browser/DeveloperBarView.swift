@@ -227,14 +227,29 @@ final class DeveloperBarView {
         stripeSize = size
         stripes.children.clear()
         let fill = UI.brush(255, 255, 255, alpha: UInt8((DeveloperStripes.whiteAlpha * 255).rounded()))
+        // One path, a closed figure per band (the projection has Path, not Polygon).
+        let figures = PathFigureCollection()
         for band in DeveloperStripes.bands(width: size.width, height: size.height) {
-            let points = PointCollection()
-            for p in band { points.append(WindowsFoundation.Point(x: Float(p.x), y: Float(p.y))) }
-            let shape = WinUI.Polygon()  // not GDI's Polygon
-            shape.points = points
-            shape.fill = fill
-            stripes.children.append(shape)
+            guard let first = band.first else { continue }
+            let figure = PathFigure()
+            figure.startPoint = WindowsFoundation.Point(x: Float(first.x), y: Float(first.y))
+            figure.isClosed = true
+            figure.isFilled = true
+            let segments = PathSegmentCollection()
+            for p in band.dropFirst() {
+                let line = LineSegment()
+                line.point = WindowsFoundation.Point(x: Float(p.x), y: Float(p.y))
+                segments.append(line)
+            }
+            figure.segments = segments
+            figures.append(figure)
         }
+        let geometry = PathGeometry()
+        geometry.figures = figures
+        let shape = WinUI.Path()
+        shape.data = geometry
+        shape.fill = fill
+        stripes.children.append(shape)
     }
 
     // MARK: Editing
