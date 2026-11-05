@@ -25,7 +25,7 @@ public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
 
     /// What the Windows app's Settings window lists: the panes whose features it has, in the
     /// Mac's order. More join as the port gets them (docs/windows.md).
-    public static let windowsPanes: [SettingsPane] = [.general, .tabs, .shortcuts]
+    public static let windowsPanes: [SettingsPane] = [.general, .tabs, .profiles, .shortcuts]
 }
 
 /// Selected pane plus the back/forward history behind the toolbar pill.

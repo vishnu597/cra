@@ -1944,6 +1944,18 @@ public final class SidebarStore {
         return spaceID(ofItem: id).map { profileDirectoryName(space: $0) } ?? "Default"
     }
 
+    /// The spaces a profile can be given to: every space but incognito ones, in sidebar order
+    /// (the New Profile dialog's "Which Spaces should use this Profile?").
+    public var profileSpaces: [Space] { orderedSpaces.filter { !isIncognito(space: $0.id) } }
+
+    /// Create a new Profile: the profile, and the ticked spaces moved onto it (Arc 1.171).
+    @discardableResult
+    public func createProfile(name: String, forSpaces ids: Set<UUID>) -> BrowserProfile {
+        let p = createProfile(name: name)
+        for s in profileSpaces where ids.contains(s.id) { setProfile(p.id, forSpace: s.id) }
+        return p
+    }
+
     @discardableResult
     public func createProfile(name: String) -> BrowserProfile {
         let p = BrowserProfile(id: UUID(), name: name)

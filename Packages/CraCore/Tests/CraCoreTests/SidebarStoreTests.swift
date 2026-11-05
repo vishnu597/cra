@@ -482,6 +482,23 @@ struct SidebarStoreTests {
         #expect(f.store.profiles.isEmpty && f.deletedProfiles.names == [work.directoryName])
     }
 
+    /// Create a new Profile moves the ticked spaces onto it, never a private window's space.
+    @Test func aNewProfileTakesTheTickedSpaces() {
+        let f = StoreFixture()
+        let second = f.store.createSpace(title: "Two", emoji: "2", focus: false)
+        let third = f.store.createSpace(title: "Three", emoji: "3", focus: false)
+        let incognito = f.store.addIncognitoWindow(frame: nil)
+        let privateSpace = f.store.focusedSpaceID(window: incognito.id)
+        #expect(f.store.profileSpaces.map(\.id) == [f.space.id, second.id, third.id])
+        let work = f.store.createProfile(name: "Work", forSpaces: [second.id, third.id, privateSpace, UUID()])
+        #expect(f.store.profiles == [work])
+        #expect(f.store.spaces(usingProfile: work.id).map(\.id) == [second.id, third.id])
+        #expect(f.store.space(f.space.id)?.profileID == nil)
+        #expect(f.store.space(privateSpace)?.profileID == nil)
+        let home = f.store.createProfile(name: "Home", forSpaces: [])
+        #expect(f.store.spaces(usingProfile: home.id).isEmpty && f.store.profiles.count == 2)
+    }
+
     // MARK: History and ranking
 
     @Test func visitsAndPicksAreCounted() {

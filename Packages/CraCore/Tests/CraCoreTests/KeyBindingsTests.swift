@@ -58,6 +58,7 @@ struct KeyBindingsTests {
         #expect(win["newIncognitoWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+N")
         #expect(win["closeWindow"]?.primary?.windowsDisplay == "Ctrl+Shift+W")
         #expect(win["clearCookies"]?.shortcuts == [])
+        #expect(win["changeProfile"]?.shortcuts == [] && win["changeProfile"]?.inCommandBar == true)
     }
 
     @Test func everyActionHasADescription() {

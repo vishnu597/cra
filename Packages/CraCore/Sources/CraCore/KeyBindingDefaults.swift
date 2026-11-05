@@ -161,6 +161,7 @@ public enum KeyBindingDefaults {
             "previousSplitPane": [],
             "nextSpace": [KeyChord(KeyChord.right, ctrlAlt)],
             "previousSpace": [KeyChord(KeyChord.left, ctrlAlt)],
+            "changeProfile": [],
             "pinTab": [KeyChord("d", ctrl)],
             "nextTab": [KeyChord(KeyChord.tab, ctrl)],
             "previousTab": [KeyChord(KeyChord.tab, ctrlShift)],
