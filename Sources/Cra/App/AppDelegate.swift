@@ -606,8 +606,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 TestGesture.scroll(by: g[0], steps: Int(g[1]), at: NSPoint(x: g[2], y: w.frame.height - g[3]), in: w)
                 return
             }
-            // menuAt=x,y (&button=right): the menu a click there opens, e.g. the ⌄ or a row's (#89).
-            if let g = dict["menuAt"]?.split(separator: ",").compactMap({ Double($0) }), g.count == 2, let w = main.window {
+            // menuAt=x,y (&button=right): the menu a click there opens, e.g. the ⌄ or a row's (#89);
+            // target=little: in the newest Little Window (its profile chip, #172).
+            if let g = dict["menuAt"]?.split(separator: ",").compactMap({ Double($0) }), g.count == 2,
+               let w = dict["target"] == "little" ? littleWindows.last?.window : main.window {
                 TestGesture.openMenu(at: NSPoint(x: g[0], y: w.frame.height - g[1]), in: w, right: dict["button"] == "right")
                 return
             }
@@ -909,7 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// unless the keyboard is in something with text to undo: a text field, or an editable
     /// element in a page (Chromium's page view reports its ui::TextInputType, 0 = none).
     private func undoClosedTab(_ event: NSEvent) -> Bool {
-        guard Shortcut("z", .command).matches(event) else { return false }
+        guard Shortcut("z", NSEvent.ModifierFlags.command).matches(event) else { return false }
         let responder = (event.window ?? NSApp.keyWindow)?.firstResponder
         if responder is NSText { return false }
         if let view = responder as? NSView, NSStringFromClass(type(of: view)) == "RenderWidgetHostViewCocoa",

@@ -29,8 +29,6 @@ final class BrowserWindow {
     private var windowDownloads: Set<UInt32> = []
     private var finishedDownloads: Set<UInt32> = []
     private var downloadWatchdog: WinAppSDK.DispatcherQueueTimer?
-    private let permissionPanel = StackPanel()
-    private let permissionText = TextBlock()
     private let dispatcher: WinAppSDK.DispatcherQueue
     /// The window's HWND: every page is a child window of it.
     private var hwnd: UInt = 0
@@ -69,8 +67,22 @@ final class BrowserWindow {
     private var closeTimer: WinAppSDK.DispatcherQueueTimer?
     /// Ctrl+,: made the first time it opens, then hidden and shown again.
     private var settingsWindow: SettingsWindow?
-    /// Permission requests waiting for the user, oldest first.
-    private var permissionQueue: [(origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
+    /// Permission requests waiting for the user, oldest first; the first is on screen.
+    private var permissionQueue: [(page: WeakPage, origin: String, kinds: PermissionKinds, answer: (Bool) -> Void)] = []
+    private let permissionPrompt = PermissionPromptView()
+    private var permissionWindow: FloatingWindow?
+    private var permissionHeight = 120.0
+    /// The sliders button at the end of the address pill, and the Site Control Center it opens.
+    private var sliders: Button!
+    private let slidersGlyph = FontIcon()
+    private let siteControl = SiteControlCenterView()
+    private var siteControlWindow: FloatingWindow?
+    /// When the Site Control Center last closed because another window took the front: a press
+    /// on the sliders right then is the click that closed it, and doesn't open it again.
+    private var siteControlClosed = Date.distantPast
+    private var toast: ToastView!
+    /// A full-page capture is running.
+    private var capturing = false
 
     private static let sidebarWidth = 280.0
     /// What a new window opens when the sidebar has nothing to show.
@@ -101,8 +113,15 @@ final class BrowserWindow {
             self?.layoutPanes()
             self?.placeCommandBar()
             self?.placeFindBar()
+            self?.placePermissionPrompt()
+            self?.hideSiteControlCenter()
         }
-        window.onMove = { [weak self] in self?.placeFindBar() }
+        window.onMove = { [weak self] in
+            self?.placeFindBar()
+            self?.placePermissionPrompt()
+            self?.hideSiteControlCenter()
+            self?.toast?.hide()
+        }
         window.onMouse = { [weak self] event in self?.handlePaneMouse(event) }
         window.cursor = { [weak self] x, y in self?.paneCursor(x: x, y: y) }
         window.onFocus = { [weak self] in
@@ -111,6 +130,9 @@ final class BrowserWindow {
         }
         makeCommandBar()
         makeFindBar()
+        makePermissionPrompt()
+        makeSiteControlCenter()
+        toast = ToastView(owner: window) { [weak self] in self?.pageOnScreen() }
         // Chromium closes its pages before their parent window goes (CEF's DoClose order).
         window.shouldClose = { [weak self] in
             guard let self, !self.readyToClose, cra_cef_live_browser_count() > 0 else { return true }
@@ -207,6 +229,11 @@ final class BrowserWindow {
         closing = true
         commandBar.close()
         hideFindBar()
+        hideSiteControlCenter()
+        toast.hide()
+        permissionWindow?.hide()
+        for request in permissionQueue { request.answer(false) }
+        permissionQueue.removeAll()
         let open = Array(pages.values)
         pages.removeAll()
         shownPage = nil
@@ -235,7 +262,7 @@ final class BrowserWindow {
 
     private func makeLayout() -> UIElement {
         sidebarPanel.padding = Thickness(left: 10, top: 10, right: 10, bottom: 10)
-        for height in [UI.auto, UI.auto, UI.star, UI.auto] { sidebarPanel.rowDefinitions.append(UI.row(height)) }
+        for height in [UI.auto, UI.auto, UI.star] { sidebarPanel.rowDefinitions.append(UI.row(height)) }
 
         let toolbar = StackPanel()
         toolbar.orientation = .horizontal
@@ -250,25 +277,23 @@ final class BrowserWindow {
         addressButton = UI.button(address) { [weak self] in self?.openCommandBar(.editURL) }
         addressButton.horizontalAlignment = .stretch
         addressButton.horizontalContentAlignment = .left
-        addressButton.margin = Thickness(left: 0, top: 8, right: 0, bottom: 8)
 
-        permissionPanel.spacing = 4
-        permissionPanel.visibility = .collapsed
-        permissionText.textWrapping = .wrap
-        let answers = StackPanel()
-        answers.orientation = .horizontal
-        answers.spacing = 4
-        let allow = UI.button("Allow") { [weak self] in self?.answerPermission(true) }
-        let block = UI.button("Block") { [weak self] in self?.answerPermission(false) }
-        allow.background = UI.brush(255, 255, 255, alpha: 40)
-        block.background = UI.brush(255, 255, 255, alpha: 40)
-        answers.children.append(allow)
-        answers.children.append(block)
-        permissionPanel.children.append(permissionText)
-        permissionPanel.children.append(answers)
-        permissionPanel.margin = Thickness(left: 0, top: 8, right: 0, bottom: 0)
+        // Arc's URL pill: the address, then the sliders that open the Site Control Center.
+        slidersGlyph.glyph = WinGlyph.code("slider.horizontal.3")
+        slidersGlyph.fontSize = 13
+        sliders = UI.button(slidersGlyph) { [weak self] in self?.toggleSiteControlCenter() }
+        try? ToolTipService.setToolTip(sliders, "Site Controls")
+        try? AutomationProperties.setName(sliders, "Site Controls")
+        let pill = Grid()
+        pill.columnDefinitions.append(UI.column(UI.star))
+        pill.columnDefinitions.append(UI.column(UI.auto))
+        pill.margin = Thickness(left: 0, top: 8, right: 0, bottom: 8)
+        pill.children.append(addressButton)
+        try? Grid.setColumn(addressButton, 0)
+        pill.children.append(sliders)
+        try? Grid.setColumn(sliders, 1)
 
-        let parts: [FrameworkElement] = [toolbar, addressButton, sidebar.root, permissionPanel]
+        let parts: [FrameworkElement] = [toolbar, pill, sidebar.root]
         for (i, part) in parts.enumerated() {
             sidebarPanel.children.append(part)
             try? Grid.setRow(part, Int32(i))
@@ -296,6 +321,7 @@ final class BrowserWindow {
     private func showAddress(_ url: String) {
         address.text = url.isEmpty ? "Search or enter address" : SuggestionEngine.humanURL(url)
         address.foreground = url.isEmpty ? sidebar.secondaryTextColor : sidebar.textColor
+        slidersGlyph.foreground = sidebar.secondaryTextColor
     }
 
     /// Keys to the page shown, else the sidebar.
@@ -465,6 +491,11 @@ final class BrowserWindow {
         case "previousTab": cycleTab(-1)
         case "nextSpace": store.focusSpace(offset: 1)
         case "previousSpace": store.focusSpace(offset: -1)
+        case "copyURL": copyURL(markdown: false)
+        case "copyURLMarkdown": copyURL(markdown: true)
+        case "capturePage": capture(fullPage: false)
+        case "clearCache": shownPage?.clearSiteDataAndReload(cookies: false)
+        case "clearCookies": shownPage?.clearSiteDataAndReload(cookies: true)
         case "goBack": shownPage?.goBack()
         case "goForward": shownPage?.goForward()
         case "addSplitView": addSplitPane()
@@ -746,26 +777,226 @@ final class BrowserWindow {
 
     // MARK: Permissions
 
+    private func makePermissionPrompt() {
+        permissionPrompt.onAnswer = { [weak self] allowed in self?.answerPermission(allowed) }
+        do {
+            permissionWindow = try FloatingWindow(owner: window, content: permissionPrompt.root)
+            // Alt+F4 on the prompt blocks, as closing the Mac's sheet would.
+            permissionWindow?.onClose = { [weak self] in self?.answerPermission(false) }
+        } catch {
+            print("The permission prompt's window could not be made: \(error)")
+        }
+    }
+
+    /// The oldest request's question over the page. A page that closed has no say any more.
     private func showNextPermission() {
-        guard let request = permissionQueue.first else {
-            permissionPanel.visibility = .collapsed
+        permissionQueue.removeAll { $0.page.page == nil || $0.page.page?.isClosed == true }
+        guard let request = permissionQueue.first, let permissionWindow, !closing else {
+            permissionWindow?.hide()
             return
         }
-        var what: [String] = []
-        if request.kinds.contains(.camera) { what.append("your camera") }
-        if request.kinds.contains(.microphone) { what.append("your microphone") }
-        if request.kinds.contains(.location) { what.append("your location") }
-        if request.kinds.contains(.notifications) { what.append("notifications") }
-        if what.isEmpty { what.append("a permission") }
-        permissionText.text = "\(request.origin) wants \(what.joined(separator: " and "))."
-        permissionText.foreground = sidebar.textColor
-        permissionPanel.visibility = .visible
+        permissionHeight = permissionPrompt.show(origin: request.origin, kinds: UInt(request.kinds.rawValue),
+                                                 dark: store.focusedSpace.theme.isDark)
+        placePermissionPrompt()
+        permissionWindow.show { [weak self] in self?.permissionPrompt.focus() }
     }
 
     private func answerPermission(_ allowed: Bool) {
         guard !permissionQueue.isEmpty else { return }
         permissionQueue.removeFirst().answer(allowed)
+        permissionWindow?.hide()
+        if permissionQueue.isEmpty {
+            if let window = HWND(bitPattern: hwnd) { _ = SetForegroundWindow(window) }
+            focusContent()
+        }
         showNextPermission()
+    }
+
+    /// Centred over the page area, 12 DIPs below its top (where the Mac's sheet drops from).
+    private func placePermissionPrompt() {
+        guard let permissionWindow, !permissionQueue.isEmpty, let window, let host = HWND(bitPattern: hwnd) else { return }
+        let scale = window.scale, area = window.contentFrame
+        let width = Int32((PermissionPromptView.width * scale).rounded()), height = Int32((permissionHeight * scale).rounded())
+        var corner = POINT(x: area.x + (area.width - width) / 2, y: area.y + Int32((12 * scale).rounded()))
+        _ = ClientToScreen(host, &corner)
+        permissionWindow.place(origin: PointInt32(x: corner.x, y: corner.y), size: SizeInt32(width: width, height: height))
+    }
+
+    // MARK: Site Control Center
+
+    private func makeSiteControlCenter() {
+        siteControl.ownerWindow = { [weak self] in self?.siteControlWindow?.hwnd ?? 0 }
+        siteControl.onEscape = { [weak self] in self?.hideSiteControlCenter(refocus: true) }
+        do {
+            siteControlWindow = try FloatingWindow(owner: window, content: siteControl.root)
+            // A click anywhere else closes it, as Arc's transient popover.
+            siteControlWindow?.onDeactivate = { [weak self] in
+                self?.siteControlClosed = Date()
+                self?.hideSiteControlCenter()
+            }
+        } catch {
+            print("The Site Control Center's window could not be made: \(error)")
+        }
+    }
+
+    private var siteControlShown: Bool { siteControlWindow?.isVisible == true }
+
+    /// The sliders: the Site Control Center for the page on screen, or closes it.
+    private func toggleSiteControlCenter() {
+        if siteControlShown { return hideSiteControlCenter(refocus: true) }
+        // The press that just closed it from outside.
+        guard Date().timeIntervalSince(siteControlClosed) > 0.3 else { return }
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.showSiteControlCenter() }
+    }
+
+    private func showSiteControlCenter() {
+        guard !closing, let siteControlWindow, let window, let host = HWND(bitPattern: hwnd) else { return }
+        let url = store.selectedTab?.tab?.url ?? ""
+        let ssl = shownPage?.sslStatus
+        let secure = ConnectionSecurity.isSecure(url: url, status: ssl?.status)
+        var actions = SiteControlCenterView.Actions()
+        actions.perform = { [weak self] action in self?.siteControlAction(action) }
+        actions.more = { [weak self] item in self?.siteControlMore(item, url: url) }
+        actions.toggle = { [weak self] setting in
+            guard let self else { return }
+            SiteControlCenter.toggle(setting, in: &self.store.settings, url: url)
+        }
+        if ssl?.hasCertificate == true {
+            actions.showCertificate = { [weak self] in
+                guard let self else { return }
+                self.hideSiteControlCenter(refocus: true)
+                self.shownPage?.showCertificate(owner: self.hwnd)
+            }
+        }
+        siteControl.actions = actions
+        // Windows has none of the three switches' features yet.
+        siteControl.build(url: url, secure: secure, rows: SiteControlCenter.settingRows(store.settings, url: url, available: []),
+                          dark: WinAppearance.isDark)
+        // Under the sliders, its right edge at theirs, kept on the window.
+        let scale = window.scale
+        let width = Int32((Double(SiteControlCenter.Metrics.width) * scale).rounded())
+        let height = Int32((siteControl.height * scale).rounded())
+        var corner = POINT(x: 0, y: 0)
+        if let transform = try? sliders.transformToVisual(nil),
+           let origin = try? transform.transformPoint(WindowsFoundation.Point(x: 0, y: 0)) {
+            let right = (Double(origin.x) + sliders.actualWidth) * scale
+            let bottom = (Double(origin.y) + sliders.actualHeight + 4) * scale
+            corner = POINT(x: max(0, Int32(right.rounded()) - width), y: Int32(bottom.rounded()))
+        }
+        _ = ClientToScreen(host, &corner)
+        siteControlWindow.place(origin: PointInt32(x: corner.x, y: corner.y), size: SizeInt32(width: width, height: height))
+        siteControlWindow.show { [weak self] in self?.siteControl.focus() }
+    }
+
+    /// `refocus`: the page takes the keyboard back if the popover had it (a click elsewhere
+    /// already put it where it belongs).
+    private func hideSiteControlCenter(refocus: Bool = false) {
+        guard siteControlShown, let siteControlWindow else { return }
+        let hadFront = GetForegroundWindow() == HWND(bitPattern: siteControlWindow.hwnd)
+        siteControlWindow.hide()
+        guard refocus, hadFront, !closing, let window = HWND(bitPattern: hwnd) else { return }
+        _ = SetForegroundWindow(window)
+        focusContent()
+    }
+
+    /// Every action closes the popover first, as in Arc.
+    private func siteControlAction(_ action: SiteControlCenter.Action) {
+        hideSiteControlCenter(refocus: true)
+        switch action {
+        case .share:
+            guard let tab = store.selectedTab, let url = tab.tab?.url, !url.isEmpty else { return }
+            WinShell.share(url: url, title: tab.displayTitle, owner: hwnd)
+        case .copyURL: copyURL(markdown: false)
+        case .capture: capture(fullPage: false)
+        case .captureFullPage: capture(fullPage: true)
+        }
+    }
+
+    private func siteControlMore(_ item: SiteControlCenter.MoreItem, url: String) {
+        hideSiteControlCenter(refocus: true)
+        switch item {
+        case .clearCache: shownPage?.clearSiteDataAndReload(cookies: false)
+        case .clearCookies: shownPage?.clearSiteDataAndReload(cookies: true)
+        case .siteSettings: if let settings = SiteControlCenter.siteSettingsURL(for: url) { store.createTab(url: settings) }
+        case .manageExtensions: store.createTab(url: SiteControlCenter.manageExtensionsURL)
+        case .addExtension: store.createTab(url: SiteControlCenter.addExtensionURL)
+        }
+    }
+
+    // MARK: Copy and capture
+
+    /// Ctrl+Shift+C (Arc's ⇧⌘C): the page's address; with Alt, as a Markdown link.
+    private func copyURL(markdown: Bool) {
+        guard let tab = store.selectedTab, let url = tab.tab?.url, !url.isEmpty else { return }
+        guard WinShell.copy(markdown ? "[\(tab.displayTitle)](\(url))" : url) else { return }
+        if markdown {
+            showToast("Copied URL as Markdown")
+        } else {
+            let title = tab.displayTitle
+            showToast("Copied Current URL", action: ToastView.Action(title: "Share") { [weak self] in
+                guard let self else { return }
+                WinShell.share(url: url, title: title, owner: self.hwnd)
+            })
+        }
+    }
+
+    /// Arc's "Capture this page" and "Capture the full page": the PNG goes on the clipboard and
+    /// the toast's Save puts it in a file. Picking an area of the page, as the Mac's capture
+    /// overlay does, comes later; this one takes what the page shows.
+    private func capture(fullPage: Bool) {
+        guard let page = shownPage, !capturing else { return }
+        capturing = true
+        let shoot: (String) -> Void = { [weak self, weak page] params in
+            guard let page else {
+                self?.capturing = false
+                return
+            }
+            page.sendDevToolsMethod("Page.captureScreenshot", params: params) { shot, error in self?.finishCapture(shot, error: error) }
+        }
+        guard fullPage else { return shoot(PageCapture.screenshotParams()) }
+        showToast("Capture in Progress")
+        page.sendDevToolsMethod("Page.getLayoutMetrics") { [weak self] result, error in
+            guard let size = result.flatMap(PageCapture.contentSize(layoutMetrics:)) else {
+                self?.finishCapture(nil, error: error)
+                return
+            }
+            shoot(PageCapture.screenshotParams(fullPageWidth: size.width, height: size.height))
+        }
+    }
+
+    private func finishCapture(_ shot: String?, error: String?) {
+        capturing = false
+        guard let png = shot.flatMap(PageCapture.png(screenshot:)), WinShell.copy(png: png) else {
+            print("Cra: capture failed: \(error ?? "no data")")
+            showToast("Capture Failed")
+            return
+        }
+        showToast("Screenshot Copied to Clipboard", action: ToastView.Action(title: "Save") { [weak self] in self?.saveCapture(png) })
+    }
+
+    /// The toast's Save: Arc's "Save Capture Image", in Downloads.
+    private func saveCapture(_ png: Data) {
+        guard let path = WinShell.savePNG(owner: hwnd, title: "Save Capture Image", fileName: PageCapture.fileName(at: Date())) else { return }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+        } catch {
+            print("Cra: saving a capture failed: \(error)")
+            showToast("Failed to Save Capture")
+        }
+    }
+
+    private func showToast(_ text: String, action: ToastView.Action? = nil) {
+        guard !closing else { return }
+        toast.show(text, action: action, theme: store.focusedSpace.theme)
+    }
+
+    /// The focused pane's frame on screen (the whole page area without a split), for the toast.
+    private func pageOnScreen() -> (left: Int32, top: Int32, right: Int32, scale: Double)? {
+        guard let window, let host = HWND(bitPattern: hwnd) else { return nil }
+        let frame = shownTabID.flatMap { paneFrames[$0] } ?? window.contentFrame
+        var topLeft = POINT(x: frame.x, y: frame.y)
+        _ = ClientToScreen(host, &topLeft)
+        return (topLeft.x, topLeft.y, topLeft.x + frame.width, window.scale)
     }
 }
 
@@ -925,7 +1156,8 @@ extension BrowserWindow: WebPageDelegate {
 
     func page(_ page: WebPage, requestsPermissionForOrigin origin: String, kinds: PermissionKinds,
               answer: @escaping (Bool) -> Void) {
-        permissionQueue.append((origin, kinds, answer))
+        guard !closing else { return answer(false) }
+        permissionQueue.append((WeakPage(page), origin, kinds, answer))
         if permissionQueue.count == 1 { showNextPermission() }
     }
 
@@ -944,9 +1176,22 @@ extension BrowserWindow: WebPageDelegate {
             }
             return
         }
+        // Chromium dismissed its requests; the prompt moves on if it was asking for this page.
+        if permissionQueue.first?.page.page === page {
+            permissionQueue.removeFirst()
+            permissionWindow?.hide()
+            showNextPermission()
+        }
+        permissionQueue.removeAll { $0.page.page === page }
         guard let id = tabID(of: page), pages[id] === page else { return }
         pages[id] = nil
         // window.close(): the page's tab goes as a closed tab would.
         if page.closedByPage { closeTab(id) }
     }
+}
+
+/// A page held without keeping it alive (a permission request waiting its turn).
+struct WeakPage {
+    weak var page: WebPage?
+    init(_ page: WebPage) { self.page = page }
 }

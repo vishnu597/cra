@@ -23,12 +23,8 @@ struct SiteControlCenterActions {
     var showCertificate: (() -> Void)?
 }
 
-enum SiteControlCenterMetrics {
-    static let width: CGFloat = 236
-    static let inset: CGFloat = 10
-    static let tile = CGSize(width: 48, height: 32)
-    static let gap: CGFloat = 8
-}
+/// Arc's geometry, shared with Windows (CraCore).
+typealias SiteControlCenterMetrics = SiteControlCenter.Metrics
 
 /// The popover's content: built in one pass from the store and the extension list, and built
 /// again when either changes (pinning, a setting switch).
@@ -149,15 +145,10 @@ final class SiteControlCenterView: NSView {
         y += extH + 15
         // Settings: three switch rows.
         let settings = SiteSectionView(title: "Settings", hoverText: nil, colors: colors, onHeaderClick: {})
-        let developer = store.settings.isDeveloperMode(url: url)
         let store = store, url = url
-        let rowsSpec: [(String, String, String, Bool, () -> Void)] = [
-            ("hammer.fill", "Developer Mode", developer ? "On" : "Off", developer, { store.settings.toggleDeveloperMode(url: url) }),
-            ("shield.fill", "Block Ads & Trackers", store.settings.blockAdsAndTrackers ? "On" : "Off",
-             store.settings.blockAdsAndTrackers, { store.settings.blockAdsAndTrackers.toggle() }),
-            ("gearshape.fill", "Automatic Picture-In-Picture", store.settings.autoPictureInPicture ? "Allowed" : "Disabled",
-             store.settings.autoPictureInPicture, { store.settings.autoPictureInPicture.toggle() }),
-        ]
+        let rowsSpec: [(String, String, String, Bool, () -> Void)] = SiteControlCenter.settingRows(store.settings, url: url).map { r in
+            (r.symbol, r.title, r.subtitle, r.isOn, { SiteControlCenter.toggle(r.setting, in: &store.settings, url: url) })
+        }
         for (i, r) in rowsSpec.enumerated() {
             let row = SiteSettingRow(symbol: r.0, title: r.1, subtitle: r.2, active: r.3, colors: colors, action: r.4)
             row.frame = NSRect(x: 0, y: 27 + CGFloat(i) * 43, width: 208, height: 33)
@@ -529,8 +520,9 @@ private final class SiteSecurityPill: SiteHoverView {
         lock.image = SidebarSymbols.image(secure ? "lock.fill" : "lock.open.fill", size: 12, weight: .semibold)
         lock.contentTintColor = colors.text
         lock.imageScaling = .scaleNone
+        let text = SiteControlCenter.securityLabel(secure: secure)
         let label = NSTextField.sidebarLabel(size: 14, weight: .semibold)
-        label.stringValue = secure ? "Secure" : "Not Secure"
+        label.stringValue = text.title
         label.textColor = colors.text
         let lw = lock.image?.size.width ?? 10
         let tw = ceil(label.attributedStringValue.size().width)
@@ -539,9 +531,9 @@ private final class SiteSecurityPill: SiteHoverView {
         label.frame = NSRect(x: 10 + lw + 6 - SidebarText.inset, y: (32 - 17) / 2, width: tw + 2 * SidebarText.inset, height: 17)
         addSubview(lock)
         addSubview(label)
-        _ = ArcTooltipAnchorView.attach(to: self, help: secure ? "Your connection to this site is secure" : "Your connection to this site is not secure")
+        _ = ArcTooltipAnchorView.attach(to: self, help: text.help)
         setAccessibilityElement(true)
-        setAccessibilityLabel(secure ? "Secure" : "Not Secure")
+        setAccessibilityLabel(text.title)
         setAccessibilityRole(clickable ? .button : .staticText)
     }
 
@@ -575,13 +567,18 @@ private final class SiteMoreButton: SiteHoverView {
         onClick = {
             let menu = NSMenu()
             func add(_ title: String, _ action: @escaping () -> Void) { menu.addItem(BlockMenuItem(title: title, action: action)) }
-            add("Clear Cache", actions.clearCache)
-            add("Clear Cookies", actions.clearCookies)
-            menu.addItem(.separator())
-            add("Manage Extensions", actions.manageExtensions)
-            add("Add Extension", actions.addExtension)
-            menu.addItem(.separator())
-            add("All Site Settings", actions.siteSettings)
+            for (i, group) in SiteControlCenter.moreMenu(extensions: true).enumerated() {
+                if i > 0 { menu.addItem(.separator()) }
+                for item in group {
+                    switch item {
+                    case .clearCache: add(item.title, actions.clearCache)
+                    case .clearCookies: add(item.title, actions.clearCookies)
+                    case .manageExtensions: add(item.title, actions.manageExtensions)
+                    case .addExtension: add(item.title, actions.addExtension)
+                    case .siteSettings: add(item.title, actions.siteSettings)
+                    }
+                }
+            }
             menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         }
         refresh()

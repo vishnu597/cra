@@ -1,4 +1,5 @@
 import CraCEFWin
+import CraCore
 import Foundation
 
 /// A key press on a page, as Chromium reports it (CraKeyEvent).
@@ -177,6 +178,48 @@ final class WebPage: @unchecked Sendable {
     func printPage() { if let handle { cra_browser_print(handle) } }
     func viewSource() { if let handle { cra_browser_view_source(handle) } }
 
+    /// A DevTools protocol method (CraBrowser.sendDevToolsMethod on the Mac): `completion` gets
+    /// the answer's JSON, or nil and the error. Always called, on the main thread.
+    func sendDevToolsMethod(_ method: String, params: String = "{}", completion: @escaping @MainActor (String?, String?) -> Void) {
+        let box = Unmanaged.passRetained(DevToolsCall(completion)).toOpaque()
+        let done: CraDevToolsResult = { context, success, json, length in
+            guard let context else { return }
+            let call = Unmanaged<DevToolsCall>.fromOpaque(context).takeRetainedValue()
+            let text = json.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: length), as: UTF8.self) } ?? ""
+            onMain { success != 0 ? call.completion(text, nil) : call.completion(nil, text) }
+        }
+        guard let handle, !isClosed else {
+            done(box, 0, nil, 0)
+            return
+        }
+        method.withCString { m in params.withCString { p in cra_browser_send_dev_tools_method(handle, m, p, box, done) } }
+    }
+
+    /// The connection of the page on screen (the Mac's sslStatus); nil before anything committed.
+    var sslStatus: (status: ConnectionSecurity.Status, hasCertificate: Bool)? {
+        guard let handle else { return nil }
+        var out = CraSSLStatus()
+        guard cra_browser_ssl_status(handle, &out) != 0 else { return nil }
+        return (ConnectionSecurity.Status(secureConnection: out.secure_connection != 0, certStatus: UInt(out.cert_status),
+                                          contentStatus: UInt(out.content_status)), out.has_certificate != 0)
+    }
+
+    /// Windows' certificate dialog for the page's certificate, over `owner`. Modal.
+    @discardableResult
+    func showCertificate(owner: UInt) -> Bool {
+        guard let handle else { return false }
+        return cra_browser_show_certificate(handle, owner) != 0
+    }
+
+    /// Arc's "Clear Cookies and Refresh" and "Clear Cache and Refresh" (SiteData on the Mac).
+    func clearSiteDataAndReload(cookies: Bool) {
+        guard let request = SiteDataClearing.request(url: currentURL, cookies: cookies) else { return }
+        sendDevToolsMethod(request.method, params: request.params) { [weak self] _, error in
+            if let error { print("Cra: clearing site data failed: \(error)") }
+            self?.reload()
+        }
+    }
+
     /// Asynchronous: `pageDidClose` follows once Chromium is done.
     func close() {
         guard let handle, !isClosed else { return }
@@ -307,6 +350,12 @@ final class WebPage: @unchecked Sendable {
     private static func with(_ context: UnsafeMutableRawPointer?, _ body: @MainActor (WebPage) -> Void) {
         with(context, (), body)
     }
+}
+
+/// A DevTools call's completion, held across the C callback.
+private final class DevToolsCall {
+    let completion: @MainActor (String?, String?) -> Void
+    init(_ completion: @escaping @MainActor (String?, String?) -> Void) { self.completion = completion }
 }
 
 private func string(_ cString: UnsafePointer<CChar>?) -> String {

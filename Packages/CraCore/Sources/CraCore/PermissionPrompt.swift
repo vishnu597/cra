@@ -1,3 +1,5 @@
+import Foundation
+
 /// The question Cra's permission sheet asks for a page's request. `kinds` is CraCEF's bit set:
 /// 1 camera, 2 microphone, 4 location, 8 notifications, 16 a type CraCEF can't name, and from
 /// 1 << 5 Chrome's other types. Notifications ask like the others (Arc asks too; Messenger and
@@ -44,6 +46,15 @@ public enum PermissionPrompt {
         if kinds & 16 != 0, !wants.isEmpty { wants.append("use another browser permission") }
         return wants.isEmpty ? "\(origin) is asking for a browser permission"
                              : "\(origin) wants to \(list(wants))"
+    }
+
+    /// Chrome's way of naming the asking site in its bubble: the host, with the scheme only
+    /// when it isn't https and the port when there is one ("permission.site",
+    /// "http://localhost:8080"). The Mac's sheet shows the origin as CEF gives it.
+    public static func displayOrigin(_ origin: String) -> String {
+        guard let u = URL(string: origin), let host = u.host, !host.isEmpty, let scheme = u.scheme else { return origin }
+        let port = u.port.map { ":\($0)" } ?? ""
+        return scheme == "https" ? host + port : "\(scheme)://\(host)\(port)"
     }
 
     /// "a", "a and b", "a, b and c".

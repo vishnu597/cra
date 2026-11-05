@@ -140,6 +140,9 @@ public enum KeyBindingDefaults {
             "reopenClosedTab": [KeyChord("t", ctrlShift)],
             "editURL": [KeyChord("l", ctrl)],
             "closeTab": [KeyChord("w", ctrl)],
+            "capturePage": [KeyChord("2", ctrlShift)],
+            "copyURL": [KeyChord("c", ctrlShift)],
+            "copyURLMarkdown": [KeyChord("c", [.control, .option, .shift])],
             "find": [KeyChord("f", ctrl)],
             "findNext": [KeyChord("g", ctrl), KeyChord(KeyChord.function(3), [])],
             "findPrevious": [KeyChord("g", ctrlShift), KeyChord(KeyChord.function(3), .shift)],
@@ -159,6 +162,8 @@ public enum KeyBindingDefaults {
             "goBack": [KeyChord(KeyChord.left, alt)],
             "goForward": [KeyChord(KeyChord.right, alt)],
             "settings": [KeyChord(",", ctrl)],
+            "clearCache": [],
+            "clearCookies": [],
         ]
         for n in 1...9 { table["item\(n)"] = [KeyChord("\(n)", ctrl)] }
         return table
