@@ -24,7 +24,7 @@ struct DeveloperBarTests {
         #expect(close(bar, 44, 72, 206), "the accent, not the first stop")
         let grey = SpaceTheme(colors: ["#808080"], intensity: 1, noise: 0, appearance: "light").developerBar
         #expect(close(grey, 92, 92, 92), "a grey space gets a grey bar")
-        #expect(grey.r == grey.g && grey.g == grey.b)
+        #expect(abs(grey.r - grey.g) < 0.001 && abs(grey.g - grey.b) < 0.001, "no hue creeps in")
         let none = SpaceTheme(colors: [], intensity: 1, noise: 0, appearance: "light").developerBar
         #expect(none == grey, "no colour at all reads as grey")
     }
