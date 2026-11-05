@@ -1,8 +1,8 @@
 # Cra for Windows
 
 The Windows shell of Cra: WinUI 3 through Swift/WinRT, with Chromium through CEF. It
-shares `Packages/CraCore` with the macOS app. The porting plan and parity checklist live
-in the project's plan doc; this folder is phase 0, one window with one page.
+shares `Packages/CraCore` with the macOS app. [PARITY.md](PARITY.md) lists every Mac feature, its
+state on Windows and the shared code behind it.
 
 ## Build
 
