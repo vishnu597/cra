@@ -15,7 +15,8 @@ struct PeekTriggerTests {
         return PeekTrigger.opens(url, from: page, shiftClick: shift, newTab: newTab, fromPinned: pinned, settings: s)
     }
 
-    @Test func pinnedTabPeeksAtOtherHosts() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/12"))
+    func pinnedTabPeeksAtOtherHosts() {
         #expect(Self.opens(Self.other))
         #expect(Self.opens(Self.other, newTab: true))
         #expect(!Self.opens(Self.same))
@@ -25,13 +26,15 @@ struct PeekTriggerTests {
         #expect(Self.opens(Self.same, newTab: true))
     }
 
-    @Test func todayTabsLoadUnlessEveryTabIsOn() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/12"))
+    func todayTabsLoadUnlessEveryTabIsOn() {
         #expect(!Self.opens(Self.other, pinned: false))
         #expect(!Self.opens(Self.same, newTab: true, pinned: false))
         #expect(Self.opens(Self.other, pinned: false) { $0.peekInEveryTab = true })
     }
 
-    @Test func shiftClickPeeksFromAnyTab() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/12"))
+    func shiftClickPeeksFromAnyTab() {
         #expect(Self.opens(Self.same, shift: true, pinned: false))
         #expect(!Self.opens(Self.same, shift: true) { $0.peekOnShiftClick = false })
     }
@@ -40,5 +43,21 @@ struct PeekTriggerTests {
         #expect(!Self.opens(Self.other) { $0.peekLinksToOtherSites = false })
         #expect(!Self.opens("file:///tmp/a.html", newTab: true))
         #expect(!Self.opens("cra://settings", shift: true))
+    }
+
+    /// Inside the Peek (GitHub #202).
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/202")) func aNewTabLinkInsideThePeekLeavesIt() {
+        #expect(PeekTrigger.leavesPeek(Self.other, shiftClick: false, newTab: true))
+        #expect(PeekTrigger.leavesPeek(Self.same, shiftClick: false, newTab: true))
+        #expect(PeekTrigger.leavesPeek("HTTPS://example.org/", shiftClick: false, newTab: true))
+        #expect(PeekTrigger.leavesPeek("file:///tmp/a.html", shiftClick: false, newTab: true))
+        // A plain link loads in the Peek, and so does a Shift-click.
+        #expect(!PeekTrigger.leavesPeek(Self.other, shiftClick: false, newTab: false))
+        #expect(!PeekTrigger.leavesPeek(Self.other, shiftClick: true, newTab: false))
+        // Pages a tab can't take without the opener, or that a page must not open.
+        #expect(!PeekTrigger.leavesPeek("about:blank", shiftClick: false, newTab: true))
+        #expect(!PeekTrigger.leavesPeek("", shiftClick: false, newTab: true))
+        #expect(!PeekTrigger.leavesPeek("cra://settings", shiftClick: false, newTab: true))
+        #expect(!PeekTrigger.leavesPeek("javascript:alert(1)", shiftClick: false, newTab: true))
     }
 }

@@ -99,6 +99,9 @@ public enum KeyBindingDefaults {
             // Chrome's app menu item and key; Arc has neither, only Settings ▸ Profiles ▸ Clear Browsing Data.
             KeyAction(id: "clearBrowsingData", name: "Clear Browsing Data…", section: .app, shortcuts: [KeyChord(KeyChord.delete, cmdShift)],
                       triggers: ["clear history", "delete history", "clear browsing data", "delete browsing data"], symbol: "trash"),
+            // Arc's Translate bubble item "Language Settings": Chromium's page, in the space's profile (#209).
+            KeyAction(id: "languageSettings", name: "Language Settings", section: .app, shortcuts: [],
+                      triggers: ["language", "languages", "preferred language", "accept language"], symbol: "globe"),
             KeyAction(id: "checkForUpdates", name: "Check for Updates…", section: .app, shortcuts: [],
                       triggers: ["update", "upgrade", "new version"], symbol: "arrow.down.circle"),
         ]
@@ -274,6 +277,7 @@ public enum ShortcutDescriptions {
         "importData": "Bring tabs, spaces and extensions over from Arc or Dia.",
         "rebuildArcProfiles": "Put spaces imported from Arc back on their Arc profiles, with their sign-ins and extensions.",
         "clearBrowsingData": "Delete history, cookies and cached files with Chrome’s dialog.",
+        "languageSettings": "Choose the languages websites show their pages in, for this space’s profile.",
         "checkForUpdates": "Look for a newer version of Cra.",
     ]
 }

@@ -5,7 +5,7 @@ import Testing
 /// remembered instead of closing them again; Console and Network switch panels and close only
 /// their own (GitHub #88, #138). Moved from the Mac's policy tests.
 struct DevToolsToggleTests {
-    @Test func aPressWhileClosingIsRememberedNotSent() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/88")) func aPressWhileClosingIsRememberedNotSent() {
         var t = DevToolsToggle()
         var e = t.toggle()
         #expect(e == .show && t.state == .opening, "closed: a press opens")
@@ -30,7 +30,7 @@ struct DevToolsToggleTests {
         #expect(e == .show && t.state == .open, "Inspect Element on open DevTools moves them to the element")
     }
 
-    @Test func devToolsOpenedOrClosedElsewhereFollowTheNextPress() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/88")) func devToolsOpenedOrClosedElsewhereFollowTheNextPress() {
         var external = DevToolsToggle()
         external.didOpen()
         let state = external.state
@@ -44,7 +44,7 @@ struct DevToolsToggleTests {
         #expect(closed == .none && next == .show, "closed from DevTools' own button: the next press opens")
     }
 
-    @Test func consoleAndNetworkSwitchPanelsAndCloseOnlyTheirOwn() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/88"), .bug("https://github.com/VictorKildahl/cra/issues/138")) func consoleAndNetworkSwitchPanelsAndCloseOnlyTheirOwn() {
         var bar = DevToolsToggle()
         var r = bar.run(.console)
         #expect(r.effect == .show && r.frontend == "console", "Console on closed DevTools opens them on the Console")
@@ -82,7 +82,7 @@ struct DevToolsToggleTests {
         #expect(bar.panel == nil, "a report from a closed frontend is dropped")
     }
 
-    @Test func inspectAlwaysEndsOpenAndTheToggleKeepsThePanel() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/88"), .bug("https://github.com/VictorKildahl/cra/issues/138")) func inspectAlwaysEndsOpenAndTheToggleKeepsThePanel() {
         var unknown = DevToolsToggle()
         unknown.didOpen()
         var r = unknown.run(.console)

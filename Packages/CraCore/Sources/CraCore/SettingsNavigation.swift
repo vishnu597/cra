@@ -37,6 +37,10 @@ public final class SettingsNavigation {
     public private(set) var forward: [SettingsPane] = []
     /// The window is on screen: panes that refresh (Performance) stop while it is closed or covered.
     public var isOpen = false
+    /// Counts each time Settings is brought up: panes showing what changed elsewhere (a profile's
+    /// languages, set on Chromium's page) read it again.
+    public private(set) var shown = 0
+    public func didShow() { shown += 1 }
 
     public init(pane: SettingsPane = .general) {
         self.pane = pane

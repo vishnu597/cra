@@ -29,7 +29,8 @@ final class CommandBarController {
     var focusedSpaceID: UUID?
     var spaceName: (UUID) -> String = { _ in "" }
     /// Arc's scoped search: Tab on "youtube" scopes the bar to YouTube, on "%" to the space's open
-    /// tabs (a pill before the field) until Backspace on an empty field or Escape.
+    /// tabs, on the empty field to the browser's actions (a pill before the field) until Backspace
+    /// on an empty field or Escape.
     private(set) var scope: CommandBarScope?
     /// What was typed when Tab entered the scope; Backspace puts it back.
     private var scopeTyped = ""
@@ -91,6 +92,8 @@ final class CommandBarController {
                 result = engine.suggestions(for: newQuery, in: site)
             case .tabs:
                 result = engine.suggestions(for: newQuery, inTabsOf: focusedSpaceID ?? store.focusedSpaceID, currentTabID: store.selectedTabID)
+            case .actions:
+                result = engine.suggestions(forActionsMatching: newQuery, currentTabID: store.selectedTabID)
             }
             selectedIndex = 0
             previewText = nil
@@ -134,7 +137,7 @@ final class CommandBarController {
         previewVersion += 1
     }
 
-    /// Tab on text that starts a site search's host, or on "%": scope the bar to it.
+    /// Tab on text that starts a site search's host, on "%", or on the empty field: scope the bar to it.
     func enterScope() -> Bool {
         guard scope == nil, previewText == nil, let offered = result.scope else { return false }
         scopeTyped = query

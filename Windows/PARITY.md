@@ -4,9 +4,9 @@ Every feature of the Mac app, what the Windows app has of it, and where the code
 can share lives. The goal is the Mac app's features on Windows, built on the Mac's own logic:
 what decides something goes in CraCore once and both shells call it (CLAUDE.md, rule 1).
 
-<!-- upstream-reviewed: dd8ae64 -->
-Upstream reviewed through **ef42649** (VictorKildahl/cra main, 5 Nov 2026). Fork main has
-merged upstream through ef42649 (#22).
+<!-- upstream-reviewed: 565e477 -->
+Upstream reviewed through **565e477** (VictorKildahl/cra main, 6 Nov 2026). Fork main has
+merged upstream through 565e477 (#24).
 
 **Status:** ✅ on Windows · 🟡 partly · 🔜 in review · ❌ not yet · ➖ Mac only, or replaced by a
 Windows counterpart
@@ -22,20 +22,20 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Area | ✅ | 🟡 | 🔜 | ❌ | ➖ |
 |---|--:|--:|--:|--:|--:|
 | Window, pages and toolbar | 6 | 3 | 0 | 5 | 1 |
-| Sidebar | 6 | 4 | 0 | 11 | 0 |
+| Sidebar | 5 | 5 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
-| Little Windows, Peek and the Library | 0 | 1 | 1 | 5 | 0 |
+| Little Windows, Peek and the Library | 1 | 1 | 0 | 5 | 0 |
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
-| Profiles, privacy and site data | 3 | 1 | 0 | 6 | 0 |
+| Profiles, privacy and site data | 3 | 1 | 0 | 7 | 0 |
 | DevTools and Developer Mode | 2 | 0 | 0 | 1 | 0 |
 | Extensions | 0 | 0 | 0 | 5 | 0 |
 | Settings | 4 | 1 | 0 | 4 | 0 |
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
-| System integration and release | 3 | 0 | 0 | 6 | 2 |
-| **All** | 29 | 15 | 1 | 54 | 8 |
+| System integration and release | 3 | 0 | 0 | 8 | 2 |
+| **All** | 29 | 16 | 0 | 57 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -71,7 +71,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Folders: hinge animation, hover previews with search, tabs shown under a closed folder | 🟡 | `FolderPreview.swift` | `FolderPeek` | Windows has folders without previews or the animation. |
 | Favorites | 🟡 [#5] | `SidebarRowViews.swift`, `TileColor.swift` | `FavoritesLayout`, `FavoritesSharing` | Missing: 4/2/1 columns by width (`FavoritesLayout`), tile colours and icons, "Drag to add Favorites" card, Settings' share-across-spaces switch. |
 | Drag and drop: reorder, into folders and favorites, onto a space's icon, several picked tabs at once, reorder spaces | ❌ | `SidebarListDrop.swift`, `SpaceListView.swift` | `SidebarStore` | The store's moves are shared; the XAML drag layer is the work. Big item. Since 1f3c3d3 a tab dropped on any tab, pinned too, offers a split (no folder drop); since dfa3358 rows keep their hover through AppKit's stray exits (Mac only). |
-| Space menu: rename, icon, theme, profile, folder, export, delete | 🟡 [#5] [#19] | `MainWindowController+SpaceMenu.swift`, `SidebarMenus.swift`, `SpaceIconPicker.swift`, `EmojiCatalog.swift`, `EmojiCatalog+Data.swift` | `SpaceProfiles` | Windows has New Folder, New Space, Clear Today, Hide Space Header, Set Profile, Delete. Missing `editSpace`, `deleteSpace` and `newSpace` as commands, rename, the emoji picker. `EmojiCatalog+Data.swift` has no imports: move it to CraCore for the Windows picker. |
+| Space menu: rename, icon, theme, profile, folder, export, delete | 🟡 [#5] [#19] | `MainWindowController+SpaceMenu.swift`, `SidebarMenus.swift`, `SpaceIconPicker.swift`, `EmojiCatalog.swift`, `EmojiCatalog+Data.swift` | `SpaceProfiles`, `SpaceIcon` | Since upstream 8f511ac (#205) a space's icon can be a symbol (`Space.symbol`, `SpaceIcon`); Windows draws the emoji only. Windows has New Folder, New Space, Clear Today, Hide Space Header, Set Profile, Delete. Missing `editSpace`, `deleteSpace` and `newSpace` as commands, rename, the emoji picker. `EmojiCatalog+Data.swift` has no imports: move it to CraCore for the Windows picker. |
 | Space theme editor: Arc's presets, light and dark halves, grain | ❌ | `SpaceStyleEditor.swift`, `SpaceEditorView.swift` | `SpaceTheme`, `SpaceThemeVariants`, `SpaceColorPresets`, `ArcThemeImport` | Windows draws themes it reads; editing is missing. The colour logic is all shared. Since 6e371cc swatches and knobs grow under the pointer and shrink when pressed. |
 | Manage Spaces page (`manageSpaces`) | ❌ | `SpacesManagerView.swift` | `SidebarStore` | |
 | Space tooltip with its profile and keys | ❌ | `SpaceDock.swift`, `ArcTooltip.swift` | `ThemeTones` | |
@@ -81,14 +81,14 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Download location per profile: a folder, or ask where to save each file (Settings ▸ Profiles) | ❌ | `DownloadDestinations.swift`, `ProfilesPane.swift` | `DownloadLocation` | Upstream ef42649. `DownloadLocation`'s decoder keeps only folders starting with "/": Windows needs drive paths (`C:\…`) to count as absolute first. |
 | Downloads list in the footer, thumbnails, no Chrome download arrow | ✅ [#10] [#12] | `DownloadsTray.swift`, `DownloadThumbnails.swift`, `ChromeDownloadAnimation.swift` | `DownloadHistory`, `DownloadRow`, `RelativeTime` | Missing: the flight into the bin (`DownloadFlight.swift`), `viewDownloads` (⇧⌘J) as a command. |
 | Download flight into the Library button | ❌ | `DownloadFlight.swift` | | |
-| Favicons in rows, tiles and the command bar | ✅ [#12] | `FaviconCache.swift` | `FaviconKey` | |
+| Favicons in rows, tiles and the command bar | 🟡 [#12] | `FaviconCache.swift` | `FaviconKey` | Since upstream 061a0ef (#211) tabs on one host keep their own icons (`FaviconKey.key(for:iconURL:)`, `SidebarStore.setFaviconKey`); Windows still keeps one icon a site. |
 | GitHub live folders (`newGitHubLiveFolder`) | ❌ | `LiveFolderManager.swift`, `GitHubLiveClient.swift`, `LiveFolderViews.swift` | `LiveFolderModel` | `GitHubLiveClient.swift` is Foundation only: move it to CraCore so Windows doesn't rewrite it. Sign-in token storage needs Credential Manager. |
 
 ## Command bar and shortcuts
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| Command bar: tabs, archive, history, domains, actions, inline completion, ⌘Return background tab | ✅ [#8] [#9] | `CommandBarController.swift`, `CommandBarView.swift`, `CommandTextField.swift`, `SearchSuggestLoader.swift` | `SuggestionEngine`, `CommandBarDedupe`, `CommandBarGlyph`, `TypedURL`, `RelativeTime` | Windows: `WinSuggestLoader` repeats the Mac's loader on FoundationNetworking; move the loader to CraCore. Missing: the theme-following glow and scope bounce, ⌥Return as a split, `checkForUpdates`. |
+| Command bar: tabs, archive, history, domains, actions, inline completion, ⌘Return background tab, Tab on the empty field lists actions (#195) | ✅ [#8] [#9] [#24] | `CommandBarController.swift`, `CommandBarView.swift`, `CommandTextField.swift`, `SearchSuggestLoader.swift` | `SuggestionEngine`, `CommandBarDedupe`, `CommandBarGlyph`, `TypedURL`, `RelativeTime`, `ActionSearchScope` | The actions scope (upstream 390cc0b) came with #24's sync. Windows: `WinSuggestLoader` repeats the Mac's loader on FoundationNetworking; move the loader to CraCore. Missing: the theme-following glow and scope bounce, ⌥Return as a split, `checkForUpdates`. |
 | Search suggestions, Site Search with Tab, % tab search, Chromium's engines | ✅ [#9] [#13] | `SearchEngines.swift` | `SearchSuggestions`, `SiteSearch`, `TabSearchScope` | Windows reads Cra's engine setting; the Mac also reads Chromium's engine list (SQLite). |
 | Shortcuts in `keybindings.json`, Settings ▸ Shortcuts | ✅ [#15] | `KeyBindings.swift`, `ShortcutsPane.swift` | `KeyBindingDefaults`, `KeyBindings`, `KeyChord`, `KeyChord+Windows` | Windows' table is `KeyBindingDefaults.windowsShortcuts`; a command joins it when Windows performs it (`parity.py report` lists the rest, each named in its feature's row). |
 | Recent-tab switcher on ⌃Tab (`recentTab`, `recentTabBackward`) | ❌ | `TabSwitcher.swift`, `TabSwitcherView.swift` | `SidebarStore` | Ctrl+Tab cycles sidebar order on Windows until this lands. |
@@ -105,7 +105,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | 🔜 [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
+| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ✅ [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
 | Peek: card over the page with its own bar, Close, Expand, Add To Split | ❌ | `PeekChrome.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation` | With Little Windows. Layout and trigger are shared. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
 | Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
@@ -121,7 +121,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Tab freezing and sleeping, Tab Cleanup timers, calls stay awake | ❌ | `BrowserManager.swift` | `TabSleepPolicy` | The policy is shared; Windows needs the CEF discard calls and the two Settings ▸ Tabs switches. |
 | Mute a tab (`muteTab`), speaker icon, camera and microphone dot | 🟡 | `SidebarRowViews.swift` | `SidebarModel` | The bridge can mute; the sidebar shows no speaker yet. |
 | Open links in new tabs in the background | ❌ | `TabsPane.swift` | `LinkMenu` | |
-| Background tabs laid out at the pane's size, first seconds of a tab | ❌ | `BrowserManager.swift`, `PageProbe.swift`, `PageScript.swift` | | `PageScript.swift` is Foundation only: move it to CraCore. |
+| Background tabs laid out at the pane's size, first seconds of a tab, hidden tabs give their GPU tiles back (#195) | ❌ | `BrowserManager.swift`, `PageProbe.swift`, `PageScript.swift` | `HiddenFrameRelease` | `PageScript.swift` is Foundation only: move it to CraCore. |
 
 ## Media and capture
 
@@ -139,6 +139,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 |---|---|---|---|---|
 | Permission prompts | ✅ [#17] | `CraCEF.mm` | `PermissionPrompt` | |
 | Profiles: per-space cookie folders, Set Profile, Change Profile, New Profile, Settings ▸ Profiles | ✅ [#19] | `ProfilesPane.swift`, `ProfileDialogs.swift`, `NewProfileDialog.swift` | `SpaceProfiles`, `DeletedProfiles` | |
+| Website languages per profile in Settings ▸ Profiles, Language Settings (`languageSettings`) opens Chromium's page (#209) | ❌ | `ProfilesPane.swift` | `BrowserLanguages` | Upstream b528590. Windows: a row in its Profiles pane and the command, reading each profile's Preferences. |
 | Rebuild profiles from Arc (`rebuildArcProfiles`) | ❌ | `ArcProfileRebuilder.swift` | `ArcProfileRebuild` | Waits for Arc import. |
 | Clear Cache, Clear Cookies | ✅ [#17] | `SiteData.swift` | `SiteDataClearing` | |
 | Clear Browsing Data (`clearBrowsingData`) | 🟡 | `AppDelegate.swift` | `BrowsingDataClear` | The store side is shared; the command and Chrome's dialog are missing. |
@@ -160,7 +161,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| Install from the Chrome Web Store or a folder, Extensions menu | ❌ | `ExtensionStore.swift`, `ExtensionsMenu.swift`, `ExtensionLaunch.swift` | `ExtensionProfiles`, `ExtensionPagePlacement`, `ExtensionPageRetry` | Phase 2 items 12 and 13. `ExtensionLaunch.swift` is a known exception: move it. |
+| Install from the Chrome Web Store or a folder, Extensions menu | ❌ | `ExtensionStore.swift`, `ExtensionsMenu.swift`, `ExtensionLaunch.swift` | `ExtensionProfiles`, `ExtensionPagePlacement`, `ExtensionPageRetry`, `WebStoreInstalls` | Phase 2 items 12 and 13. `ExtensionLaunch.swift` is a known exception: move it. |
 | Toolbar and pinned buttons, popups, badges, live icons | ❌ | `ExtensionActions.swift`, `ExtensionPopupWindow.swift`, `ExtensionPopupCandidate.swift` | `ExtensionActionState`, `ExtensionBadge`, `PinnedExtensions`, `PinnedExtensionGrid`, `ToolbarExtensionFit`, `DismissingClick`, `FirstClick` | The extension CEF patches (`extension-popup-browser-info.patch` and the others) need the Windows CEF build too. |
 | Extension side panels (MetaMask) | ❌ | `ExtensionSidePanel.swift` | `ExtensionSidePanel` | |
 | Native messaging hosts (1Password and others) | ❌ | `NativeMessagingHosts.swift`, `ExtensionProtocolReply.swift` | `ExtensionProxyControl` | Windows reads hosts from the registry, not folders. Both files are Foundation only: move the shared part to CraCore. |
@@ -205,6 +206,8 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 |---|---|---|---|---|
 | Open at login | ✅ [#14] | `SystemIntegration.swift` | | Windows: the Run key. |
 | Default browser (`setDefaultBrowser`), opening links from other apps | ❌ | `SystemIntegration.swift` | | Registry registration under Default Apps. Phase 2 item 9. |
+| Another app's link (zoommtg:, slack:) in a new tab or window opens the app after asking, not a blank tab (#207) | ❌ | `AppLinkPrompt.swift`, `CraCEF.mm` | `AppLinks` | Upstream d1ad2af. Windows: CEF's external-protocol callback and a prompt in the page's place. |
+| Links Cra opens to crabrowser.app (release notes, help) name the button they came from | ❌ | `AppDelegate.swift`, `SoftwareUpdater.swift` | `SiteLinks` | Upstream 94c1fc3. Comes with Windows' help links and the updater. |
 | `cra://` scheme for scripting (`cra://open?space=`) | ❌ | `AppDelegate.swift`, `TestGesture.swift` | | |
 | Auto-update (`checkForUpdates`), update banner | ❌ | `SoftwareUpdater.swift`, `UpdateBanner.swift`, `UpdaterWindow.swift` | | WinSparkle reads the same appcast. Phase 3. |
 | Signed installer | ❌ | | | Authenticode and MSIX or Inno Setup. Phase 3. |
@@ -235,12 +238,29 @@ Windows code that repeats Mac logic instead of calling CraCore is a bug to fix t
 
 ## Waiting in upstream
 
-Upstream commits after the fork's last sync (dd8ae64, in #23), triaged:
+Upstream commits after the fork's last sync (565e477, in #24), triaged. The 34 commits #24
+merged (dd8ae64 to 565e477), with what each means for Windows:
 
 | Commit | What | Windows |
 |---|---|---|
 | 030f789 | Copy URL is reserved before the page (#194); ⇧⌘V Paste and Match Style reaches Chromium pages (#192) | Nothing to do: every Windows shortcut is taken before the page, and Ctrl+Shift+V is Chromium's own paste as plain text. |
 | dd8ae64 | Leaving a Google Meet call's tab opens its Document Picture in Picture window (#198) | With the Picture in Picture row (`BrowserManager.swift`, `PageScript.swift`). |
+| 9344185, c33b736 | Camera and microphone use and Meet's automatic Picture in Picture the way Arc gets them; Picture in Picture over full-screen apps (#206) | With the Picture in Picture and mute rows; needs Cra's CEF patches (`auto-pip-tab-hidden.patch`, `audible-state.patch`) on the Windows build. |
+| 106adcc | Background tabs give their GPU tiles back (#195) | With the background tabs row (`HiddenFrameRelease`). |
+| 1647eb6, e1bf433 | Extensions' translated descriptions (#200); imported Web Store extensions stay the store's (#203) | With the Extensions rows (`WebStoreInstalls`). |
+| ac1b3d1 | Windows reopen where they were, on their own display (#201) | Windows already saves frames in `windows.json` (#18) and keeps them on a reachable monitor. |
+| fc14398, a55078d | Peek grows out of the clicked link and back (#204); a new-tab link in a Peek opens a tab in the space (#202) | Built with Windows' Peek (#24): `PeekLayout`, `PeekTrigger`. |
+| 390cc0b | Tab on the empty command bar lists actions (#195) | Done in #24 (`ActionSearchScope`). |
+| 8f511ac, 740441a | Space icons as symbols (#205); an Auto space follows the system again (#155) | Space menu and theme rows. Windows themes have no Auto mode yet. |
+| 94c1fc3, d1ad2af | crabrowser.app links name their button; other apps' links open the app (#207) | New System integration rows (`SiteLinks`, `AppLinks`). |
+| f8042d5 | Cra writes nothing to a site's DevTools console | Windows already reports through `window.__craReport` (#22). |
+| 676a093 | A middle click on a page never closes a tab (#208) | Nothing to do yet: Windows rows have no middle-click close. When they get one, close the row under the click, as the Mac now does. |
+| b528590 | Website languages per profile (#209) | New Profiles row (`BrowserLanguages`, `languageSettings`). |
+| 8c26618 | Arc's page right-click menu: Chromium's menu, extension icons, Arc's items | With the page context menu row. |
+| 41fec6d | A live folder signed out of GitHub says so | With the live folders row. |
+| 061a0ef | Tabs on one host keep their own favicons (#211) | Favicons row, now 🟡. |
+| 398f292, 7951db4, 565e477 | Arc import with a repeated item; the performance recorder; nightly scenarios | Import and Performance rows; nothing on Windows yet. |
+| fcacd29 to 0bd9a83 | `scripts/promises.py` and `Tests/promises.lock` pin shipped issues' tests | The fork's lock names the CraCore tests the fork moved (`CommandBarGlyph`, `DevToolsToggle`) and Linux's `9.0 * 60` in a Tab sleep test. Re-run `scripts/promises.py --update` after each sync and say why in the merge. |
 
 ## Keeping this current
 
@@ -274,3 +294,4 @@ Upstream commits after the fork's last sync (dd8ae64, in #23), triaged:
 [#21]: https://github.com/vishnu597/cra-windows/pull/21
 [#22]: https://github.com/vishnu597/cra-windows/pull/22
 [#23]: https://github.com/vishnu597/cra-windows/pull/23
+[#24]: https://github.com/vishnu597/cra-windows/pull/24

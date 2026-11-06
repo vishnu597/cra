@@ -33,7 +33,7 @@ struct ChromiumLocaleTests {
         (["is-IS"], "en-US"),
     ]
 
-    @Test(arguments: languages)
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/167"), arguments: languages)
     func followsMacOS(preferred: [String], locale: String) {
         #expect(ChromiumLocale.pick(available: Self.cef, preferredLanguages: preferred) == locale)
     }
@@ -57,7 +57,7 @@ struct ChromiumLocaleTests {
         #expect(ChromiumLocale.portableMatch(["fr-CA", "de"], ["fr-FR"]) == "fr-CA")
     }
 
-    @Test func noLocalesLeavesCEFsDefault() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/167")) func noLocalesLeavesCEFsDefault() {
         #expect(ChromiumLocale.pick(available: [], preferredLanguages: ["zh-Hans-CN"]) == nil)
         #expect(ChromiumLocale.pick(available: ["Base"], preferredLanguages: ["zh-Hans-CN"]) == nil)
     }

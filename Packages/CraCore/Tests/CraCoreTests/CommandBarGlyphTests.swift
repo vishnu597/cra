@@ -12,14 +12,14 @@ struct CommandBarGlyphTests {
                                 row: row.map { (faviconKey: $0.0, symbol: $0.1) }, hasFavicon: Self.cached.contains)
     }
 
-    @Test func nothingTyped() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/50")) func nothingTyped() {
         // ⌘L shows the page's favicon (a globe without one), ⌘T a magnifier.
         #expect(glyph(editingURL: true, untouched: true, page: "github.com", row: Self.recentTab) == .favicon("github.com"))
         #expect(glyph(editingURL: true, untouched: true, page: "example.com", row: Self.recentTab) == .symbol("globe"))
         #expect(glyph(untouched: true, row: Self.recentTab) == .symbol("magnifyingglass"))
     }
 
-    @Test(arguments: [false, true])
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/50"), arguments: [false, true])
     func typedShowsTheHighlightedRow(editingURL: Bool) {
         #expect(glyph(editingURL: editingURL, row: (nil, "magnifyingglass")) == .symbol("magnifyingglass"))
         #expect(glyph(editingURL: editingURL, row: ("example.org", "globe")) == .symbol("globe"))
@@ -28,7 +28,7 @@ struct CommandBarGlyphTests {
         #expect(glyph(editingURL: editingURL, row: ("jira.example", nil)) == .symbol("globe"))
     }
 
-    @Test func scopedOrEmpty() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/50")) func scopedOrEmpty() {
         #expect(glyph(site: true, row: ("youtube.com", nil)) == .symbol("magnifyingglass"))
         #expect(glyph(row: nil) == .symbol("magnifyingglass"))
     }

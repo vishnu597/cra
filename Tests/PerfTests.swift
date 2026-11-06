@@ -20,6 +20,7 @@ enum PerfTests {
         aSlowLaunchIsAStallButNotAFreeze()
         workAcrossATimerBoundaryIsOnePass()
         theFirstSlowPassGetsAStack()
+        theObserversCostIsCPUNotWaiting()
         print("Perf recorder: \(checks) checks passed")
     }
 
@@ -62,6 +63,7 @@ enum PerfTests {
         if x < 0 { print(x) }
     }
 
+    // promise: #91
     @MainActor static func stallsAreRecordedWithTheirBreadcrumbs() {
         let c = config("stall")
         start(c)
@@ -119,6 +121,7 @@ enum PerfTests {
         PerfRecorder.quit()
     }
 
+    // promise: #91
     @MainActor static func aHangIsWrittenWhileItLastsWithItsStack() {
         let c = config("hang", hangMs: 600, stacks: 1)
         start(c)
@@ -152,6 +155,7 @@ enum PerfTests {
         PerfRecorder.quit()
     }
 
+    // promise: #91
     @MainActor static func aSessionThatNeverQuitIsAbnormalNextLaunch() {
         let c = config("abnormal")
         start(c)
@@ -181,6 +185,7 @@ enum PerfTests {
         PerfRecorder.quit()
     }
 
+    // promise: #91
     @MainActor static func aSecondCraWritesNothing() {
         let c = config("second")
         start(c, owner: false)
@@ -191,6 +196,7 @@ enum PerfTests {
         expect(!FileManager.default.fileExists(atPath: c.folder.path), "not even when it quits")
     }
 
+    // promise: #91
     @MainActor static func recordingOffStopsSamplingAndWriting() {
         let c = config("off")
         start(c, recording: false)
@@ -258,6 +264,7 @@ enum PerfTests {
         PerfRecorder.quit()
     }
 
+    // promise: #135
     /// GitHub #135: a timer and a queued block that run in one turn of the loop, with no sleep
     /// or commit between them, are one 300 ms pass. Split at before-timers they were two 150 ms
     /// halves and no stall at all. The timer queues the block: queued side by side, the block could
@@ -283,6 +290,7 @@ enum PerfTests {
         PerfRecorder.quit()
     }
 
+    // promise: #135
     /// GitHub #135: the first pass that lasts `slowStackMs` gets one `sample`, in memory, while the
     /// watchdog goes on watching; the report says how long the pass was in the end.
     @MainActor static func theFirstSlowPassGetsAStack() {
@@ -309,6 +317,28 @@ enum PerfTests {
             out[f.lastPathComponent] = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         }
         return out
+    }
+
+    /// The observer's self-cost counts the CPU its stall reports use, not time the main thread
+    /// spent waiting in one, and never multiplies a report out as if every callback made one.
+    /// Before, one callback in 256 was timed by the wall clock and multiplied by 256, a stall
+    /// report included. Here each stall report waits 2 ms off the CPU.
+    @MainActor static func theObserversCostIsCPUNotWaiting() {
+        let observer = MainLoopObserver(stallMs: 0, slowMs: 60_000, hangMs: 60_000,
+                                        onStall: { _, _, _ in usleep(2_000) }, onSlow: { _, _, _ in }, onHang: { _, _, _ in }, onWatch: {})
+        observer.start()
+        // One extra turn, so callbacks that end a pass (and report the stall) fall on the old
+        // one-in-256 timing too.
+        RunLoop.main.run(mode: .default, before: Date())
+        let timer = Timer(timeInterval: 0.001, repeats: true) { _ in }
+        RunLoop.main.add(timer, forMode: .common)
+        spin(1.0)
+        timer.invalidate()
+        observer.stop()
+        let d = observer.drain()
+        let perCallback = Double(d.observerNs) / Double(max(d.callbacks, 1))
+        expect(d.callbacks >= 512, "the loop turned often enough to time some callbacks (\(d.callbacks))")
+        expect(perCallback < 100_000, "a callback costs its CPU, not the 2 ms it waited (\(Int(perCallback)) ns each)")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
