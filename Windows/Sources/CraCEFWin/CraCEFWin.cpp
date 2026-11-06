@@ -1284,6 +1284,37 @@ extern "C" int cra_cef_execute_process(void) {
     return CefExecuteProcess(main_args, app, nullptr);
 }
 
+namespace {
+
+/// A press of the mouse in a page reports it as focused (focus_received), whatever Chromium
+/// thinks of its focus. Chromium reports focus only when its view gains it, and a page that
+/// focused itself once (a new split pane, which the app then gave the keyboard back from) keeps
+/// that view focused inside its own window: the first click into it changed nothing Chromium
+/// tracks, so the window never heard of it. Chromium's windows are on this thread (no
+/// multi-threaded message loop), so a thread hook sees their mouse messages.
+HHOOK g_clickHook = nullptr;
+
+LRESULT CALLBACK ClickHook(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN)) {
+        auto *mouse = reinterpret_cast<MOUSEHOOKSTRUCT *>(lParam);
+        HWND target = mouse ? mouse->hwnd : nullptr;
+        CraBrowser *clicked = nullptr;
+        for (CraBrowser *b : g_browsers) {
+            if (!target || b->close_requested || !b->browser || !b->visible || !b->callbacks.focus_received) continue;
+            HWND page = b->browser->GetHost()->GetWindowHandle();
+            if (page && (page == target || IsChild(page, target))) {
+                clicked = b;
+                break;
+            }
+        }
+        // Outside the loop: the app may open or close pages in answer.
+        if (clicked) clicked->callbacks.focus_received(clicked->callbacks.context);
+    }
+    return CallNextHookEx(g_clickHook, code, wParam, lParam);
+}
+
+}  // namespace
+
 extern "C" int cra_cef_initialize(const CraCEFSettings *s) {
     if (!s) return 0;
     CreatePumpWindow();
@@ -1306,6 +1337,7 @@ extern "C" int cra_cef_initialize(const CraCEFSettings *s) {
         return 0;
     }
     ScheduleWork(0);
+    if (!g_clickHook) g_clickHook = SetWindowsHookExW(WH_MOUSE, ClickHook, nullptr, GetCurrentThreadId());
     return 1;
 }
 
@@ -1317,6 +1349,10 @@ extern "C" void cra_cef_set_relaunch_handler(void *context, CraRelaunchHandler h
 }
 
 extern "C" void cra_cef_shutdown(void) {
+    if (g_clickHook) {
+        UnhookWindowsHookEx(g_clickHook);
+        g_clickHook = nullptr;
+    }
     std::vector<CraBrowser *> open(g_browsers.begin(), g_browsers.end());
     for (CraBrowser *b : open) cra_browser_close(b);
     // Let Chromium destroy the pages: pump its work and the windows' messages until they are

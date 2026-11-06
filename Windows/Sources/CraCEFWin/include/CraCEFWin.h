@@ -223,6 +223,8 @@ typedef struct CraBrowserCallbacks {
     /// Find in page: `count` matches, `active_match` (1-based) is highlighted; -1 when unchanged.
     void (*find_result)(void *context, int count, int active_match);
     void (*media_capture_changed)(void *context, int capturing);
+    /// The page took the keyboard, or the mouse was pressed in it (a click into a page Chromium
+    /// already counts as focused reports nothing else).
     void (*focus_received)(void *context);
     /// The page's DevTools opened: from cra_browser_show_dev_tools, or from Chromium itself (the
     /// page's Inspect menu item, F12 in the frontend). They open docked in the page's place, where
