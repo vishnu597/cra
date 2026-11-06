@@ -4,7 +4,6 @@
 #include "CraCEFWin.h"
 
 #include <windows.h>
-#include <commctrl.h>
 #include <objidl.h>
 
 #include <algorithm>
@@ -82,6 +81,7 @@ LRESULT CALLBACK VeilProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 const wchar_t *kVeilClass = L"CraPeekVeil";
 const wchar_t *kButtonsClass = L"CraPeekButtons";
+const wchar_t *kTipClass = L"CraPeekTip";
 
 void RegisterClasses() {
     static bool done = false;
@@ -218,43 +218,106 @@ void Draw(HWND hwnd) {
     ReleaseDC(nullptr, screen);
 }
 
-TOOLINFOW ToolFor(HWND hwnd, int index) {
-    TOOLINFOW tool{};
-    tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
-    tool.hwnd = hwnd;
-    tool.uId = static_cast<UINT_PTR>(index + 1);
-    return tool;
+/// Windows 11's own tooltip colours for the apps' theme (light unless the user picked dark).
+bool AppsUseDarkTheme() {
+    DWORD light = 1, size = sizeof(light);
+    return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", L"AppsUseLightTheme",
+                        RRF_RT_REG_DWORD, nullptr, &light, &size) == ERROR_SUCCESS &&
+           light == 0;
 }
 
 void HideTip(HWND hwnd, Buttons *b) {
     KillTimer(hwnd, kTipTimer);
-    if (!b->tooltip || b->shown < 0) return;
-    TOOLINFOW tool = ToolFor(hwnd, b->shown);
-    SendMessageW(b->tooltip, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&tool));
+    if (b->tooltip && b->shown >= 0) ShowWindow(b->tooltip, SW_HIDE);
     b->shown = -1;
 }
 
-/// The hovered button's tip, below the pointer as Windows puts its own, kept on the monitor.
-/// A tracking tip: the control never saw the pointer over these layered windows with its own
-/// hit testing (TTF_SUBCLASS), so the window shows it itself.
+/// The hovered button's tip, below the pointer as Windows puts its own and kept on the monitor:
+/// drawn here in a layered window of Cra's, in Windows 11's tooltip look. Neither of comctl32
+/// 5.82's ways worked over these windows: its subclassing never saw the hover, and its tracking
+/// tips crashed inside comctl32 on the PC.
 void ShowTip(HWND hwnd, Buttons *b) {
     if (!b->tooltip || b->hover < 0 || b->hover >= static_cast<int>(b->tips.size()) || b->tips[b->hover].empty()) return;
-    TOOLINFOW tool = ToolFor(hwnd, b->hover);
+    const std::wstring &text = b->tips[b->hover];
+    GdiplusToken();
+    double scale = b->scale;
+    Gdiplus::Font font(L"Segoe UI", static_cast<Gdiplus::REAL>(12 * scale), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    Gdiplus::RectF measured;
+    {
+        HDC screen = GetDC(nullptr);
+        Gdiplus::Graphics measure(screen);
+        measure.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+        measure.MeasureString(text.c_str(), -1, &font, Gdiplus::PointF(0, 0), &measured);
+        ReleaseDC(nullptr, screen);
+    }
+    int padX = static_cast<int>(std::lround(8 * scale)), padY = static_cast<int>(std::lround(5 * scale));
+    int w = static_cast<int>(std::ceil(measured.Width)) + 2 * padX, h = static_cast<int>(std::ceil(measured.Height)) + 2 * padY;
     POINT pointer{};
     GetCursorPos(&pointer);
-    LRESULT bubble = SendMessageW(b->tooltip, TTM_GETBUBBLESIZE, 0, reinterpret_cast<LPARAM>(&tool));
-    int width = LOWORD(bubble), height = HIWORD(bubble);
     int x = pointer.x, y = pointer.y + GetSystemMetrics(SM_CYCURSOR) * 3 / 4;
     MONITORINFO monitor{sizeof(monitor)};
     if (GetMonitorInfoW(MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST), &monitor)) {
         const RECT &work = monitor.rcWork;
-        x = std::max<int>(work.left, std::min<int>(x, work.right - width));
-        if (y + height > work.bottom) y = pointer.y - height - 4;
+        x = std::max<int>(work.left, std::min<int>(x, work.right - w));
+        if (y + h > work.bottom) y = pointer.y - h - 4;
     }
-    SendMessageW(b->tooltip, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
-    SendMessageW(b->tooltip, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&tool));
-    SetWindowPos(b->tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    b->shown = b->hover;
+    bool dark = AppsUseDarkTheme();
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = w;
+    info.bmiHeader.biHeight = -h;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void *bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HDC memory = CreateCompatibleDC(screen);
+    HBITMAP dib = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib && bits) {
+        HGDIOBJ old = SelectObject(memory, dib);
+        {
+            Gdiplus::Bitmap canvas(w, h, w * 4, PixelFormat32bppPARGB, static_cast<BYTE *>(bits));
+            Gdiplus::Graphics g(&canvas);
+            g.Clear(Gdiplus::Color(0, 0, 0, 0));
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+            auto radius = static_cast<Gdiplus::REAL>(4 * scale), inset = 0.5f;
+            auto right = static_cast<Gdiplus::REAL>(w) - inset, bottom = static_cast<Gdiplus::REAL>(h) - inset;
+            Gdiplus::GraphicsPath shape;
+            shape.AddArc(inset, inset, 2 * radius, 2 * radius, 180, 90);
+            shape.AddArc(right - 2 * radius, inset, 2 * radius, 2 * radius, 270, 90);
+            shape.AddArc(right - 2 * radius, bottom - 2 * radius, 2 * radius, 2 * radius, 0, 90);
+            shape.AddArc(inset, bottom - 2 * radius, 2 * radius, 2 * radius, 90, 90);
+            shape.CloseFigure();
+            Gdiplus::SolidBrush fill(dark ? Gdiplus::Color(255, 0x2C, 0x2C, 0x2C) : Gdiplus::Color(255, 0xF9, 0xF9, 0xF9));
+            Gdiplus::Pen edge(dark ? Gdiplus::Color(255, 0x45, 0x45, 0x45) : Gdiplus::Color(255, 0xD9, 0xD9, 0xD9), 1);
+            g.FillPath(&fill, &shape);
+            g.DrawPath(&edge, &shape);
+            Gdiplus::SolidBrush ink(dark ? Gdiplus::Color(255, 0xFF, 0xFF, 0xFF) : Gdiplus::Color(255, 0x1A, 0x1A, 0x1A));
+            g.DrawString(text.c_str(), -1, &font, Gdiplus::PointF(static_cast<Gdiplus::REAL>(padX), static_cast<Gdiplus::REAL>(padY)), &ink);
+        }
+        POINT origin{x, y}, zero{0, 0};
+        SIZE size{w, h};
+        BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+        UpdateLayeredWindow(b->tooltip, screen, &origin, &size, memory, &zero, 0, &blend, ULW_ALPHA);
+        SelectObject(memory, old);
+        SetWindowPos(b->tooltip, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        b->shown = b->hover;
+    }
+    if (dib) DeleteObject(dib);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+}
+
+/// The tip's window: shown, never clicked or focused.
+LRESULT CALLBACK TipProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 LRESULT CALLBACK ButtonsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -325,8 +388,7 @@ LRESULT CALLBACK ButtonsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         }
         return 0;
     case WM_NCDESTROY:
-        KillTimer(hwnd, kTipTimer);
-        if (b && b->tooltip) DestroyWindow(b->tooltip);
+        KillTimer(hwnd, kTipTimer);  // the tip, an owned window, has already gone
         delete b;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         break;
@@ -344,6 +406,12 @@ void RegisterButtonsClass() {
     buttons.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     buttons.lpszClassName = kButtonsClass;
     RegisterClassExW(&buttons);
+    WNDCLASSEXW tip{sizeof(tip)};
+    tip.lpfnWndProc = TipProc;
+    tip.hInstance = Instance();
+    tip.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    tip.lpszClassName = kTipClass;
+    RegisterClassExW(&tip);
 }
 
 HWND InsertAfter(uintptr_t after) { return after ? reinterpret_cast<HWND>(after) : HWND_TOP; }
@@ -394,18 +462,9 @@ uintptr_t cra_round_buttons_create(uintptr_t owner, const char *const *glyphs, c
         delete b;
         return 0;
     }
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
-    InitCommonControlsEx(&controls);
-    b->tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, CW_USEDEFAULT,
-                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr, Instance(), nullptr);
-    if (b->tooltip) {
-        for (size_t i = 0; i < count; ++i) {
-            TOOLINFOW tool = ToolFor(hwnd, static_cast<int>(i));
-            tool.uFlags = TTF_TRACK | TTF_ABSOLUTE;
-            tool.lpszText = b->tips[i].data();
-            SendMessageW(b->tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
-        }
-    }
+    // Owned by the buttons, so it goes with them; topmost, as Windows' own tips.
+    b->tooltip = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT, kTipClass, L"",
+                                 WS_POPUP, 0, 0, 0, 0, hwnd, nullptr, Instance(), nullptr);
     return reinterpret_cast<uintptr_t>(hwnd);
 }
 

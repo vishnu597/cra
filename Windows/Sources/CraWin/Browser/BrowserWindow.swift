@@ -1495,9 +1495,12 @@ extension BrowserWindow: WebPageDelegate {
         guard !closing else { return }
         if let made = newPages.removeValue(forKey: ObjectIdentifier(page)), Date().timeIntervalSince(made) < Self.newPageFocusWindow,
            GetAsyncKeyState(0x01) >= 0, page !== shownPage {
-            // After any redraw already waiting, which may change the focused pane.
+            // After any redraw already waiting, which may change the focused pane. The new page is
+            // told it lost the focus too, or Chromium would take the first click into it for a
+            // page already focused and report no focus to select its pane.
             _ = try? dispatcher.tryEnqueue { [weak self, weak page] in
                 guard let self, !self.closing, let shown = self.shownPage, shown !== page else { return }
+                page?.setFocused(false)
                 shown.setFocused(true)
             }
             return

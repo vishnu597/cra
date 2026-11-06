@@ -61,7 +61,7 @@ let package = Package(
                 .linkedLibrary("crypt32"),  // certificate stores (the site control center's certificate)
                 .linkedLibrary("runtimeobject"),  // RoGetActivationFactory, HSTRINGs (the Share window)
                 .linkedLibrary("gdiplus"),  // the Peek's round buttons (CraOverlay.cpp)
-                .linkedLibrary("comctl32"),  // their tooltips
+                .linkedLibrary("advapi32"),  // the registry (the round buttons' tips follow the apps' theme)
             ]
         ),
         // Every Chromium subprocess (renderer, GPU, utility) runs this executable.
