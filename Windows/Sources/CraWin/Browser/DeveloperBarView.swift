@@ -106,6 +106,7 @@ final class DeveloperBarView {
         field.background = UI.clear
         field.isSpellCheckEnabled = false
         field.isTextPredictionEnabled = false
+        field.isReadOnly = true  // until it takes the keyboard (editingChanged)
         try? AutomationProperties.setName(field, "Address")
         for key in ["TextControlBackgroundFocused", "TextControlBackgroundPointerOver", "TextControlBorderBrushFocused",
                     "TextControlBorderBrushPointerOver", "TextControlBackground", "TextControlBorderBrush"] {
@@ -257,15 +258,19 @@ final class DeveloperBarView {
     private func editingChanged(_ focused: Bool) {
         editing = focused
         veil.visibility = focused ? .visible : .collapsed
+        // A click on the page takes Win32 focus but leaves XAML's on the field, which then keeps
+        // its clear button and selection. Read-only drops the button; the selection goes below.
+        field.isReadOnly = !focused
         if focused {
             // After the click that focused it, which would put the caret where it landed.
             _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { [weak self] in
                 guard let self, self.editing else { return }
                 try? self.field.selectAll()
             }
-        } else if field.text != url {
+        } else {
             // Clicked away: the address shows the page's again.
-            setText(url)
+            if field.text != url { setText(url) }
+            try? field.select(0, 0)
         }
     }
 
@@ -276,7 +281,6 @@ final class DeveloperBarView {
         guard editing else { return }
         _ = try? buttons["copyURL"]?.focus(.pointer)  // pointer: no focus rectangle after Return or Escape
         if editing { editingChanged(false) }
-        try? field.select(0, 0)
     }
 
     private func endEditing() {
