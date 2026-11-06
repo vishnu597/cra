@@ -213,6 +213,7 @@ public enum ShortcutDescriptions {
     private static let table: [String: String] = [
         "newTab": "Create a new tab.",
         "newWindow": "Open a new window.",
+        "newBlankWindow": "Open a window with a sidebar of its own, apart from your spaces.",
         "newIncognitoWindow": "Open a window that keeps no history, cookies or tabs once closed.",
         "newLittleWindow": "Open a small, disposable window for a quick look.",
         "reopenClosedTab": "Bring back the tab you closed last.",
