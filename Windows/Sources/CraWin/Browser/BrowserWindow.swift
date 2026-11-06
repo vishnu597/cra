@@ -48,6 +48,10 @@ final class BrowserWindow {
     private var livePages: Set<ObjectIdentifier> = []
     /// The selected tab's page: the focused pane, which takes the keyboard and the commands.
     private weak var shownPage: WebPage?
+    /// When each page this window made was created, until its first focus: Chromium focuses a
+    /// new browser by itself once it has a window, after the redraw that showed it (a split's
+    /// new pane after Add To Split), and that focus mustn't select its tab.
+    private var newPages: [ObjectIdentifier: Date] = [:]
     private var shownTabID: UUID?
     /// The panes on screen, in order: the selected tab, or every pane of its split. Their frames
     /// and the gaps between them, in physical pixels relative to the client area.
@@ -313,6 +317,7 @@ final class BrowserWindow {
         let page = WebPage(parent: hwnd, frame: paneFrames[id] ?? contentFrame(), url: url, incognito: isIncognito,
                            profilePath: store.profilePath(item: id), delegate: self)
         livePages.insert(ObjectIdentifier(page))
+        newPages[ObjectIdentifier(page)] = Date()
         page.userInfo = id
         page.isVisible = false
         pages[id] = page
@@ -1485,14 +1490,29 @@ extension BrowserWindow: WebPageDelegate {
     /// A click into another pane focuses it (Arc: the split's focusItemID follows the click).
     /// Not while a redraw is waiting: the panes on screen are then the old selection's, and a
     /// stale page taking the keyboard would select its tab again over the one just picked.
+    /// A new page's own first focus, without a click, gives the keyboard back to the focused pane.
     func pageDidReceiveFocus(_ page: WebPage) {
-        guard !closing, !refreshQueued, let id = tabID(of: page), id != store.selectedTabID(window: windowID),
+        guard !closing else { return }
+        if let made = newPages.removeValue(forKey: ObjectIdentifier(page)), Date().timeIntervalSince(made) < Self.newPageFocusWindow,
+           GetAsyncKeyState(0x01) >= 0, page !== shownPage {
+            // After any redraw already waiting, which may change the focused pane.
+            _ = try? dispatcher.tryEnqueue { [weak self, weak page] in
+                guard let self, !self.closing, let shown = self.shownPage, shown !== page else { return }
+                shown.setFocused(true)
+            }
+            return
+        }
+        guard !refreshQueued, let id = tabID(of: page), id != store.selectedTabID(window: windowID),
               paneIDs.contains(id) else { return }
         store.selectTab(id, window: windowID)
     }
 
+    /// How long after it is made a page's unasked focus is still Chromium's own.
+    private static let newPageFocusWindow: TimeInterval = 2
+
     func pageDidClose(_ page: WebPage) {
         livePages.remove(ObjectIdentifier(page))
+        newPages[ObjectIdentifier(page)] = nil
         if closing {
             // After this callback: it comes from inside CEF's OnBeforeClose, and destroying the
             // pages' parent window there crashed libcef.

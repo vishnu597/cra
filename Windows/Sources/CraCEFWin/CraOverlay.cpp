@@ -107,7 +107,13 @@ struct Buttons {
     double scale = 1;
     int pressed = -1;
     HWND tooltip = nullptr;
+    int hover = -1;   // the button under the pointer
+    int shown = -1;   // the button whose tip shows
+    bool tracking = false;  // TrackMouseEvent asked for WM_MOUSELEAVE
 };
+
+constexpr UINT_PTR kTipTimer = 1;
+constexpr UINT kTipDelay = 450;  // ms, about Windows' own initial tooltip delay
 
 Buttons *ButtonsOf(HWND hwnd) { return reinterpret_cast<Buttons *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)); }
 
@@ -212,16 +218,43 @@ void Draw(HWND hwnd) {
     ReleaseDC(nullptr, screen);
 }
 
-void UpdateTips(HWND hwnd, Buttons *b) {
-    if (!b->tooltip) return;
-    for (size_t i = 0; i < b->rects.size(); ++i) {
-        TOOLINFOW tool{};
-        tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
-        tool.hwnd = hwnd;
-        tool.uId = i + 1;
-        tool.rect = b->rects[i];
-        SendMessageW(b->tooltip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&tool));
+TOOLINFOW ToolFor(HWND hwnd, int index) {
+    TOOLINFOW tool{};
+    tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
+    tool.hwnd = hwnd;
+    tool.uId = static_cast<UINT_PTR>(index + 1);
+    return tool;
+}
+
+void HideTip(HWND hwnd, Buttons *b) {
+    KillTimer(hwnd, kTipTimer);
+    if (!b->tooltip || b->shown < 0) return;
+    TOOLINFOW tool = ToolFor(hwnd, b->shown);
+    SendMessageW(b->tooltip, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&tool));
+    b->shown = -1;
+}
+
+/// The hovered button's tip, below the pointer as Windows puts its own, kept on the monitor.
+/// A tracking tip: the control never saw the pointer over these layered windows with its own
+/// hit testing (TTF_SUBCLASS), so the window shows it itself.
+void ShowTip(HWND hwnd, Buttons *b) {
+    if (!b->tooltip || b->hover < 0 || b->hover >= static_cast<int>(b->tips.size()) || b->tips[b->hover].empty()) return;
+    TOOLINFOW tool = ToolFor(hwnd, b->hover);
+    POINT pointer{};
+    GetCursorPos(&pointer);
+    LRESULT bubble = SendMessageW(b->tooltip, TTM_GETBUBBLESIZE, 0, reinterpret_cast<LPARAM>(&tool));
+    int width = LOWORD(bubble), height = HIWORD(bubble);
+    int x = pointer.x, y = pointer.y + GetSystemMetrics(SM_CYCURSOR) * 3 / 4;
+    MONITORINFO monitor{sizeof(monitor)};
+    if (GetMonitorInfoW(MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        const RECT &work = monitor.rcWork;
+        x = std::max<int>(work.left, std::min<int>(x, work.right - width));
+        if (y + height > work.bottom) y = pointer.y - height - 4;
     }
+    SendMessageW(b->tooltip, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
+    SendMessageW(b->tooltip, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&tool));
+    SetWindowPos(b->tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    b->shown = b->hover;
 }
 
 LRESULT CALLBACK ButtonsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -237,8 +270,37 @@ LRESULT CALLBACK ButtonsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
     case WM_SETCURSOR:
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         return TRUE;
+    case WM_MOUSEMOVE:
+        if (b) {
+            if (!b->tracking) {
+                TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, hwnd, 0};
+                b->tracking = TrackMouseEvent(&track) != FALSE;
+            }
+            int at = ButtonAt(*b, static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)));
+            if (at != b->hover) {
+                HideTip(hwnd, b);
+                b->hover = at;
+                if (at >= 0 && b->pressed < 0) SetTimer(hwnd, kTipTimer, kTipDelay, nullptr);
+            }
+        }
+        return 0;
+    case WM_MOUSELEAVE:
+        if (b) {
+            b->tracking = false;
+            b->hover = -1;
+            HideTip(hwnd, b);
+        }
+        return 0;
+    case WM_TIMER:
+        if (wParam == kTipTimer) {
+            KillTimer(hwnd, kTipTimer);
+            if (b && b->pressed < 0) ShowTip(hwnd, b);
+            return 0;
+        }
+        break;
     case WM_LBUTTONDOWN:
         if (b) {
+            HideTip(hwnd, b);
             b->pressed = ButtonAt(*b, static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam)));
             if (b->pressed >= 0) {
                 SetCapture(hwnd);
@@ -263,6 +325,7 @@ LRESULT CALLBACK ButtonsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
         }
         return 0;
     case WM_NCDESTROY:
+        KillTimer(hwnd, kTipTimer);
         if (b && b->tooltip) DestroyWindow(b->tooltip);
         delete b;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -337,11 +400,8 @@ uintptr_t cra_round_buttons_create(uintptr_t owner, const char *const *glyphs, c
                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, hwnd, nullptr, Instance(), nullptr);
     if (b->tooltip) {
         for (size_t i = 0; i < count; ++i) {
-            TOOLINFOW tool{};
-            tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
-            tool.uFlags = TTF_SUBCLASS;
-            tool.hwnd = hwnd;
-            tool.uId = i + 1;
+            TOOLINFOW tool = ToolFor(hwnd, static_cast<int>(i));
+            tool.uFlags = TTF_TRACK | TTF_ABSOLUTE;
             tool.lpszText = b->tips[i].data();
             SendMessageW(b->tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
         }
@@ -362,9 +422,14 @@ void cra_round_buttons_place(uintptr_t window, int x, int y, int width, int heig
     b->fill = fill;
     b->ink = ink;
     b->scale = scale > 0 ? scale : 1;
+    RECT before{};
+    GetWindowRect(hwnd, &before);
+    if (before.left != x || before.top != y) {  // moved: a tip would be left behind
+        HideTip(hwnd, b);
+        b->hover = -1;
+    }
     SetWindowPos(hwnd, InsertAfter(insert_after), x, y, std::max(width, 1), std::max(height, 1),
                  SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER | SWP_NOREDRAW);
-    UpdateTips(hwnd, b);
     Draw(hwnd);
 }
 
