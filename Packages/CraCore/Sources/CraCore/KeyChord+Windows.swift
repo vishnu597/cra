@@ -74,6 +74,27 @@ public extension KeyChord {
         self.init(key, mods)
     }
 
+    /// The virtual-key code that types the chord's key (the inverse of
+    /// `init(windowsVirtualKey:…)`), for RegisterHotKey; nil for a key it has none for.
+    var windowsVirtualKey: Int32? {
+        if let n = functionNumber { return Int32(0x6F + n) }
+        switch key {
+        case Self.delete: return 0x08
+        case Self.tab: return 0x09
+        case Self.left: return 0x25
+        case Self.up: return 0x26
+        case Self.right: return 0x27
+        case Self.down: return 0x28
+        default: break
+        }
+        guard key.unicodeScalars.count == 1, let v = key.unicodeScalars.first?.value else { return nil }
+        switch v {
+        case 0x61...0x7A: return Int32(v - 0x20)   // a-z → VK 'A'-'Z'
+        case 0x30...0x39: return Int32(v)          // 0-9
+        default: return Self.oemKeys.first { $0.value == key }?.key
+        }
+    }
+
     /// The chord as Settings ▸ Shortcuts records it on Windows: a letter or digit needs Ctrl,
     /// Alt or the Windows key (Shift alone types), as ⌘, ⌃ or ⌥ on the Mac.
     static func recorded(windowsVirtualKey vk: Int32, control: Bool, shift: Bool, alt: Bool, windows: Bool = false) -> KeyChord? {

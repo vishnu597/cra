@@ -180,6 +180,11 @@ public enum KeyBindingDefaults {
             "toggleDeveloperMode": [KeyChord("d", ctrlShift)],
             "clearCache": [],
             "clearCookies": [],
+            // Arc for Windows' Little Arc key. Where AltGr+N types a letter (Polish ń), Cra lets it
+            // type (WinKeyboard.typesCharacter) and doesn't take it from other apps.
+            "newLittleWindow": [KeyChord("n", ctrlAlt)],
+            "promoteLittleWindow": [KeyChord("o", ctrl)],
+            "closeLittleWindows": [],
         ]
         for n in 1...9 {
             table["item\(n)"] = [KeyChord("\(n)", ctrl)]

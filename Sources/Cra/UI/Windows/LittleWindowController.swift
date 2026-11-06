@@ -72,11 +72,8 @@ enum LittleMetrics {
     static let popupRowHeight: CGFloat = 54
     static let popupHeaderHeight: CGFloat = 46
     static let commandBarWidth: CGFloat = 500
-    static let defaultSize = NSSize(width: 1400, height: 900)
-    /// The old default, which every resize used to save (placement and the open
-    /// animation included), so a stored copy of it was never the user's choice.
-    static let legacyDefaultSize = NSSize(width: 1000, height: 700)
-    static let minSize = NSSize(width: 480, height: 360)
+    /// Sizes and placement: CraCore's LittleWindowLayout, shared with Windows.
+    static let minSize = LittleWindowLayout.minSize
     static let openDuration: TimeInterval = 0.12
 }
 
@@ -177,10 +174,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         state = LittleWindowState(targetSpaceID: parent?.focusedSpaceID ?? requestedSpaceID
             ?? app.store.focusedSpaceID(window: app.store.lastNormalWindowID))
         commandBar = CommandBarController(engine: app.engine, store: app.store)
-        let size = app.store.prefs.littleWindowSize.map { NSSizeFromString($0) }
-            .flatMap { $0 == LittleMetrics.legacyDefaultSize ? nil : $0 }
-            .map { NSSize(width: max(LittleMetrics.minSize.width, $0.width), height: max(LittleMetrics.minSize.height, $0.height)) }
-            ?? LittleMetrics.defaultSize
+        let size = LittleWindowLayout.size(saved: app.store.prefs.littleWindowSize)
         let window = LittleWindow(contentRect: NSRect(origin: .zero, size: size),
                                   styleMask: parent != nil ? [.borderless]
                                       : [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView, .nonactivatingPanel],
@@ -262,8 +256,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         } else if let fromTab, app.store.item(fromTab) != nil {
             state.profileID = app.store.profileID(item: fromTab)
         } else {
-            let sid = state.targetSpaceID
-            state.profileID = app.store.isIncognito(space: sid) ? nil : app.store.profile(app.store.space(sid)?.profileID)?.id
+            state.profileID = app.store.littleWindowProfile(forSpace: state.targetSpaceID)
         }
         // Chromium, or WebKit for a DRM service; a popup host takes its opener's engine.
         let b = PageEngines.makeBrowser(frame: shell.page.bounds, url: url.map { $0.isEmpty ? "about:blank" : $0 }, delegate: self,
@@ -755,7 +748,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// takes focus again (Arc 1.171: switched in the main window, "Open in" followed; #92).
     func refreshTarget() {
         if let r = requestedSpaceID, store.space(r) == nil { requestedSpaceID = nil }
-        let id = peekParent?.focusedSpaceID ?? requestedSpaceID ?? store.focusedSpaceID(window: store.lastNormalWindowID)
+        let id = peekParent?.focusedSpaceID ?? store.littleWindowTarget(requested: requestedSpaceID)
         if state.targetSpaceID != id { state.targetSpaceID = id }
     }
 
@@ -769,7 +762,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         app.useNormalWindow()
         if spaceID == nil { refreshTarget() }
         let wanted = spaceID ?? state.targetSpaceID
-        let sid = store.space(wanted) != nil && !store.isIncognito(space: wanted) ? wanted : store.focusedSpaceID
+        let sid = store.littleWindowDestination(wanted)
         // Held: closing this window can make another browser window key, which changes app.main.
         let target = app.useNormalWindow(forSpace: sid)
         let tab = store.createTab(url: b.currentURL, title: b.currentTitle, in: sid, select: true, window: target.windowID)
