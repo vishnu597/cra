@@ -130,4 +130,20 @@ struct PeekLayoutTests {
         #expect(!PeekLayout.sourceScript(pointer: nil).contains("nan"))
         #expect(PeekLayout.sourceScript(pointer: CGPoint(x: 0.25, y: 0.5)).contains("0.25 * vv.width"))
     }
+
+    /// The card's bar in the page's colour: white until the page reports one, dark ink on light.
+    @Test func barTakesThePagesColour() {
+        let white = PeekLayout.BarColors(reported: nil)
+        #expect(white.fill == .white && white.light)
+        #expect(white.ink == .black && white.inkAlpha == 0.8 && white.dimInkAlpha == 0.6)
+        #expect(PeekLayout.BarColors(reported: "none") == white, "no colour is white")
+        #expect(PeekLayout.BarColors(reported: "#12") == white, "nor is a broken one")
+        let dark = PeekLayout.BarColors(reported: "#1a1a2e")
+        #expect(!dark.light)
+        #expect(dark.fill == RGB(0x1a / 255.0, 0x1a / 255.0, 0x2e / 255.0))
+        #expect(dark.ink == RGB(0xE4 / 255.0, 0xE0 / 255.0, 0xD4 / 255.0) && dark.inkAlpha == 1)
+        #expect(dark.dimInkAlpha == 0.9)
+        #expect(PeekLayout.BarColors(reported: "#FFD60A").light, "a bright yellow takes dark ink")
+        #expect(!PeekLayout.BarColors(reported: "#3f6df5").light, "Cra's blue takes the light one")
+    }
 }

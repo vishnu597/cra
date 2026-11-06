@@ -1589,13 +1589,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     /// Add To Split from a Peek: the peeked page, a new tab, joins `source` as a pane (Arc's
     /// openInSplit), or a toast when the split is full.
-    func canAddPane(to source: UUID) -> Bool { store.paneTabIDs(for: source).count < 4 }
+    func canAddPane(to source: UUID) -> Bool { store.canAddPane(to: source) }
 
-    func joinSplit(_ tabID: UUID, with source: UUID) {
-        let split = store.splitContaining(source).map { sp in store.addToSplit(sp.id, tabID: tabID, at: nil); return store.item(sp.id) }
-            ?? store.createSplit(with: [source, tabID], at: source)
-        store.selectTab(split.flatMap { store.paneID(for: tabID, in: $0) } ?? tabID, window: windowID)
-    }
+    func joinSplit(_ tabID: UUID, with source: UUID) { store.joinSplit(tabID, with: source, window: windowID) }
 
     private var peeks: [LittleWindowController] { app.littleWindows.filter { $0.peekParent === self } }
 

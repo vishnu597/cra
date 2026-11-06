@@ -1,4 +1,5 @@
 import CraCore
+import Foundation
 import Testing
 
 /// The links Arc peeked from a pinned tab (docs/arc-reverse-engineering.md, "Peek and the copy
@@ -59,5 +60,14 @@ struct PeekTriggerTests {
         #expect(!PeekTrigger.leavesPeek("", shiftClick: false, newTab: true))
         #expect(!PeekTrigger.leavesPeek("cra://settings", shiftClick: false, newTab: true))
         #expect(!PeekTrigger.leavesPeek("javascript:alert(1)", shiftClick: false, newTab: true))
+    }
+
+    /// ⇧⌘T brings a closed Peek back only when no tab was archived after it closed.
+    @Test func reopeningAClosedPeek() {
+        let closed = Date(timeIntervalSince1970: 1000)
+        #expect(PeekTrigger.reopensClosedPeek(closedAt: closed, lastArchivedAt: nil))
+        #expect(PeekTrigger.reopensClosedPeek(closedAt: closed, lastArchivedAt: closed.addingTimeInterval(-1)))
+        #expect(!PeekTrigger.reopensClosedPeek(closedAt: closed, lastArchivedAt: closed.addingTimeInterval(1)))
+        #expect(!PeekTrigger.reopensClosedPeek(closedAt: closed, lastArchivedAt: closed), "a tie goes to the archive")
     }
 }

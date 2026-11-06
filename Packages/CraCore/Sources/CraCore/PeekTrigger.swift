@@ -29,3 +29,11 @@ public enum PeekTrigger {
         return ["http", "https", "file"].contains(scheme)
     }
 }
+
+extension PeekTrigger {
+    /// ⇧⌘T after a Peek closed (Arc 1.171): the Peek comes back, over the tab it came from, when
+    /// nothing was archived after it closed; otherwise the archive's newest tab does.
+    public static func reopensClosedPeek(closedAt: Date, lastArchivedAt: Date?) -> Bool {
+        closedAt > (lastArchivedAt ?? .distantPast)
+    }
+}

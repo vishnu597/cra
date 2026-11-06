@@ -50,14 +50,13 @@ final class PeekBarView: NSView {
         })
     }
 
-    /// PaneToolbarView's colours for a page card: the page's report, else white.
+    /// PaneToolbarView's colours for a page card: the page's report, else white (PeekLayout.BarColors).
     private func apply(_ state: Shown) {
-        let hex = ToolbarColor.hex(reported: state.themeColor, remembered: nil)
-        let light = (hex.flatMap(HexColor.luminance) ?? 1) > 0.6
-        let fill = hex.map { NSColor(hex: $0) } ?? .white
-        let fg = light ? NSColor.black.withAlphaComponent(0.8) : NSColor(hex: "#E4E0D4")
-        let fgDim = light ? NSColor.black.withAlphaComponent(0.6) : NSColor(hex: "#F0E6CC").withAlphaComponent(0.9)
-        let hover = NSColor.white.withAlphaComponent(0.1)
+        let colors = PeekLayout.BarColors(reported: state.themeColor)
+        let fill = NSColor(colors.fill)
+        let fg = NSColor(colors.ink, alpha: colors.inkAlpha)
+        let fgDim = NSColor(colors.dimInk, alpha: colors.dimInkAlpha)
+        let hover = NSColor.white.withAlphaComponent(PeekLayout.BarColors.hoverAlpha)
         layer?.backgroundColor = fill.cgColor
         back.configure(symbol: "arrow.left", image: nil, help: "Go Back (⌘[)", enabled: state.canGoBack, width: 37, iconSize: 15, tint: fgDim, hover: hover)
         forward.configure(symbol: "arrow.right", image: nil, help: "Go Forward (⌘])", enabled: state.canGoForward, width: 37, iconSize: 15,

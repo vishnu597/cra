@@ -581,20 +581,15 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         }
         closePopup()
         commandBar.close()
-        let sid = store.spaceID(ofItem: source) ?? parent.focusedSpaceID
         // Arc leaves a pinned tab where it is: the split is a new one at the top of Today, a copy
-        // of the pinned tab's page beside the peeked one.
-        var partner = source
-        if store.isPinned(source), store.splitContaining(source) == nil, let page = store.item(source)?.tab {
-            partner = store.createTab(url: page.url, title: page.savedTitle, in: sid, select: false, window: parent.windowID).id
-        }
-        let tab = store.createTab(url: b.currentURL, title: b.currentTitle, in: sid, select: false, window: parent.windowID)
+        // of the pinned tab's page beside the peeked one (SidebarStore.peekSplitTabs).
+        guard let made = store.peekSplitTabs(url: b.currentURL, title: b.currentTitle, beside: source, window: parent.windowID) else { return }
         if let favicon, let key = FaviconKey.key(for: b.currentURL) { app.favicons.store(favicon, forKey: key) }
         promoted = true
         browser = nil
-        parent.browsers.adopt(b, for: tab.id)
+        parent.browsers.adopt(b, for: made.tab)
         window?.close()
-        parent.joinSplit(tab.id, with: partner)
+        parent.joinSplit(made.tab, with: made.partner)
     }
 
     // MARK: Command bar (Arc: clicking the pill or ⌘L opens the command bar in the window)

@@ -1156,18 +1156,9 @@ final class BrowserManager: NSObject, @preconcurrency CraBrowserDelegate {
     func openLinkTab(_ url: String, from source: UUID?, inBackground background: Bool) {
         // cra:// is Cra's scripting scheme (DevTools Protocol, key presses); a page must not drive it.
         if url.lowercased().hasPrefix("cra:") { return }
-        let sourceSpace = source.flatMap { store.spaceID(ofItem: $0) }
-        let parentIndex = source.flatMap { id -> Int? in
-            guard let it = store.item(id), let p = it.parentID, store.rootContainer(of: id) != nil,
-                  case .today = store.rootContainer(of: id)! else { return nil }
-            return (store.item(p)?.children.firstIndex(of: id) ?? -1) + 1
-        }
         // Links from a today tab open right below it (Arc); otherwise at the top.
-        let tab = store.createTab(url: url, in: sourceSpace, select: !background,
-                                  parent: parentIndex != nil ? source.flatMap { store.item($0)?.parentID } : nil,
-                                  index: parentIndex, window: windowID)
+        let tab = store.openLinkTab(url, from: source, inBackground: background, window: windowID)
         if background {
-            store.markUnread(tab.id, true)
             ensureRuntime(for: tab.id)  // load it so the title and favicon fill in
         }
     }
