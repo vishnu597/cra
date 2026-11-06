@@ -1,5 +1,8 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import CraCore
+import Foundation
 import Testing
 
 /// A tab dragged out of every window opens in a Blank Window where it was dropped (Arc 1.172, #219).
