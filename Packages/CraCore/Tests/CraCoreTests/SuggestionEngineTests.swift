@@ -46,7 +46,8 @@ struct SuggestionEngineTests {
         #expect(ids(r).contains("tab:\(a.id)") && !ids(r).contains("tab:\(b.id)"), "open tabs but the one in front")
         let archived = r.items.first { $0.id == "arch:\(c.id)" }
         #expect(archived?.subtitle.hasPrefix("Archived") == true && archived?.trailing == "Restore")
-        #expect(r.items.count <= SuggestionEngine.maxRows && r.inlineCompletion == nil && r.scope == nil)
+        // Tab on the empty field lists the actions (#195).
+        #expect(r.items.count <= SuggestionEngine.maxRows && r.inlineCompletion == nil && r.scope == .actions)
     }
 
     @Test func theTypedTextIsASearchOrAnAddress() {

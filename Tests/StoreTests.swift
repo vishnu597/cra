@@ -23,20 +23,29 @@ enum StoreTests {
         chromiumProfile()
         autoArchive()
         tabSleepCadence()
+        tabRestTimes()
         integrity()
         liveFolderExpiry()
+        liveFolderSignIn()
         stampsUseTheClock()
         persistenceFaults()
         incognitoStaysOffDisk()
         pinnedURL()
+        tabFavicons()
         moveTabToSpace()
         folderPeek()
         closeSuccessor()
         favoritesEmptyState()
         sharedFavorites()
         themePreview()
+        try arcSpacesWithoutAThemeShareOneDefault()
+        try arcItemListedTwice()
+        littleWindowProfile()
         tidyTabs()
         pinHook()
+        dropOnPinnedTabSplits()
+        reopenClosedTabs()
+        windowsShareTheSidebar()
         print("Store: \(checks) checks passed")
     }
 
@@ -68,6 +77,7 @@ enum StoreTests {
         arcProfiles(plan: plan, store: composition.store)
     }
 
+    // promise: #131
     /// Arc's spaces keep their profiles (GitHub #131): Work is on "Profile 2", named Client.
     @MainActor
     private static func arcProfiles(plan: ImportPlan, store: SidebarStore) {
@@ -103,6 +113,7 @@ enum StoreTests {
         rebuildFromArc(plan: plan)
     }
 
+    // promise: #131
     /// Rebuild from Arc (#131): a sidebar imported before profiles came over gets them afterwards.
     @MainActor
     private static func rebuildFromArc(plan: ImportPlan) {
@@ -121,6 +132,7 @@ enum StoreTests {
         expect(store.arcProfileMoves(plan).isEmpty, "a second rebuild finds nothing to move")
     }
 
+    // promise: #131
     /// A profile Chromium hasn't opened gets its sign-in databases with Default's schema (#131).
     private static func newProfileDatabases() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("cra-db-\(UUID().uuidString)", isDirectory: true)
@@ -227,6 +239,7 @@ enum StoreTests {
         expect(!archived(later.id), "with auto-archive off nothing is archived")
     }
 
+    // promise: #136
     /// Tab sleeping asks the windows once a minute; like Arc, it has no switch.
     @MainActor
     private static func tabSleepCadence() {
@@ -242,6 +255,17 @@ enum StoreTests {
         expect(passes == 10, "ten passes in ten minutes")
         composition.startPeriodicWork { passes += 100 }
         expect(clock.pendingCount == 2, "starting again replaces the timers instead of adding to them")
+    }
+
+    // promise: #136
+    /// Tabs rest on Arc 1.171's own numbers (#136): a page out of sight 30 minutes is voted to
+    /// freeze, one out of sight 4 hours sleeps, and the 10 tabs used last are never touched.
+    private static func tabRestTimes() {
+        expect(AppComposition.tabFreezeAfter == 30 * 60, "a hidden page is voted to freeze after 30 minutes, Arc's timeToFreezeTab")
+        expect(TabSleepPolicy.timer(AppSettings().tabSleepAfter).hiddenFor == 4 * 3600 && AppSettings().tabSleepTimerEnabled,
+               "a hidden page sleeps after 4 hours, with no setting to turn on, Arc's timeToDiscardTab")
+        expect(TabSleepPolicy.protectedRecentTabs == 10 && TabSleepPolicy.timer(AppSettings().tabSleepAfter).keepsRecentTabs,
+               "the 10 tabs used last keep their pages, Arc's protectedLRUTabCount")
     }
 
     /// The integrity check stays quiet through ordinary changes and names a broken link.
@@ -272,6 +296,25 @@ enum StoreTests {
         let second = store.createSpace(title: "Second", emoji: "2", focus: false)
         store.prefs.windows[0].selectedTabPerSpace[second.id] = b.id
         expect(store.integrityProblems().contains { $0.contains("lives elsewhere") }, "a window selecting another space's tab is reported")
+    }
+
+    /// GitHub's answers that mean "sign in" never read as an empty folder (6 Nov 2026: a lapsed
+    /// Enterprise Managed User session landed on the enterprise's SSO page and emptied the folder).
+    private static func liveFolderSignIn() {
+        let ssoPage = #"<html><meta name="user-login" content="vkp_jysk"><script type="application/json" id="client-env">{"locale":"en"}</script></html>"#
+        expect(GitHubLiveClient.read(status: 200, finalURL: "https://github.com/enterprises/jysk-emu/sso?return_to=%2Fpulls", body: ssoPage) == .failure(.notSignedIn),
+               "a fetch sent to the enterprise's single sign-on needs a sign-in")
+        expect(GitHubLiveClient.read(status: 200, finalURL: "https://github.com/orgs/jysk-dev/sso", body: ssoPage) == .failure(.notSignedIn),
+               "so does an organization's")
+        expect(GitHubLiveClient.enterprise(inSSO: "https://github.com/enterprises/jysk-emu/sso?return_to=%2Fpulls") == "jysk-emu",
+               "the folder learns the enterprise from where its fetch landed")
+        expect(GitHubLiveClient.read(status: 200, finalURL: "https://github.com/dashboard", body: ssoPage) == .failure(.unexpectedPage),
+               "an empty page that isn't the pulls or search page is no answer")
+        let empty = #"{"payload":{"pullsDashboardSurfaceContentRoute":{"results":[],"pageInfo":{},"error":null}}}"#
+        expect(GitHubLiveClient.read(status: 200, finalURL: "https://github.com/pulls?q=is%3Apr", body: empty) == .success(.init()),
+               "the pulls page with no results is an empty folder")
+        expect(GitHubLiveClient.read(status: 404, finalURL: "https://github.com/pulls?q=is%3Apr", body: #"{"error":"Couldn’t authenticate you"}"#) == .failure(.notSignedIn),
+               "signed out, the pulls page can't authenticate you")
     }
 
     /// A pull request that left the results stays for the grace period, then goes, all on the clock.
@@ -366,6 +409,73 @@ enum StoreTests {
         expect(store.integrityProblems().isEmpty, "and the sidebar stays sound")
     }
 
+    /// An Arc sidebar that lists an item's id twice imports as if it were listed once, the later
+    /// entry winning as in a dictionary decoded from Arc's key-value array. The nightly fuzzer
+    /// found the importer trapping on such a file ("Duplicate values for key") every night from
+    /// 3 Nov 2026.
+    @MainActor
+    private static func arcItemListedTwice() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/Arc/StorableSidebar.json")
+        let data = try Data(contentsOf: fixture)
+        var root = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        var sidebar = root["sidebar"] as! [String: Any]
+        var containers = sidebar["containers"] as! [[String: Any]]
+        let main = containers.firstIndex { $0["spaces"] != nil }!
+        var items = containers[main]["items"] as! [Any]
+        let id = items.firstIndex { $0 is String }!
+        // A stale copy of the first item, listed before the real one: the real one must win.
+        var stale = items[id + 1] as! [String: Any]
+        stale["title"] = "Stale copy"
+        items.insert(contentsOf: [items[id], stale], at: id)
+        containers[main]["items"] = items
+        sidebar["containers"] = containers
+        root["sidebar"] = sidebar
+        let twice = try JSONSerialization.data(withJSONObject: root)
+        let once = try ArcImporter.plan(sidebar: data), listedTwice = try ArcImporter.plan(sidebar: twice)
+        expect(String(describing: listedTwice) == String(describing: once),
+               "an item listed twice imports once, as its later entry")
+    }
+
+    // promise: #30
+    /// Arc spaces without a `windowTheme` (both in the made-up profile) import with one fixed
+    /// default, not the next preset each, which shifted every later space's colour (#30).
+    @MainActor
+    private static func arcSpacesWithoutAThemeShareOneDefault() throws {
+        let plan = try ArcImporter.plan()
+        expect(plan.spaces.count == 2 && plan.spaces.allSatisfy { $0.theme == SpaceTheme.presets[0] },
+               "every themeless Arc space gets the same default theme")
+    }
+
+    // promise: #172
+    /// A Little Window loads in the profile of the space it opens into and a Peek in its tab's
+    /// (#172): the store answers both with that profile's Chromium folder, nil for Default, and
+    /// the Little Window's profile chip names the page's profile from that folder.
+    @MainActor
+    private static func littleWindowProfile() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let home = store.createSpace(title: "Little Home", emoji: "🏠", focus: false).id
+        store.setProfile(nil, forSpace: home)
+        let homeTab = store.createTab(url: "https://example.com/home", in: home, select: false)
+        expect(store.profilePath(space: home) == nil && store.profilePath(item: homeTab.id) == nil && store.profileID(item: homeTab.id) == nil,
+               "a space on the Default profile gives its Little Windows and Peeks no profile folder (#172)")
+
+        let work = store.createProfile(name: "Little Work")
+        let space = store.createSpace(title: "Little Work", emoji: "💼", focus: false).id
+        store.setProfile(work.id, forSpace: space)
+        let tab = store.createTab(url: "https://example.com/work", in: space, select: false)
+        let folder = store.profilePath(space: space)
+        expect(folder != nil && folder == store.profilePath(profile: work.id) && store.profilePath(item: tab.id) == folder,
+               "a Little Window opened into a space and a Peek from its tab load in that space's profile folder (#172)")
+        expect(store.profileID(item: tab.id) == work.id && store.profileID(path: folder) == work.id,
+               "the page's profile reads back from its folder, for the Little Window's profile chip (#172)")
+        expect(store.profileID(path: nil) == nil && store.profilePath(profile: UUID()) == nil,
+               "Default, and a profile that is gone, have no folder (#172)")
+        store.deleteSpace(space)
+        store.deleteSpace(home)
+        store.deleteProfile(work.id)
+    }
+
+    // promise: #170
     /// The theme editor (#170): a change shows at once but goes to disk only when the editor
     /// commits; Escape or Cancel puts the stored theme back, and a save in between keeps it off disk.
     @MainActor
@@ -401,6 +511,27 @@ enum StoreTests {
         expect(store.space(id)?.theme == red && savedTheme() == red, "Save in the sheet writes the theme and ends the preview")
     }
 
+    /// Tabs on one host keep their own icons (GitHub #211: every AWS console or localhost tab
+    /// took the icon the last one loaded).
+    @MainActor
+    private static func tabFavicons() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let rds = store.createTab(url: "https://console.aws.amazon.com/rds/home", select: false)
+        let eks = store.createTab(url: "https://console.aws.amazon.com/eks/home", select: false)
+        let rdsIcon = FaviconKey.key(for: "https://console.aws.amazon.com/rds/home", iconURL: "https://console.aws.amazon.com/rds/favicon.ico")!
+        let eksIcon = FaviconKey.key(for: "https://console.aws.amazon.com/eks/home", iconURL: "https://console.aws.amazon.com/eks/favicon.ico")!
+        store.setFaviconKey(rds.id, rdsIcon)
+        store.setFaviconKey(eks.id, eksIcon)
+        expect(store.item(rds.id)?.tab?.iconKey == rdsIcon && store.item(eks.id)?.tab?.iconKey == eksIcon && rdsIcon != eksIcon,
+               "two tabs on one host show their own icons")
+        store.updateTab(rds.id, url: "https://console.aws.amazon.com/rds/home#databases", title: "Databases")
+        expect(store.item(rds.id)?.tab?.faviconKey == rdsIcon, "a page on the same host keeps the tab's icon until its own loads")
+        store.updateTab(rds.id, url: "https://example.org/")
+        expect(store.item(rds.id)?.tab?.faviconKey == "example.org", "another host shows that site's icon")
+        expect(store.item(eks.id)?.tab?.faviconKey == eksIcon, "and the other tab never changes")
+    }
+
+    // promise: #54
     /// Edit Pinned URL… (#54, PR #55 by Anoninz): a new pinned URL keeps the item's
     /// name, icon, colour and place, and survives a relaunch.
     @MainActor
@@ -455,6 +586,7 @@ enum StoreTests {
         expect(store.integrityProblems().isEmpty, "and the sidebar stays sound")
     }
 
+    // promise: #157
     /// Arc's "Drag to add Favorites" card (#157): its × closes it for that space's favorites only,
     /// for good, and readers see the change.
     @MainActor
@@ -477,6 +609,7 @@ enum StoreTests {
                "and it stays closed after a relaunch")
     }
 
+    // promise: #154
     /// Settings ▸ Tabs ▸ Share Favorites (#154): Arc's one favorites list per profile.
     @MainActor
     private static func sharedFavorites() {
@@ -588,6 +721,7 @@ enum StoreTests {
         store.deleteProfile(paths.id)
     }
 
+    // promise: #86
     /// Move Tab to Space N (#86) and the command bar's Move Tab to <space>, like Arc's "Move to
     /// Today in <space>": the tab goes to the top of the other space's Today, the window follows
     /// it there with the tab selected, and the space it left opens another tab.
@@ -665,6 +799,7 @@ enum StoreTests {
         expect(store.integrityProblems().isEmpty, "the sidebar stays sound")
     }
 
+    // promise: #105
     /// The tab shown after ⌘W (Arc 1.171, GitHub #105): the one shown before while its page is
     /// loaded, else the Today neighbour above (below at the top), else nothing; it reads as read.
     @MainActor
@@ -810,6 +945,7 @@ enum StoreTests {
         expect(store.closeSuccessor(ofPinned: pl.id, window: main) == nil, "a pinned split hands over to nothing (Arc)")
     }
 
+    // promise: #85
     /// A closed folder keeps its open tab in sight (Arc, GitHub #85): picking a tab two closed
     /// folders down lists it under the outer one without opening either.
     @MainActor
@@ -949,6 +1085,81 @@ enum StoreTests {
         store.unpinTab(a.id)
         store.togglePinned(a.id)
         expect(heard == [a.id, a.id], "pinning it again does")
+    }
+
+    // promise: #191
+    /// A tab dropped on a pinned tab makes a split, as on a Today tab (Arc, #191): the pinned tab
+    /// stays pinned where it was, and the split opens at the top of Today with the dropped tab on
+    /// the side it was dropped and a copy of the pinned page beside it.
+    @MainActor
+    private static func dropOnPinnedTabSplits() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let sid = store.createSpace(title: "Drop", emoji: "🪂").id
+        guard let space = store.space(sid) else { return expect(false, "the space is made") }
+        let pinned = store.createTab(url: "https://example.com/pinned", title: "Pinned", in: sid, pinned: true, select: false)
+        let older = store.createTab(url: "https://example.com/older", in: sid, select: false)
+        let dragged = store.createTab(url: "https://example.com/dragged", in: sid, select: false)
+        let pinnedOrder = store.children(of: space.pinnedContainerID).map(\.id)
+        // What the list does with a drop on the left half of the pinned row: .split(with: pinned, leading: true).
+        guard let split = store.createSplit(with: [dragged.id, pinned.id], at: pinned.id) else { return expect(false, "the drop makes a split") }
+        expect(store.isPinned(pinned.id) && store.children(of: space.pinnedContainerID).map(\.id) == pinnedOrder,
+               "the pinned tab stays pinned, in its place")
+        expect(store.children(of: space.todayContainerID).map(\.id) == [split.id, older.id], "the split opens at the top of Today")
+        let panes = store.children(of: split.id)
+        expect(panes.count == 2 && panes[0].id == dragged.id && panes[1].id != pinned.id
+               && panes[1].tab?.url == "https://example.com/pinned" && store.paneID(for: pinned.id, in: split) == panes[1].id,
+               "the dropped tab takes the side it was dropped on, a copy of the pinned page the other")
+        expect(store.integrityProblems().isEmpty, "and the sidebar stays sound")
+    }
+
+    // promise: #21
+    /// ⌘Z (Arc, #21) brings back the tab closed last, open, then the one closed before it, each
+    /// where it was: a pinned tab closed with its ✕ comes back pinned.
+    @MainActor
+    private static func reopenClosedTabs() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let sid = store.createSpace(title: "Undo", emoji: "↩️").id
+        guard let space = store.space(sid) else { return expect(false, "the space is made") }
+        let pinned = store.createTab(url: "https://example.com/undo-pinned", in: sid, pinned: true, select: false)
+        let first = store.createTab(url: "https://example.com/undo-first", in: sid)
+        let second = store.createTab(url: "https://example.com/undo-second", in: sid)
+        store.archiveTab(pinned.id, reason: .manual)
+        store.archiveTab(first.id, reason: .manual)
+        store.archiveTab(second.id, reason: .manual)
+        expect(store.reopenLastArchived()?.id == second.id && store.selectedTabID == second.id
+               && store.spaceID(ofItem: second.id) == sid && !store.isPinned(second.id),
+               "⌘Z brings back the tab closed last, in its space's Today, open")
+        expect(store.reopenLastArchived()?.id == first.id && store.selectedTabID == first.id, "again: the one closed before it")
+        expect(store.reopenLastArchived()?.id == pinned.id && store.isPinned(pinned.id)
+               && store.children(of: space.pinnedContainerID).map(\.id) == [pinned.id], "a pinned tab comes back pinned")
+        expect(store.integrityProblems().isEmpty, "and the sidebar stays sound")
+    }
+
+    // promise: #2 #4
+    /// ⌘N (#2): a new window opens on the space in use, every window lists the same tabs, and
+    /// each window shows a space of its own. A tab open in two windows stays selected in both (#4).
+    @MainActor
+    private static func windowsShareTheSidebar() {
+        let store = AppComposition(clock: ManualScheduler()).store
+        let home = store.createSpace(title: "Windows Home", emoji: "🏠").id
+        let work = store.createSpace(title: "Windows Work", emoji: "💼", focus: false).id
+        let first = store.activeWindowID
+        let tab = store.createTab(url: "https://example.com/both-windows", in: home, window: first)
+        let second = store.addWindow(spaceID: store.focusedSpaceID(window: first), frame: nil).id
+        expect(store.focusedSpaceID(window: second) == home, "a new window opens on the space in use")
+        let made = store.createTab(url: "https://example.com/second-window", window: second)
+        let today = store.space(home)!.todayContainerID
+        expect(store.spaceID(ofItem: made.id) == home && store.tabs(under: today).map(\.id).contains(made.id),
+               "a tab opened in the new window is in the space's Today, which the first window shows too")
+        store.selectTab(tab.id, window: second)
+        expect(store.selectedTabID(in: home, window: second) == tab.id && store.selectedTabID(in: home, window: first) == tab.id,
+               "a tab opened in the second window stays selected in the first (#4)")
+        store.focusSpace(work, window: second)
+        expect(store.focusedSpaceID(window: second) == work && store.focusedSpaceID(window: first) == home
+               && store.selectedTabID(in: home, window: first) == tab.id, "each window shows a space of its own")
+        store.removeWindow(second)
+        expect(store.item(tab.id) != nil && store.item(made.id) != nil, "closing a window keeps the tabs")
+        expect(store.integrityProblems().isEmpty, "and the sidebar stays sound")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

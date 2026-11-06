@@ -32,7 +32,8 @@ struct KeyChordTests {
     }
 
     /// A tooltip's key caps: one per modifier, then the key (Arc's space tip shows ⌃ and 3).
-    @Test func capsSplitTheDisplay() {
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/152"))
+    func capsSplitTheDisplay() {
         #expect(KeyChord(key: "3", modifiers: KeyChord.Modifiers.control.rawValue).caps == ["⌃", "3"])
         #expect(KeyChord(key: "l", modifiers: Self.command | KeyChord.Modifiers.shift.rawValue).caps == ["⇧", "⌘", "L"])
         #expect(KeyChord(key: KeyChord.left, modifiers: KeyChord.Modifiers([.control, .option]).rawValue).caps == ["⌃", "⌥", "←"])
@@ -44,7 +45,7 @@ struct KeyChordTests {
     }
 
     /// ⌘Return opens the command bar's row in a background tab (GitHub #85).
-    @Test(arguments: [
+    @Test(.bug("https://github.com/VictorKildahl/cra/issues/85"), arguments: [
         (UInt16(36), command, true),                      // ⌘Return
         (76, command, true),                              // ⌘Enter on the keypad
         (36, command | 0x10000 | 0x800000, true),         // Caps Lock and the function-key bit don't count

@@ -34,6 +34,12 @@ enum WinGlyph {
         case "terminal": return "\u{E756}"  // CommandPrompt
         case "scope": return "\u{E8B0}"  // SelectAll: a dashed box, like Chrome's inspect icon
         case "square.split.2x1": return "\u{E89A}"  // TwoPage
+        // The Peek's.
+        case "xmark": return "\u{E711}"  // Cancel
+        case "arrow.up.left.and.arrow.down.right": return "\u{E740}"  // FullScreen
+        case "arrow.left": return "\u{E72B}"  // Back
+        case "arrow.right": return "\u{E72A}"  // Forward
+        case "arrow.clockwise": return "\u{E72C}"  // Refresh
         default: return "\u{E721}"  // magnifyingglass
         }
     }

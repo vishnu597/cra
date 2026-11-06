@@ -15,6 +15,11 @@ import WinUI
 ///
 /// The window keeps Windows' own title bar, in the strip's colour (the Mac hides its title bar
 /// behind the strip, beside the traffic lights).
+///
+/// Arc's Peek is this window in peek mode (the Mac's LittleWindowController too): a card owned by
+/// a browser window, over its page, with PeekBarView for a strip and PeekOverlays for the veil, the
+/// click catcher and the round buttons beside it. Its page uses the profile of the tab it came
+/// from; it is never archived, and Ctrl+Shift+T brings back the last one closed.
 @MainActor
 final class LittleWindow {
     let store: SidebarStore
@@ -40,6 +45,14 @@ final class LittleWindow {
     private var profileID: UUID?
     /// Archived or moved into a browser window: a later close must not archive it again.
     private var promoted = false
+    /// A Peek over this browser window, from its tab `peekSourceTab`.
+    let isPeek: Bool
+    private(set) weak var peekParent: BrowserWindow?
+    let peekSourceTab: UUID?
+    private var peekBar: PeekBarView?
+    private var overlays: PeekOverlays?
+    /// The colour the page reported (the Peek's bar takes it).
+    private var themeColor: String?
     private var closing = false
     private var readyToClose = false
     private var closeTimer: WinAppSDK.DispatcherQueueTimer?
@@ -67,34 +80,55 @@ final class LittleWindow {
 
     /// `url` nil makes a popup host for `opener`'s window.open; "" an empty window that asks for an
     /// address. `index`: Little Windows already open, for the cascade. `scale`: the DIP scale to
-    /// place it with (the window corrects it once it knows its monitor's).
+    /// place it with (the window corrects it once it knows its monitor's). `peekOver`: a Peek over
+    /// that browser window, from its tab `fromTab`; `showPeek()` puts it on screen.
     init(store: SidebarStore, url: String?, opener: WebPage?, index: Int, scale: Double,
-         dispatcher: WinAppSDK.DispatcherQueue, list: WindowList) throws {
+         dispatcher: WinAppSDK.DispatcherQueue, list: WindowList, peekOver parent: BrowserWindow? = nil, fromTab: UUID? = nil) throws {
         self.store = store
         self.list = list
         self.dispatcher = dispatcher
         isPopupHost = url == nil
-        targetSpaceID = store.littleWindowTarget(requested: nil)
+        isPeek = parent != nil
+        peekParent = parent
+        peekSourceTab = parent == nil ? nil : fromTab
+        // A Peek names the space of the window it covers.
+        targetSpaceID = parent.map { store.focusedSpaceID(window: $0.windowID) } ?? store.littleWindowTarget(requested: nil)
         // The page's sign-ins (#172): a link or popup from a Little Window stays in its page's
-        // profile (Chromium hosts a popup in its opener's); otherwise the target space's.
-        profileID = opener.map { store.profileID(path: $0.profilePath) } ?? store.littleWindowProfile(forSpace: targetSpaceID)
+        // profile (Chromium hosts a popup in its opener's); a Peek takes its tab's, so a shared
+        // favorite peeks in its list's profile; otherwise the target space's.
+        if let opener {
+            profileID = store.profileID(path: opener.profilePath)
+        } else if let fromTab, parent != nil, store.item(fromTab) != nil {
+            profileID = store.profileID(item: fromTab)
+        } else {
+            profileID = store.littleWindowProfile(forSpace: targetSpaceID)
+        }
         engine = SuggestionEngine(store: store, commands: { WinKeyBindings.shared.barCommands(display: \.windowsDisplay) },
                                   load: WinSuggestLoader.load)
-        commandBar = CommandBarView(engine: engine, store: store, windowID: store.lastNormalWindowID)
+        commandBar = CommandBarView(engine: engine, store: store, windowID: parent?.windowID ?? store.lastNormalWindowID)
 
-        let size = LittleWindowLayout.size(saved: store.prefs.littleWindowSize)
-        window = try HostWindow(content: Grid(), topBar: strip.root, sidebarWidth: 0,
-                                frame: Self.placement(size: size, index: index, scale: scale))
-        window.topBarHeight = Double(LittleWindowLayout.barHeight)
-        if abs(window.scale - scale) > 0.01 {
-            // Opened on a monitor with another scale than guessed: placed again in its DIPs.
-            let frame = Self.placement(size: size, index: index, scale: window.scale)
-            try? window.appWindow.moveAndResize(RectInt32(x: Int32(frame.x), y: Int32(frame.y),
-                                                          width: Int32(frame.width), height: Int32(frame.height)))
+        if let parent {
+            let bar = PeekBarView()
+            peekBar = bar
+            window = try HostWindow(content: Grid(), topBar: bar.root, sidebarWidth: 0, owner: parent.window)
+            window.topBarHeight = Double(PeekLayout.barHeight)
+            window.background = HostColor(r: 255, g: 255, b: 255)
+            window.title = "Peek"
+        } else {
+            let size = LittleWindowLayout.size(saved: store.prefs.littleWindowSize)
+            window = try HostWindow(content: Grid(), topBar: strip.root, sidebarWidth: 0,
+                                    frame: Self.placement(size: size, index: index, scale: scale))
+            window.topBarHeight = Double(LittleWindowLayout.barHeight)
+            if abs(window.scale - scale) > 0.01 {
+                // Opened on a monitor with another scale than guessed: placed again in its DIPs.
+                let frame = Self.placement(size: size, index: index, scale: window.scale)
+                try? window.appWindow.moveAndResize(RectInt32(x: Int32(frame.x), y: Int32(frame.y),
+                                                              width: Int32(frame.width), height: Int32(frame.height)))
+            }
+            savedSize = (window.frame.width, window.frame.height)
+            styleTitleBar()
+            window.title = "Little Window"
         }
-        savedSize = (window.frame.width, window.frame.height)
-        styleTitleBar()
-        window.title = "Little Window"
 
         window.onLayout = { [weak self] frame in
             self?.page?.frame = frame
@@ -128,6 +162,15 @@ final class LittleWindow {
         strip.onMoreSpaces = { [weak self] in self?.showSpacesMenu() }
         strip.onProfileMenu = { [weak self] in self?.showProfileMenu() }
         strip.onKey = { [weak self] key in self?.handleShortcut(key) ?? false }
+        peekBar?.onBack = { [weak self] in self?.page?.goBack() }
+        peekBar?.onForward = { [weak self] in self?.page?.goForward() }
+        peekBar?.onReload = { [weak self] in
+            guard let page = self?.page else { return }
+            if page.isLoading { page.stopLoading() } else { page.reload() }
+        }
+        peekBar?.onEditURL = { [weak self] in self?.openCommandBar() }
+        peekBar?.onCopy = { [weak self] in self?.copyURL(markdown: false) }
+        peekBar?.onKey = { [weak self] key in self?.handleShortcut(key) ?? false }
         makeCommandBar()
         makePermissionPrompt()
         toast = ToastView(owner: window) { [weak self] in self?.pageOnScreen() }
@@ -180,6 +223,10 @@ final class LittleWindow {
     /// Brings the window to the front with the keyboard: the page, or the command bar for an
     /// empty window.
     func activate() {
+        if isPeek {
+            repositionPeek()
+            return
+        }
         window.activate()
         // A popup host has no address until Chromium navigates it, but it is a page all the
         // same: the command bar would cover a sign-in popup.
@@ -199,7 +246,11 @@ final class LittleWindow {
         guard !closing else { return }
         withObservationTracking {
             if let r = requestedSpaceID, store.space(r) == nil { requestedSpaceID = nil }
-            targetSpaceID = store.littleWindowTarget(requested: requestedSpaceID)
+            if let parent = peekParent {
+                targetSpaceID = store.focusedSpaceID(window: parent.windowID)
+            } else {
+                targetSpaceID = store.littleWindowTarget(requested: requestedSpaceID)
+            }
             drawStrip()
         } onChange: { [weak self] in
             onMain { self?.queueRefresh() }
@@ -213,6 +264,11 @@ final class LittleWindow {
     }
 
     private func drawStrip() {
+        if let peekBar {
+            peekBar.show(url: hasPage ? currentURL : "", themeColor: themeColor, canGoBack: page?.canGoBack ?? false,
+                         canGoForward: page?.canGoForward ?? false, isLoading: page?.isLoading ?? false)
+            return
+        }
         let space = store.space(targetSpaceID) ?? store.focusedSpace(window: store.lastNormalWindowID)
         // Arc's shouldShowProfileIndicators: only once there is a profile besides Default.
         let profile: String? = store.profiles.isEmpty ? nil : store.profile(profileID)?.name ?? "Default"
@@ -397,6 +453,97 @@ final class LittleWindow {
         return (topLeft.x, topLeft.y, topLeft.x + frame.width, window.scale)
     }
 
+    // MARK: Peek
+
+    /// Puts the Peek on screen over its window, the page behind fading (Arc's open without the
+    /// card's growth out of the link, which comes later: the Mac's PeekTransition).
+    func showPeek() {
+        guard let parent = peekParent, !closing else { return }
+        let made = PeekOverlays(owner: parent.window.hwnd, background: parent.window.background,
+                                buttons: ["xmark", "arrow.up.left.and.arrow.down.right", "square.split.2x1"].map(WinGlyph.code),
+                                tips: ["Close" + keyHint("closeTab"), "Expand" + keyHint("promoteLittleWindow"), "Add To Split"])
+        made.onClickOutside = { [weak self] in self?.requestClose() }
+        made.onButton = { [weak self] index in
+            switch index {
+            case 0: self?.requestClose()
+            case 1: self?.promote(to: nil)
+            default: self?.promoteToSplit()
+            }
+        }
+        overlays = made
+        repositionPeek()
+        made.fadeIn()
+        window.activate()
+        if hasPage || isPopupHost { focusPage() } else { openCommandBar() }
+    }
+
+    /// The card, the veil and the buttons where the browser window has them now (it moved or
+    /// changed size, or its space changed colour).
+    func repositionPeek() {
+        guard let parent = peekParent, let overlays, !closing, let placement = parent.peekPlacement() else { return }
+        let theme = store.focusedSpace(window: parent.windowID).theme
+        let fill = TooltipTones(theme: theme).fill, ink = LittleWindowLayout.spaceNameColor(theme)
+        overlays.place(placement, card: window, fill: Self.rgb(fill), ink: Self.rgb(ink), scale: parent.scale)
+        placeCommandBar()
+        placePermissionPrompt()
+    }
+
+    /// The veil and buttons go as the card does; Arc's Ctrl+Shift+T can bring a Peek back that
+    /// closed without its page moving into a tab (BrowserWindow.closedPeek).
+    private func endPeek() {
+        guard isPeek else { return }
+        if hasPage, !promoted { peekParent?.closedPeek = (currentURL, peekSourceTab, store.clock.now) }
+        try? window.appWindow.hide()
+        overlays?.fadeOutAndDestroy()
+        overlays = nil
+        // Back to the window under it, unless another Peek is taking its place.
+        if !promoted, let parent = peekParent, !(list?.littleWindows.contains(where: { $0 !== self && $0.peekParent === parent }) ?? false) {
+            parent.activate()
+        }
+    }
+
+    /// Add To Split: the peeked page becomes a tab and joins the tab under the Peek as a split
+    /// pane, live as it is (Arc's openInSplit; SidebarStore.peekSplitTabs).
+    private func promoteToSplit() {
+        guard let page, hasPage, !closing, let parent = peekParent, let source = store.selectedTabID(window: parent.windowID) else { return }
+        guard store.canAddPane(to: source) else {
+            parent.showToast("Cannot Add New Pane")
+            return
+        }
+        commandBar.close()
+        let title = page.currentTitle.isEmpty ? self.title : page.currentTitle
+        guard let made = store.peekSplitTabs(url: currentURLOf(page), title: title, beside: source, window: parent.windowID) else { return }
+        promoted = true
+        self.page = nil
+        livePages.remove(ObjectIdentifier(page))
+        for request in permissionQueue where request.page.page === page { request.answer(false) }
+        permissionQueue.removeAll { $0.page.page === page }
+        parent.adopt(page, for: made.tab)
+        store.joinSplit(made.tab, with: made.partner, window: parent.windowID)
+        // The window redraws on the split and takes the front before the card goes.
+        parent.activate()
+        requestClose()
+    }
+
+    /// Arc 1.171 (#202): a link from a Peek that asks for a new tab is a Today tab in the space,
+    /// placed as a link from the tab under the Peek would be, and the Peek closes for it. A
+    /// background one (Ctrl-click) leaves the Peek open.
+    private func openTabFromPeek(_ url: String, inBackground background: Bool) {
+        guard let parent = peekParent else { return }
+        store.openLinkTab(url, from: peekSourceTab, inBackground: background, window: parent.windowID)
+        // Not from inside Chromium's callback: the page closes a turn later.
+        if !background { _ = try? dispatcher.tryEnqueue { [weak self] in self?.requestClose() } }
+    }
+
+    private func keyHint(_ action: String) -> String {
+        WinKeyBindings.shared.action(action)?.primary.map { " (\($0.windowsDisplay))" } ?? ""
+    }
+
+    private static func rgb(_ c: RGB) -> UInt32 {
+        func byte(_ v: Double) -> UInt32 { UInt32((min(max(v, 0), 1) * 255).rounded()) }
+        return byte(c.r) << 16 | byte(c.g) << 8 | byte(c.b)
+    }
+
     // MARK: Open in a space
 
     /// "Open in <Space>" (Ctrl+O), the spaces menu, Move Tab to Space N: the live page goes into
@@ -413,7 +560,9 @@ final class LittleWindow {
         livePages.remove(ObjectIdentifier(page))
         for request in permissionQueue where request.page.page === page { request.answer(false) }
         permissionQueue.removeAll { $0.page.page === page }
-        list.adopt(page, url: currentURLOf(page), title: title, space: destination)
+        // A Peek's Expand: into the window under it when that still shows the space.
+        let into = peekParent.flatMap { store.focusedSpaceID(window: $0.windowID) == destination ? $0 : nil }
+        list.adopt(page, url: currentURLOf(page), title: title, space: destination, into: into)
         requestClose()
     }
 
@@ -531,7 +680,7 @@ final class LittleWindow {
     /// A resize by the user sets the size the next Little Window opens at, in DIPs (the Mac's
     /// windowDidEndLiveResize); a move alone doesn't.
     private func saveSize() {
-        guard !closing, let hwnd = HWND(bitPattern: window.hwnd), !IsIconic(hwnd), !IsZoomed(hwnd) else { return }
+        guard !closing, !isPeek, let hwnd = HWND(bitPattern: window.hwnd), !IsIconic(hwnd), !IsZoomed(hwnd) else { return }
         let frame = window.frame, scale = window.scale
         guard (frame.width, frame.height) != savedSize else { return }
         savedSize = (frame.width, frame.height)
@@ -547,7 +696,8 @@ final class LittleWindow {
 
     /// Archive the page to the Library (Arc keeps closed Little Arcs there too).
     func archivePage() {
-        guard hasPage, !promoted else { return }
+        // A Peek is a look at a link, not a page to keep.
+        guard hasPage, !promoted, !isPeek else { return }
         let pageTitle = page?.currentTitle ?? ""
         store.archiveLittleWindowPage(url: currentURL, title: pageTitle.isEmpty ? title : pageTitle)
         promoted = true
@@ -563,6 +713,7 @@ final class LittleWindow {
         for request in permissionQueue { request.answer(false) }
         permissionQueue.removeAll()
         archivePage()
+        endPeek()
         let open = page
         page = nil
         open?.close()
@@ -601,6 +752,18 @@ extension LittleWindow: WebPageDelegate {
         drawStrip()
     }
 
+    func page(_ page: WebPage, didChangeLoading loading: Bool, canGoBack: Bool, canGoForward: Bool) {
+        guard page === self.page, isPeek else { return }
+        drawStrip()
+    }
+
+    /// The Peek's bar takes the page's colour.
+    func page(_ page: WebPage, didReportThemeColor hex: String) {
+        guard page === self.page, isPeek else { return }
+        themeColor = hex
+        drawStrip()
+    }
+
     func page(_ page: WebPage, didFinishLoadingURL url: String, statusCode: Int) {
         guard page === self.page, !url.isEmpty, url != "about:blank" else { return }
         store.recordVisit(url: url, title: page.currentTitle)
@@ -612,15 +775,41 @@ extension LittleWindow: WebPageDelegate {
         Favicons.shared.store(png: png, forKey: key, persist: true)
     }
 
-    /// Links that want a new tab open another Little Window (Arc does the same).
+    /// A Shift-clicked link opens in this window: Arc's Little Arc has no Peek of its own, so its
+    /// Shift-click is a plain click (1.171, 3 Nov 2026). In a Peek, a target=_blank link leaves it
+    /// for a tab (PeekTrigger.leavesPeek, #202).
+    func page(_ page: WebPage, opensPeekForURL url: String, shiftClick: Bool, newTab: Bool) -> Bool {
+        guard page === self.page, !url.lowercased().hasPrefix("cra:") else { return false }
+        if isPeek, PeekTrigger.leavesPeek(url, shiftClick: shiftClick, newTab: newTab) {
+            openTabFromPeek(url, inBackground: false)
+            return true
+        }
+        guard shiftClick else { return false }
+        // Not from inside Chromium's callback.
+        _ = try? dispatcher.tryEnqueue { [weak self, weak page] in
+            guard let self, let page, page === self.page else { return }
+            self.navigate(url)
+        }
+        return true
+    }
+
+    /// Links that want a new tab open another Little Window (Arc does the same); a Peek's open
+    /// as tabs in its window's space.
     func page(_ page: WebPage, requestsNewTabWithURL url: String, inBackground background: Bool) {
         // cra:// is Cra's scripting scheme; a page must not drive it.
         guard !url.lowercased().hasPrefix("cra:") else { return }
+        if isPeek { return openTabFromPeek(url, inBackground: background) }
         list?.openLittleWindow(url: url, opener: page, activate: !background)
         if background { window.activate() }
     }
 
+    /// A popup that needs its opener (a sign-in window) stays a Little Window, over a Peek too:
+    /// closing the Peek for a tab would close the page waiting on it.
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage? {
+        if isPeek, background, !url.lowercased().hasPrefix("cra:") {
+            openTabFromPeek(url, inBackground: true)
+            return nil
+        }
         guard !url.lowercased().hasPrefix("cra:"), let host = list?.openLittleWindow(url: nil, opener: page, activate: !background) else { return nil }
         if background { window.activate() }
         return host.page
@@ -629,6 +818,13 @@ extension LittleWindow: WebPageDelegate {
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool {
         guard !key.isRepeat || key.keyCode == 0x09 else { return false }
         return handleShortcut(key)
+    }
+
+    /// Arc's "Exit the current context": Escape the page didn't use closes a Peek.
+    func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool {
+        guard isPeek, key.keyCode == 0x1B, !key.control, !key.shift, !key.alt, !key.isRepeat else { return false }
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.requestClose() }
+        return true
     }
 
     func page(_ page: WebPage, handleDevToolsKey key: KeyPress) -> Bool {

@@ -14,6 +14,12 @@ protocol BrowserWindowHost: AnyObject {
     /// Close Little Windows: each archives its page.
     func closeLittleWindows()
     func windowDidClose(_ window: BrowserWindow)
+    /// Arc's Peek over `window`, from its tab `fromTab`: one at a time over a window.
+    func openPeek(url: String, over window: BrowserWindow, fromTab: UUID?)
+    func closePeeks(over window: BrowserWindow)
+    func hasPeek(over window: BrowserWindow) -> Bool
+    /// The window moved or changed size: its Peek follows.
+    func repositionPeeks(over window: BrowserWindow)
 }
 
 /// The app's browser windows, one per window session in the store (AppDelegate's mainWindows
@@ -118,7 +124,37 @@ final class WindowList: BrowserWindowHost {
 
     func littleWindowDidClose(_ window: LittleWindow) {
         littleWindows.removeAll { $0 === window }
+        if let parent = window.peekParent { parent.peekDidClose() }
         if windows.isEmpty, littleWindows.isEmpty { PostQuitMessage(0) }
+    }
+
+    // MARK: Peek
+
+    /// AppDelegate.openPeek on the Mac: the Peek before it over that window closes first, and the
+    /// tab it came from wears the peeked page's favicon.
+    func openPeek(url: String, over parent: BrowserWindow, fromTab: UUID?) {
+        closePeeks(over: parent)
+        do {
+            let w = try LittleWindow(store: store, url: url, opener: nil, index: 0, scale: parent.scale, dispatcher: dispatcher, list: self,
+                                     peekOver: parent, fromTab: fromTab)
+            littleWindows.append(w)
+            parent.showPeekBadge(tab: fromTab, url: url)
+            w.showPeek()
+        } catch {
+            print("The Peek could not be made: \(error)")
+        }
+    }
+
+    func closePeeks(over parent: BrowserWindow) {
+        for w in littleWindows where w.peekParent === parent { w.requestClose() }
+    }
+
+    func hasPeek(over parent: BrowserWindow) -> Bool {
+        littleWindows.contains { $0.peekParent === parent }
+    }
+
+    func repositionPeeks(over parent: BrowserWindow) {
+        for w in littleWindows where w.peekParent === parent { w.repositionPeek() }
     }
 
     /// Every Little Window's page into the Library, at quit.
@@ -129,7 +165,15 @@ final class WindowList: BrowserWindowHost {
     /// A Little Window's page into `space` as its selected tab, in the browser window already
     /// showing that space, else the one used last (SpaceWindow), which switches to it. The live
     /// page moves, history and sign-ins included (BrowserManager.adopt on the Mac).
-    func adopt(_ page: WebPage, url: String, title: String, space: UUID) {
+    /// `into`: that window (a Peek's Expand, into the window under it).
+    func adopt(_ page: WebPage, url: String, title: String, space: UUID, into: BrowserWindow? = nil) {
+        if let into {
+            store.activeWindowID = into.windowID
+            let tab = store.createTab(url: url, title: title, in: space, select: true, window: into.windowID)
+            into.adopt(page, for: tab.id)
+            into.activate()
+            return
+        }
         if !windows.contains(where: { !$0.isIncognito }) {
             // Every browser window closed: the last one's session opens again with the page's tab
             // already selected, so it never makes a page for the tab it showed before.

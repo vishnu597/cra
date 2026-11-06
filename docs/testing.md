@@ -17,10 +17,22 @@ Commands for each piece are in [development.md](development.md#tests).
 4. **Fixtures over dictionaries.** Every format Cra reads from another browser has a made-up
    profile in that browser's own format under `Tests/Fixtures/<Browser>` (no real browsing
    data). Parsers are tested on those files, and the fuzzer mutates them.
-5. **A bug fix comes with the test that would have caught it.**
+5. **A bug fix comes with the test that would have caught it**, written first and seen failing
+   on the unfixed code. That holds for every bug, with or without an issue; one with an issue is
+   also locked (rule 8). If no test can reach it, the fix moves the decision into CraCore or adds
+   the debug readout a scenario needs; only what takes a real site, the GPU or a person's eye
+   becomes a line in [release-checklist.md](release-checklist.md).
 6. **Never assert on a fake's bookkeeping alone.** A test whose only check is "the fake
    recorded a call" tests the fake.
 7. **A flaky test is rewritten on the clock or deleted**, never retried or given a sleep.
+8. **What a closed issue shipped is pinned.** The test that proves an issue's fix carries
+   `.bug("https://github.com/VictorKildahl/cra/issues/<n>")`, and `Tests/promises.lock` holds a
+   hash of each such test (`scripts/promises.py`, run by `scripts/test.sh` and by a hook before
+   every `git push`). Changing, renaming or deleting one fails until `scripts/promises.py --update`;
+   do that only when the issue's behaviour is meant to change, say why in the commit and tell the
+   reporter. 0.1.30 rewrote the #155 test together with the change that broke it, and nothing
+   failed until the reporter wrote back.
+   What no test can pin yet is a manual check in [release-checklist.md](release-checklist.md).
 
 ## Layers
 
@@ -52,6 +64,9 @@ no page content), so it checks geometry, ink and fills.
   its budget, helper processes back to baseline five seconds after tabs close, the performance
   recorder under 0.1 % of a core (`selfCost.cpuPct` in its perf.json, `budget perfcpu=`) with its
   count of 250 ms stalls within a few of HitchMonitor's, and a quit within 20 seconds.
+  The budgets are for a release build (`scripts/build.sh`), which is what the nightly runs: a
+  debug build's recorder costs about six times as much (0.16–0.22 % against 0.03–0.04 %, 6 Nov
+  2026), so on a debug build the recorder line fails and means nothing.
 
 Stall budgets are set from what the app does today, so they catch regressions rather than
 describe a goal. The count of stalls over 50 ms is steady from run to run and carries the
@@ -101,6 +116,10 @@ the header of `scripts/scenario.sh` lists them). It runs `build/Cra.app` on a th
 folder, behind your windows (`CRA_TEST_BACKGROUND`), with the fixture pages served from
 127.0.0.1. Logs, hitch log and snapshots land in `build/scenarios/<name>/`. Adding a journey
 is a text file; the invariants come for free.
+
+`auto-theme` flips the app between light and dark (`cra://debug?systemAppearance=`) and reads
+which half each window draws (`cra://debug?themeShown=<label>`): an Auto space must switch its
+window content and sidebar both ways, and a Light one must not (#155).
 
 `fullscreen` takes over a Space and runs only with `CRA_SCENARIO_SCREEN=1` (CI does).
 `CRA_FLAGS=backdrop=material` runs any scenario on the sidebar's `NSVisualEffectView` path

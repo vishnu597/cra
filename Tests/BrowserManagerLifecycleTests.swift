@@ -40,6 +40,19 @@ enum BrowserManagerLifecycleTests {
         expect(observer.activatedTabs == [id, id] && observer.activatedByPage == [false, true],
                "a page's own focus request (a notification click) arrives marked as the page's")
 
+        // The page's context menu: Open Link in New Window / Little Window / Incognito Window and
+        // Capture Image… go to the window, with the tab's space; a closed page's requests don't.
+        manager.browser(replacement.browser, requestsWindowWithURL: "https://example.test/link", kind: .little)
+        manager.browser(old.browser, requestsWindowWithURL: "https://example.test/stale", kind: .new)
+        expect(observer.openedLinks.map(\.url) == ["https://example.test/link"] && observer.openedLinks.first?.kind == .little
+               && observer.openedLinks.first?.space == store.spaceID(ofItem: id) && observer.openedLinks.first?.incognito == false,
+               "Open Link in Little Window reaches the window with the tab's space")
+        manager.browser(replacement.browser, requestsCaptureOfImageAt: NSPoint(x: 12, y: 34))
+        manager.browser(old.browser, requestsCaptureOfImageAt: NSPoint(x: 1, y: 1))
+        expect(observer.capturedImages.count == 1 && observer.capturedImages.first?.tab == id
+               && observer.capturedImages.first?.point == NSPoint(x: 12, y: 34),
+               "Capture Image… reaches the window for the live page's tab only")
+
         let retainedID = store.createTab(url: "https://example.test/retained").id
         weak var retainedBrowser = manager.ensureRuntime(for: retainedID)?.browser
         manager.unload(retainedID)
@@ -91,14 +104,18 @@ enum BrowserManagerLifecycleTests {
         await discardCase()
         shortTimerCase()
         recentlyAudibleCase()
+        await audiblePageStaysAwakeCase()
         devToolsCase()
+        extensionTabActivationCase()
         await beforeUnloadCase()
         nowPlayingCase()
         await nowPlayingPictureInPictureCase()
+        nowPlayingSkipsPictureInPictureCase()
         await leaveVideoTabPictureInPictureCase()
         await splitCopySleepsPinnedTabCase()
         await coveredWindowPictureInPictureCase()
         await callPictureInPictureCase()
+        await playerMediaSessionCase()
         pageColoursCase()
         extensionPageRetryCase()
         await sleepCase("malformed or missing replies cannot authorize sleeping", reply: nil) { _, _ in }
@@ -107,6 +124,7 @@ enum BrowserManagerLifecycleTests {
         print("Browser manager lifecycle: \(checks) checks passed")
     }
 
+    // promise: #80
     /// The line cra.log gets about a page on screen (#80): how many frames the page was asked
     /// for, and which display's refresh rate its window follows.
     @MainActor
@@ -232,6 +250,9 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #2 #4
+    /// A tab open in another window moves its page over without reloading it (#2), and back to the
+    /// first window when that one is used again (#4): the same runtime, its views reattached.
     @MainActor
     private static func embeddedPageHandoffCase() {
         _ = NSApplication.shared
@@ -297,6 +318,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #136
     /// A tab shown while its page loads is neither captured nor probed until the load is over
     /// (#136): both ask the renderer for work in the busiest second of the page.
     @MainActor
@@ -363,6 +385,7 @@ enum BrowserManagerLifecycleTests {
         manager.runtime(for: id).map(\.discarded) ?? true
     }
 
+    // promise: #136
     /// Like Arc, the 10 tabs used last keep their pages however long they have been hidden (#136).
     @MainActor
     private static func recentTabsCase() {
@@ -379,6 +402,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #136
     /// Like Arc, a page out of sight past the threshold is voted to freeze unless it is one of
     /// the 10 tabs used last; showing it drops the vote (#136).
     @MainActor
@@ -402,6 +426,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #32
     /// A page that refused isn't probed again every minute, only after the back-off or once shown again.
     @MainActor
     private static func refusalBackoffCase() async {
@@ -422,6 +447,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #32
     /// Tab sleeping on the manager's clock: an hour's threshold and the 10-minute back-off run
     /// in no time, and nothing is asked a second early.
     @MainActor
@@ -450,6 +476,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #153
     /// Under memory pressure (#153) the 3 pages hidden longest are asked, the 10 tabs used last
     /// included; a page refusing inside its back-off doesn't take one of the 3, and a page left
     /// less than 5 minutes ago isn't asked.
@@ -480,6 +507,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #153
     /// Sleeping discards the page in place (#153): the runtime stays with Chromium's history and
     /// scroll position, showing the tab loads it now, and it holds none of the 10 recent places.
     /// A call with camera and microphone off, or a device, keeps the page awake; a CEF without
@@ -525,6 +553,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #153
     /// "Force tabs out of memory after:" below Arc's 4 hours closes the 10 tabs used last too;
     /// 4 hours and more keep them (#153).
     @MainActor
@@ -543,6 +572,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #153
     /// A page that played sound counts as in use: tab sleeping waits as long after it went quiet
     /// as after it went out of sight (#153).
     @MainActor
@@ -566,8 +596,53 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #28
+    /// A tab playing sound, Web Audio included (Chromium's own audible state, #28), is never put
+    /// to sleep, however long it has been out of sight, and one that starts playing while it is
+    /// being asked stays awake too.
+    @MainActor
+    private static func audiblePageStaysAwakeCase() async {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        manager.protectedRecentTabs = 0
+        let id = store.createTab(url: "https://example.test/playing").id
+        let runtime = manager.ensureRuntime(for: id)!
+        runtime.hiddenAt = Date.distantPast
+        runtime.browser.isAudible = true
+        manager.sleepIdleTabs(TabSleepPolicy(hiddenFor: 60))
+        manager.sleepIdleTabs(.memoryPressure)
+        expect(!runtime.browser.replies.contains { $0.method == isolatedProbe } && !asleep(manager, id),
+               "a page playing sound is never asked to sleep, on the timer or under memory pressure")
+        manager.closeAll()
+        await sleepCase("a page that starts playing while it is asked stays awake") { _, rt in rt.browser.isAudible = true }
+    }
+
+    /// #38: an extension's chrome.tabs.update({active: true}) (SwitchyOmega's Options on its open
+    /// settings tab) selects that Cra tab, and only while its page is the tab's live one.
+    // promise: #38
+    @MainActor
+    private static func extensionTabActivationCase() {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let observer = Observer()
+        manager.delegate = observer
+        let options = store.createTab(url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html").id
+        let other = store.createTab(url: "https://example.test/other").id
+        manager.show(options, focus: false)
+        let page = manager.runtime(for: options)!.browser
+        manager.show(other, focus: false)
+        manager.browserRequestsActivation(page, byPage: false)
+        expect(observer.activatedTabs == [options] && observer.activatedByPage == [false],
+               "the extension's activation asks for its options tab, not the one in front")
+        manager.unload(options)
+        manager.browserRequestsActivation(page, byPage: false)
+        expect(observer.activatedTabs == [options], "a page already closing selects nothing")
+        manager.closeAll()
+    }
+
     /// ⌥⌘I pressed again while CEF is still closing DevTools opens them once they are gone,
     /// instead of closing them a second time. Console and Network switch panels on open DevTools.
+    // promise: #138
     @MainActor
     private static func devToolsCase() {
         let store = SidebarStore()
@@ -597,6 +672,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #32
     /// The page's own onbeforeunload, asked in its world after the isolated probe, keeps it awake.
     @MainActor
     private static func beforeUnloadCase() async {
@@ -615,6 +691,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #33
     /// The sidebar player lists pages that played sound, keeps paused ones, hides the one on
     /// screen, and drops a page that navigates while quiet or closes.
     @MainActor
@@ -644,6 +721,30 @@ enum BrowserManagerLifecycleTests {
         expect(np.entries.map(\.id) == [b], "a playing page that navigates (a playlist) keeps its card")
         manager.unload(b)
         expect(np.entries.isEmpty, "closing the page removes its card")
+        manager.closeAll()
+    }
+
+    // promise: #33
+    /// The sidebar player (#33) has no card for a tab whose video is in Picture in Picture; the
+    /// card comes back when the video leaves it.
+    @MainActor
+    private static func nowPlayingSkipsPictureInPictureCase() {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let np = NowPlaying()
+        manager.nowPlaying = np
+        let a = store.createTab(url: "https://example.test/video").id, b = store.createTab(url: "https://example.test/other").id
+        let ra = manager.ensureRuntime(for: a)!
+        manager.show(b, focus: false)
+        ra.browser.isAudible = true
+        manager.browser(ra.browser, didChangeAudible: true)
+        expect(np.shown.map(\.id) == [a], "a tab playing out of sight has a card")
+        ra.browser.isInPictureInPicture = true
+        manager.browser(ra.browser, didChangePictureInPicture: true)
+        expect(np.shown.isEmpty && np.entries.map(\.id) == [a], "its video in Picture in Picture: no card")
+        ra.browser.isInPictureInPicture = false
+        manager.browser(ra.browser, didChangePictureInPicture: false)
+        expect(np.shown.map(\.id) == [a], "back from Picture in Picture, the card is back")
         manager.closeAll()
     }
 
@@ -687,9 +788,7 @@ enum BrowserManagerLifecycleTests {
                                           (nil, 1, "a page whose answer was lost")] as [(String?, Int, String)] {
             let before = ra.browser.automaticPictureInPictureRequests
             manager.show(b, focus: false)
-            expect(ra.browser.lastIsolatedParams.contains(#""userGesture":false"#), "the page is first asked for its own handler, without a gesture")
-            ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"none"}}"#)
-            await drainMainQueue()
+            expect(!ra.browser.replies.contains { $0.method == "Cra.autoPictureInPicture" }, "a page that isn't capturing goes straight to the video request")
             expect(ra.browser.lastParams.contains(#""userGesture":true"#), "leaving a video tab asks as a user gesture")
             expect(ra.browser.lastParams.contains("})(true)"), "leaving a video tab takes only an audible, playing video")
             let reply = answer.map { #"{"result":{"type":"string","value":"\#($0)"}}"# }
@@ -744,10 +843,11 @@ enum BrowserManagerLifecycleTests {
 
     /// A call (Google Meet with "Automatic picture-in-picture" on) registers its own
     /// `enterpictureinpicture` media session handler, which opens a Document Picture in Picture
-    /// window of the call. Leaving its tab, or its window going out of sight, runs that handler as a
-    /// user gesture, as Chrome does; coming back closes the window (GitHub #198). The page is asked
-    /// whether it has the handler without a gesture, so a page without one never gets activation
-    /// from an app switch, and a page without one gets the video request as before.
+    /// window of the call. Leaving its tab while it uses the camera or microphone, or its window
+    /// going out of sight, drives Chrome's automatic Picture in Picture (`Cra.autoPictureInPicture`),
+    /// as Chrome's tab strip and Arc do; coming back has Chrome close the window (GitHub #198).
+    /// A page Chrome doesn't ask gets the video request.
+    // promise: #198
     @MainActor
     private static func callPictureInPictureCase() async {
         let clock = ManualScheduler()
@@ -756,63 +856,124 @@ enum BrowserManagerLifecycleTests {
         let a = store.createTab(url: "https://meet.example.test/abc").id, b = store.createTab(url: "https://example.test/other").id
         let ra = manager.ensureRuntime(for: a)!
         store.settings.autoPictureInPicture = true
+        ra.browser.isCapturingMedia = true
         manager.show(a, focus: false)
-        let answer = { (value: String) in #"{"result":{"type":"string","value":"\#(value)"}}"# }
+        let asked = #"{"asked":true,"pictureInPicture":false}"#, notAsked = #"{"asked":false,"pictureInPicture":false}"#
+        let hidden = #"{"tab":"hidden"}"#, shown = #"{"tab":"shown"}"#
         let evaluations = { ra.browser.replies.filter { $0.method == "Runtime.evaluate" }.count }
-        let isolated = { ra.browser.replies.filter { $0.method == "cra:Runtime.evaluate" }.count }
+        let calls = { ra.browser.replies.filter { $0.method == "Cra.autoPictureInPicture" }.count }
+        let settle = { while ra.browser.replies.contains(where: { $0.method == "Cra.autoPictureInPicture" }) {
+            ra.browser.reply(to: "Cra.autoPictureInPicture", with: "{}") } }
 
         manager.show(b, focus: false)
-        expect(ra.browser.lastIsolatedParams.contains("enterpictureinpicture") && ra.browser.lastIsolatedParams.contains(#""userGesture":false"#),
-               "leaving the tab asks the page for its own handler, without a gesture")
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("handler"))
+        expect(calls() == 1 && ra.browser.lastParams == hidden, "leaving a call's tab drives Chrome's automatic Picture in Picture")
+        ra.browser.reply(to: "Cra.autoPictureInPicture", with: asked)
         await drainMainQueue()
-        expect(isolated() == 1 && ra.browser.lastIsolatedParams.contains("send('enterpictureinpicture')")
-               && ra.browser.lastIsolatedParams.contains(#""userGesture":true"#), "a page with the handler has it run, as a user gesture")
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: nil)
-        expect(evaluations() == 0 && ra.browser.automaticPictureInPictureRequests == 0, "and gets no video request too")
+        expect(evaluations() == 0 && ra.browser.automaticPictureInPictureRequests == 0, "the page was asked: no video request too")
         clock.advance(by: 30)
         manager.show(a, focus: false)
-        expect(evaluations() == 1 && ra.browser.lastParams.contains("documentPictureInPicture") && ra.browser.lastParams.contains("})(false)"),
-               "back on the call's tab, its window closes")
-        ra.browser.reply(to: "Runtime.evaluate", with: nil)
+        expect(calls() == 1 && ra.browser.lastParams == shown, "back on the call's tab, Chrome closes its window")
+        settle()
+        clock.advance(by: 2)
+        expect(calls() == 0, "once: the window was up long before")
         manager.show(b, focus: false)
         manager.show(a, focus: false)
-        expect(evaluations() == 0, "coming back again closes nothing: the window it opened is gone")
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("handler"))
+        expect(calls() == 1 && ra.browser.lastParams == hidden, "coming back again closes nothing: the window it opened is gone")
+        ra.browser.reply(to: "Cra.autoPictureInPicture", with: asked)
         await drainMainQueue()
-        expect(isolated() == 0, "back before the page answered: the handler isn't run")
+        expect(calls() == 1 && ra.browser.lastParams == shown, "back before Chromium answered: the window is closed")
+        settle()
+        clock.advance(by: 1)
+        expect(calls() == 1 && ra.browser.lastParams == shown, "and again a second later, in case it was still opening")
+        settle()
 
-        // Back right after the handler ran: a window still opening is closed as it opens.
+        // A Picture in Picture window this page already has stays when the user comes back.
         manager.show(b, focus: false)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("handler"))
-        await drainMainQueue()
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: nil)
-        manager.show(a, focus: false)
-        expect(evaluations() == 1 && ra.browser.lastParams.contains("})(true)"), "a window still opening is closed as it opens")
-        ra.browser.reply(to: "Runtime.evaluate", with: nil)
-
-        // A window the user opened from the call stays when they come back.
-        manager.show(b, focus: false)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("open"))
+        ra.browser.reply(to: "Cra.autoPictureInPicture", with: #"{"asked":false,"pictureInPicture":true}"#)
         await drainMainQueue()
         manager.show(a, focus: false)
-        expect(evaluations() == 0 && isolated() == 0 && ra.browser.automaticPictureInPictureRequests == 0, "a Picture in Picture already open is left alone")
+        expect(calls() == 0 && evaluations() == 0 && ra.browser.automaticPictureInPictureRequests == 0, "a Picture in Picture already open is left alone")
 
-        // The window going out of sight: a silent page runs its handler, but never gets the video
-        // request, which would send it the activation key.
+        // A page Chrome doesn't ask (no handler, no permission), or a Chromium without the method,
+        // gets the video request.
+        for reply in [notAsked, nil] {
+            manager.show(b, focus: false)
+            if let reply { ra.browser.reply(to: "Cra.autoPictureInPicture", with: reply) } else { ra.browser.fail("Cra.autoPictureInPicture", with: "not found") }
+            await drainMainQueue()
+            expect(evaluations() == 1 && ra.browser.lastParams.contains("})(true)"), "leaving its tab falls back to the video request")
+            ra.browser.reply(to: "Runtime.evaluate", with: #"{"result":{"type":"string","value":"none"}}"#)
+            await drainMainQueue()
+            manager.show(a, focus: false)
+        }
+
+        // The window going out of sight: a silent call is asked through Chrome, and never gets the
+        // video request, which would send the page the activation key.
         manager.windowVisibilityChanged(covered: true)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("none"))
+        ra.browser.reply(to: "Cra.autoPictureInPicture", with: notAsked)
         await drainMainQueue()
-        expect(evaluations() == 0, "a silent page without the handler gets no video request on an app switch")
+        expect(evaluations() == 0, "a silent call Chrome didn't ask gets no video request on an app switch")
         manager.windowVisibilityChanged(covered: false)
         manager.windowVisibilityChanged(covered: true)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: answer("handler"))
+        ra.browser.reply(to: "Cra.autoPictureInPicture", with: asked)
         await drainMainQueue()
-        expect(ra.browser.lastIsolatedParams.contains(#""userGesture":true"#), "a call whose window goes out of sight runs its handler")
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: nil)
+        clock.advance(by: 30)
         manager.windowVisibilityChanged(covered: false)
-        expect(evaluations() == 1 && ra.browser.lastParams.contains("documentPictureInPicture"), "the window back in sight closes the call's window")
-        ra.browser.reply(to: "Runtime.evaluate", with: nil)
+        expect(calls() == 1 && ra.browser.lastParams == shown, "the window back in sight closes the call's window")
+        settle()
+
+        ra.browser.isCapturingMedia = false
+        manager.show(b, focus: false)
+        expect(calls() == 0, "a page not using the camera or microphone isn't driven through Chrome")
+        manager.closeAll()
+    }
+
+    // promise: #33
+    /// The sidebar player in a Chromium tab: Chromium runs the page's media session handlers
+    /// (`Cra.mediaSession`, like Arc's media actions) and reports which it has, however early the
+    /// page registered them; a page without a play/pause handler has its media elements played or
+    /// paused.
+    @MainActor
+    private static func playerMediaSessionCase() async {
+        let store = SidebarStore()
+        let manager = BrowserManager(store: store, favicons: FaviconCache(), container: NSView())
+        let np = NowPlaying()
+        manager.nowPlaying = np
+        let a = store.createTab(url: "https://music.example.test/").id, b = store.createTab(url: "https://example.test/other").id
+        let ra = manager.ensureRuntime(for: a)!
+        manager.show(b, focus: false)
+        ra.browser.isAudible = true
+        manager.browser(ra.browser, didChangeAudible: true)
+        expect(ra.browser.replies.contains { $0.method == "Cra.mediaSession" } && ra.browser.lastParams == "{}",
+               "a page that starts playing is asked which media session actions it has")
+        ra.browser.reply(to: "Cra.mediaSession", with: #"{"actions":["play","pause","nexttrack"],"pictureInPicture":false}"#)
+        await drainMainQueue()
+        expect(np.entries.first?.hasNext == true && np.entries.first?.hasPrevious == false, "the card offers the track buttons the page answers")
+        ra.browser.replies.removeAll()
+
+        manager.performNowPlaying(a, .next)
+        expect(ra.browser.lastParams == #"{"action":"nexttrack"}"#, "next track runs the page's handler")
+        ra.browser.reply(to: "Cra.mediaSession", with: #"{"handled":true,"pictureInPicture":false}"#)
+        await drainMainQueue()
+        expect(!ra.browser.replies.contains { $0.method == "cra:Runtime.evaluate" }, "and nothing else")
+
+        manager.performNowPlaying(a, .togglePlayback)
+        expect(ra.browser.lastIsolatedParams.contains(#"(\"state\")"#), "play/pause first reads whether the page plays")
+        ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"playing"}}"#)
+        await drainMainQueue()
+        expect(ra.browser.lastParams == #"{"action":"pause"}"#, "a playing page is paused through its handler")
+        ra.browser.reply(to: "Cra.mediaSession", with: #"{"handled":true,"pictureInPicture":false}"#)
+        await drainMainQueue()
+        expect(np.entries.first?.playing == false && ra.browser.replies.isEmpty, "the card shows it paused")
+
+        manager.performNowPlaying(a, .togglePlayback)
+        ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"paused"}}"#)
+        await drainMainQueue()
+        ra.browser.reply(to: "Cra.mediaSession", with: #"{"handled":false,"pictureInPicture":false}"#)
+        await drainMainQueue()
+        expect(ra.browser.lastIsolatedParams.contains(#"(\"play\")"#), "without a handler the page's media elements play")
+        ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"playing"}}"#)
+        await drainMainQueue()
+        expect(np.entries.first?.playing == true, "the card shows it playing")
         manager.closeAll()
     }
 
@@ -830,15 +991,11 @@ enum BrowserManagerLifecycleTests {
         manager.show(a, focus: false)
 
         manager.windowVisibilityChanged(covered: true)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"none"}}"#)
-        await drainMainQueue()
-        expect(!ra.browser.replies.contains { $0.method == "Runtime.evaluate" }, "a covered window doesn't send a silent page the video request")
+        expect(ra.browser.replies.isEmpty, "a covered window doesn't ask a silent page")
         manager.windowVisibilityChanged(covered: false)
 
         ra.browser.isAudible = true
         manager.windowVisibilityChanged(covered: true)
-        ra.browser.reply(to: "cra:Runtime.evaluate", with: #"{"result":{"type":"string","value":"none"}}"#)
-        await drainMainQueue()
         expect(ra.browser.lastParams.contains(#""userGesture":true"#) && ra.browser.lastParams.contains("})(true)"),
                "a covered window asks its playing page for automatic Picture in Picture")
         ra.browser.reply(to: "Runtime.evaluate", with: #"{"result":{"type":"string","value":"ok"}}"#)
@@ -862,6 +1019,7 @@ enum BrowserManagerLifecycleTests {
         manager.closeAll()
     }
 
+    // promise: #46 #84
     /// A woken page's toolbar starts in the colour its page last reported (Arc, #46), and a tab
     /// coming on screen asks its page for its background again unless the page is still loading.
     @MainActor
@@ -910,7 +1068,10 @@ enum BrowserManagerLifecycleTests {
         manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
         clock.advance(by: 60)
         expect(rt.browser.loads.count == ExtensionPageRetry.attempts, "after the last attempt the error page stays")
+        ExtensionStore.shared.webStoreProfiles = []
         manager.browser(rt.browser, didFinishLoadingURL: url, title: "Options", statusCode: 200)
+        expect(ExtensionStore.shared.webStoreProfiles == ["Default"],
+               "a loaded page lets its profile's imported Web Store copies install from the store (#203)")
         manager.browser(rt.browser, didFailLoadingURL: url, errorCode: -20)
         clock.advance(by: 0.25)
         expect(rt.browser.loads.count == ExtensionPageRetry.attempts + 1, "a page that loaded starts counting again")
@@ -966,4 +1127,10 @@ private final class Observer: BrowserManagerDelegate {
         activatedByPage.append(byPage)
     }
     func browserManagerOpensPeek(url: String, fromTab tabID: UUID, pageURL: String, shiftClick: Bool, newTab: Bool) -> Bool { false }
+    var openedLinks: [(url: String, kind: CraLinkWindow, space: UUID?, incognito: Bool)] = []
+    var capturedImages: [(point: NSPoint, tab: UUID)] = []
+    func browserManagerOpenLink(_ url: String, in kind: CraLinkWindow, space: UUID?, fromIncognito: Bool) {
+        openedLinks.append((url, kind, space, fromIncognito))
+    }
+    func browserManagerCaptureImage(at point: NSPoint, tabID: UUID) { capturedImages.append((point, tabID)) }
 }

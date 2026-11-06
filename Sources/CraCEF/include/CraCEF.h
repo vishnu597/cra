@@ -13,6 +13,13 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
     CraDownloadStateInterrupted = 3,
 };
 
+/// Where a page's context menu opens a link that isn't for a tab.
+typedef NS_ENUM(NSInteger, CraLinkWindow) {
+    CraLinkWindowNew = 0,
+    CraLinkWindowIncognito = 1,
+    CraLinkWindowLittle = 2,
+};
+
 @interface CraDownloadInfo : NSObject
 @property (nonatomic) uint32_t identifier;
 @property (nonatomic, copy) NSString *url;
@@ -81,6 +88,11 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 - (void)browserDidReceiveFocus:(CraBrowser *)browser;
 - (void)browserDidClose:(CraBrowser *)browser;
 @optional
+/// The page's context menu: Open Link in New Window, Little Window or Incognito Window.
+- (void)browser:(CraBrowser *)browser requestsWindowWithURL:(NSString *)url kind:(CraLinkWindow)kind;
+/// The page's context menu on an image: Capture Image… at `point` (page points from the top
+/// left). Without it the menu has no such item.
+- (void)browser:(CraBrowser *)browser requestsCaptureOfImageAt:(NSPoint)point;
 /// A video of this page entered or left Chromium's Picture in Picture window
 /// (whether the page, the user or Cra asked for it).
 - (void)browser:(CraBrowser *)browser didChangePictureInPicture:(BOOL)active;
@@ -196,7 +208,7 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 @property (nonatomic, readonly) BOOL isInPictureInPicture;
 /// YES while that video is playing.
 @property (nonatomic, readonly) BOOL isPictureInPicturePlaying;
-/// The page is using the camera or microphone (Chromium's media access state).
+/// The page is using the camera or microphone, as Chrome's tab recording indicator counts it.
 @property (nonatomic, readonly) BOOL isCapturingMedia;
 /// The page is playing sound, in any frame (Chromium's audible state). Like Chrome's tab
 /// speaker it stays YES for 2 s after the page goes quiet. Muting the tab doesn't change it.
@@ -239,8 +251,6 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// DevTools) instead of embedded Alloy views. Set before any browser exists.
 + (void)setChromeHosting:(BOOL)enabled;
 + (BOOL)chromeHosting;
-/// Page context menus are shown by Cra, not Chrome (pages embedded in their cards).
-+ (void)setOwnContextMenus:(BOOL)enabled;
 /// The two "open link" items at the top of a page's context menu, in order: their titles and
 /// whether each opens its tab in the background. Exactly two; read when a menu opens.
 + (void)setLinkMenuTitles:(NSArray<NSString *> *)titles opensInBackground:(NSArray<NSNumber *> *)background;
@@ -312,6 +322,11 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 /// ("Default", "Profile <id>"; nil off the record); Chrome's own window for it is closed.
 /// Popup-type windows (windows.create({type: "popup"})) stay Chrome's windows.
 + (void)setStrayPageHandler:(void (^)(NSString *url, NSString * _Nullable profile))handler;
+/// A new tab or window a page asks for (target=_blank, window.open) at another app's address
+/// (spotify:): the handler gets the page's browser, the address and whether a click asked, and
+/// returns YES when it took it (Cra's "Open <app>?"); then no tab opens (GitHub #207). On the
+/// main thread, before Peek and the delegate's popupHostForURL.
++ (void)setAppLinkHandler:(BOOL (^)(CraBrowser *browser, NSString *url, BOOL userGesture))handler;
 /// Where a page's download is saved (GitHub #190): the handler gets the browser's profile folder
 /// (nil for Default and off the record) and the file name Chromium suggests, and calls `completion`
 /// on the main thread with the full path to save to, or nil to cancel the download (a save panel
@@ -327,6 +342,9 @@ typedef NS_ENUM(NSInteger, CraDownloadState) {
 + (BOOL)isExtensionWindow:(NSWindow *)window;
 /// YES for the Chrome-style window hosting one of Cra's own browsers.
 + (BOOL)isPageWindow:(NSWindow *)window;
+/// Lets one of Chromium's Picture in Picture windows show over another app's full-screen Space,
+/// as Arc's non-activating PiP panel does (GitHub #206). Chromium only makes it join every desktop Space.
++ (void)floatOverFullScreenSpaces:(NSWindow *)window;
 + (NSString *)chromiumVersion;
 + (NSString *)cefVersion;
 /// YES when the browser-level DevTools pipe is up (it needs fds 3/4 free at start-up).

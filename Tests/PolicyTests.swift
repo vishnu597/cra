@@ -14,6 +14,9 @@ enum PolicyTests {
         print("Policies: \(checks) checks passed")
     }
 
+    /// #41: a click never reaches an extension turned off in chrome://extensions (Chromium crashed
+    /// on it). #22: nor one the page's profile doesn't have; that click does nothing.
+    // promise: #22 #41
     private static func extensionLaunch() {
         typealias E = ExtensionLaunch.Extension
         let popup = E(id: "pop", popupPath: "popup.html", optionsPath: "options.html")

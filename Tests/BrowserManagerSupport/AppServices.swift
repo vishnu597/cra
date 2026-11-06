@@ -37,6 +37,7 @@ enum TestRoot { case today }
         if let title { items[id]?.tab?.savedTitle = title }
     }
     func setThemeColor(_ id: UUID, _ hex: String) { items[id]?.tab?.themeColor = hex }
+    func setFaviconKey(_ id: UUID, _ key: String) { items[id]?.tab?.faviconKey = key }
     func recordVisit(url: String, title: String) {}
     func clearHistory(_ range: BrowsingDataClear.Range) {}
     func selectTab(_ id: UUID, window: UUID?) {}
@@ -48,6 +49,10 @@ enum TestRoot { case today }
         items[item.id] = item
         return item
     }
+    /// CraCore's PeekTabs.openLinkTab, without the Today placement (these tests don't read it).
+    func openLinkTab(_ url: String, from source: UUID?, inBackground background: Bool, window: UUID? = nil) -> TestItem {
+        createTab(url: url, select: !background, window: window)
+    }
 }
 /// The extensions turned on in the Default profile.
 @MainActor final class ExtensionStore {
@@ -56,8 +61,15 @@ enum TestRoot { case today }
     var entries: [Entry] = []
     func entries(inProfile name: String) -> [Entry] { entries }
     func proxyLine(inProfile name: String) -> String { "not set by an extension" }
+    /// The profiles a loaded page asked for Web Store installs in (#203), in order.
+    var webStoreProfiles: [String] = []
+    func installFromWebStore(using browser: CraBrowser, profile: String) { webStoreProfiles.append(profile) }
 }
-enum FaviconKey { static func key(for url: String) -> String? { url } }
+enum FaviconKey {
+    static func key(for url: String) -> String? { url }
+    static func key(site: String, iconURL: String) -> String { site + "#" + iconURL }
+    static func siteKey(of key: String) -> String { key }
+}
 enum BrowsingDataClear {
     enum Range { case allTime }
     static func historyRange(messageJSON: String, now: Date) -> Range? { nil }

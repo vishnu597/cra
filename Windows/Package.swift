@@ -42,7 +42,8 @@ let package = Package(
     targets: [
         // C++ bridge to CEF with a plain C surface (include/CraCEFWin.h), the Windows
         // counterpart of Sources/CraCEF, and the few Win32 helpers the shell needs (images
-        // from WIC and Explorer, hiding Chrome's download animation, the clipboard, Share).
+        // from WIC and Explorer, hiding Chrome's download animation, the clipboard, Share, the
+        // Peek's veil and buttons).
         .target(
             name: "CraCEFWin",
             path: "Sources/CraCEFWin",
@@ -59,6 +60,8 @@ let package = Package(
                 .linkedLibrary("windowscodecs"),  // WIC (favicons, file thumbnails)
                 .linkedLibrary("crypt32"),  // certificate stores (the site control center's certificate)
                 .linkedLibrary("runtimeobject"),  // RoGetActivationFactory, HSTRINGs (the Share window)
+                .linkedLibrary("gdiplus"),  // the Peek's round buttons (CraOverlay.cpp)
+                .linkedLibrary("advapi32"),  // the registry (the round buttons' tips follow the apps' theme)
             ]
         ),
         // Every Chromium subprocess (renderer, GPU, utility) runs this executable.

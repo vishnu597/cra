@@ -40,6 +40,9 @@ final class SidebarView {
     /// Controls a handler reaches weakly: a WinRT control made in Swift is only a wrapper, freed
     /// (and its weak references nil) once Swift lets go of it, however long XAML shows it.
     private var kept: [AnyObject] = []
+    /// Arc badges the tab a Peek came from with the peeked page's favicon (modalIcon), at the
+    /// row's end. Set by the browser window, which builds the sidebar again.
+    var peekBadge: (tabID: UUID, iconKey: String?)?
 
     /// Emoji a new space picks from, in turn.
     private static let spaceEmoji = ["🌱", "💼", "🎮", "📚", "🎨", "🏠", "✈️", "🧪"]
@@ -186,7 +189,7 @@ final class SidebarView {
             let developer = item.tab.map { store.settings.isDeveloperMode(url: $0.url) } ?? false
             appendRow(icon: .favicon(item.tab?.iconKey), title: item.displayTitle, subtitle: item.tab?.sidebarSubtitle(developerMode: developer),
                       depth: depth, selected: selected, ring: developer && selected, unread: item.isUnread, closable: closable,
-                      menu: tabMenu(item)) { [weak self] in
+                      peek: peekBadge?.tabID == item.id ? .favicon(peekBadge?.iconKey) : nil, menu: tabMenu(item)) { [weak self] in
                 self?.select(item.id)
             }
         }
@@ -241,7 +244,8 @@ final class SidebarView {
     }
 
     private func appendRow(icon: RowIcon, title: String, subtitle: String? = nil, depth: Int, selected: Bool, ring: Bool = false,
-                           unread: Bool, closable: UUID?, menu: MenuFlyout?, _ action: @escaping @MainActor () -> Void) {
+                           unread: Bool, closable: UUID?, peek: RowIcon? = nil, menu: MenuFlyout?,
+                           _ action: @escaping @MainActor () -> Void) {
         let row = Grid()
         row.columnDefinitions.append(UI.column(UI.star))
         row.columnDefinitions.append(UI.column(UI.auto))
@@ -266,9 +270,24 @@ final class SidebarView {
             label.children.append(name)
         }
 
-        let pick = UI.button(label, fill: selected ? palette.selected : nil, action)
+        // The Peek's badge sits at the end of the row's own pill (Arc's modalIcon).
+        var content: FrameworkElement = label
+        if let peek {
+            let inside = Grid()
+            inside.columnDefinitions.append(UI.column(UI.star))
+            inside.columnDefinitions.append(UI.column(UI.auto))
+            inside.children.append(label)
+            let badge = rowIcon(peek)
+            badge.verticalAlignment = .center
+            badge.margin = Thickness(left: 6, top: 0, right: 0, bottom: 0)
+            try? AutomationProperties.setName(badge, "Peek")
+            inside.children.append(badge)
+            try? Grid.setColumn(badge, 1)
+            content = inside
+        }
+        let pick = UI.button(content, fill: selected ? palette.selected : nil, action)
         pick.horizontalAlignment = .stretch
-        pick.horizontalContentAlignment = .left
+        pick.horizontalContentAlignment = peek == nil ? .left : .stretch
         if let menu { pick.contextFlyout = menu }
         row.children.append(pick)
         try? Grid.setColumn(pick, 0)

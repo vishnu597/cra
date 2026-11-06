@@ -155,6 +155,19 @@ in Cra's own windows too. CraCore's `LittleWindowLayout` holds the sizes, the pl
 monitor under the pointer, the colours and the space and profile rules, which the Mac uses too.
 Cra stays open while a Little Window is, after its last browser window closes.
 
+Peek is a Little Window in peek mode (as on the Mac): a link to another site from a pinned tab or
+favorite (or any tab, or a Shift-click, per Settings ▸ Tabs ▸ Links; CraCore's `PeekTrigger`)
+opens over the browser window instead of loading in the tab. The bridge asks first from
+OnBeforeBrowse, OnBeforePopup and OnOpenURLFromTab (`opens_peek`). The card is a HostWindow owned
+by the browser window, with a border and no title bar, so Windows 11 rounds and shadows it; its
+island holds the page-coloured bar (`Peek/PeekBarView.swift`, `PeekLayout.BarColors`). Owned
+layered windows from `CraOverlay.cpp` do the rest (`Peek/PeekOverlays.swift`): a catcher over the
+client area, a veil in the window's background colour that fades the page to 28 %, and Close,
+Expand and Add To Split drawn with GDI+. A click past the card, Escape the page didn't use or
+Ctrl+W closes it; Ctrl+O and Expand move the page into a tab; Add To Split joins the tab under it
+(`SidebarStore.peekSplitTabs`); Ctrl+Shift+T brings back a Peek closed after the last archived
+tab. The card growing out of the link (#204) is still the Mac's alone.
+
 [`Windows/PARITY.md`](../Windows/PARITY.md) lists every Mac feature, what Windows has of it and the
 CraCore code both apps share; `Windows/scripts/parity.py` keeps it in step with the Mac app and
 upstream (see "Keeping up with upstream").

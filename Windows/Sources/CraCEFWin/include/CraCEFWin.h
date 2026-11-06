@@ -78,6 +78,35 @@ int cra_popup_menu(uintptr_t owner, const char *const *titles, size_t count);
 /// `out` (UTF-8, `capacity` bytes). 1 when a path was chosen. Modal.
 int cra_save_png_dialog(uintptr_t owner, const char *title, const char *file_name, char *out, size_t capacity);
 
+// MARK: - Overlays
+
+/// The Peek's windows beside its card (CraOverlay.cpp). Each is a borderless window owned by
+/// `owner` (an HWND), so it stays over that window, never takes the front and isn't on the taskbar.
+typedef void (*CraOverlayClicked)(void *context);
+typedef void (*CraButtonClicked)(void *context, int index);
+
+/// A window filled with `rgb` (0xRRGGBB) at `alpha` (1–255, never 0: a press of any mouse button
+/// on it calls `clicked`). The Peek's veil over the page and its click catcher over the sidebar.
+/// Shown by cra_overlay_place.
+uintptr_t cra_overlay_create(uintptr_t owner, uint32_t rgb, int alpha, void *context, CraOverlayClicked clicked);
+void cra_overlay_set_alpha(uintptr_t overlay, int alpha);
+/// Screen pixels; `insert_after` the window it goes just below (0: in front of its owner's other
+/// windows), as SetWindowPos takes it.
+void cra_overlay_place(uintptr_t overlay, int x, int y, int width, int height, uintptr_t insert_after);
+void cra_overlay_destroy(uintptr_t overlay);
+
+/// Round buttons on a transparent window (the Peek's Close, Expand and Add To Split): `glyphs[i]`
+/// is button i's Segoe Fluent Icons character (UTF-8), `tips[i]` its tooltip. A click on one
+/// calls `clicked` with its index, which may destroy the window.
+uintptr_t cra_round_buttons_create(uintptr_t owner, const char *const *glyphs, const char *const *tips, size_t count, void *context,
+                                   CraButtonClicked clicked);
+/// The window at `x, y, width, height` (screen pixels) and each button at `rects` (x, y, width,
+/// height a button, physical pixels in the window), drawn in `fill` with `ink` glyphs (0xRRGGBB)
+/// at `scale` pixels a DIP; `insert_after` as for cra_overlay_place.
+void cra_round_buttons_place(uintptr_t window, int x, int y, int width, int height, const int32_t *rects, size_t count, uint32_t fill,
+                             uint32_t ink, double scale, uintptr_t insert_after);
+void cra_round_buttons_destroy(uintptr_t window);
+
 // MARK: - Images
 
 /// A decoded image: premultiplied BGRA, top-down, `width * 4` bytes a row (a XAML
@@ -177,6 +206,10 @@ typedef struct CraBrowserCallbacks {
     void (*fullscreen_changed)(void *context, int fullscreen);
     /// Ctrl-click, middle-click and similar: open a plain new tab.
     void (*new_tab_requested)(void *context, const char *url, int background);
+    /// A link the user clicked that may open in a Peek instead (Arc): one the page navigates to
+    /// (`new_tab` and `shift_click` 0), a target=_blank one (`new_tab` 1), a Shift-click
+    /// (`shift_click` 1). Return nonzero when Cra opened it; the page then doesn't.
+    int (*opens_peek)(void *context, const char *url, int shift_click, int new_tab);
     /// window.open / target=_blank: return a popup host (a browser made with a NULL url) so
     /// the popup keeps its opener, or NULL to block it.
     CraBrowser *(*popup_host_requested)(void *context, const char *url, int background);

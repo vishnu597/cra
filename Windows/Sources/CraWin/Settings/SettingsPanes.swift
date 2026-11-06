@@ -11,7 +11,7 @@ struct SettingsPaneContent {
 }
 
 /// The panes the Windows app has so far (SettingsPane.windowsPanes), with the Mac's wording.
-/// Rows wait for their feature: Tabs has no Links group until Little Windows and Peek, General no
+/// Rows wait for their feature: Tabs' Links group has no links from other apps yet, General no
 /// default browser until Cra can be one.
 @MainActor
 enum SettingsPanes {
@@ -115,10 +115,17 @@ enum SettingsPanes {
         cleanup.children.append(duration)
         form.group("Tab Cleanup:", [cleanup])
         // Arc's Links pane: "Open Little Arc when I press ⌥⌘N" (#195), New Little Window's key
-        // from any app. The Mac's other link settings come with links from other apps and Peek.
+        // from any app, and Peek's. The Mac's other link settings come with links from other apps.
         let littleKey = WinKeyBindings.shared.action("newLittleWindow")?.primary?.windowsDisplay ?? "Ctrl+Alt+N"
+        let everyTab = checkbox("In every tab, not only Favorites and Pinned tabs", \.peekInEveryTab)
+        everyTab.margin = Thickness(left: 20, top: 0, right: 0, bottom: 0)
+        everyTab.isEnabled = store.settings.peekLinksToOtherSites
+        syncs.append { everyTab.isEnabled = store.settings.peekLinksToOtherSites }
         form.group("Links:", [
             checkbox("Open a Little Window when I press \(littleKey) in any app", \.littleWindowShortcutEverywhere),
+            checkbox("Open a Peek window when clicking on links to other sites", \.peekLinksToOtherSites),
+            everyTab,
+            checkbox("Open a Peek window when clicking on links with Shift held", \.peekOnShiftClick),
         ])
 
         return SettingsPaneContent(element: form.grid) { for sync in syncs { sync() } }

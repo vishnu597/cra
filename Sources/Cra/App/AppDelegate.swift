@@ -54,7 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         installURLEventHandler()
         PerfCEF.install(app: self)
         CraCEFRuntime.setChromeHosting(store.settings.chromeEngine)
-        CraCEFRuntime.setOwnContextMenus(EmbeddedPages.isEnabled)
         CraCEFRuntime.setDocumentStartScript(PageScript.mainWorld, isolatedScript: PageScript.isolatedWorld, world: PageScript.world)
         startContentBlocking()
         observeGlobalShortcut()
@@ -111,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let hasNewExtension = !Set(installed).isSubset(of: welcomed)
         try? JSONEncoder().encode(installed.sorted()).write(to: welcomedFile, options: .atomic)
         DownloadDestinations.install(store: store)
+        AppLinkPrompt.install()
         CraCEFRuntime.setStrayPageHandler { [weak self] url, profile in
             Task { @MainActor in
                 guard let self else { return }
@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let settings = store.settings
         for w in mainWindows {
             w.browsers.freezeIdleTabs(hiddenLongerThan: freezeAfter)
+            w.releaseHiddenFrames(now: composition.clock.now)
             if settings.tabSleepTimerEnabled { w.browsers.sleepIdleTabs(.timer(settings.tabSleepAfter)) }
         }
         sweepForMemoryPressure(PerfSystemSample.pressure(level: PerfSystemSampler.pressureLevel()))
@@ -306,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if store.settings.warnBeforeQuitting, !isRelaunching, !confirmQuit() { return .terminateCancel }
         // Little Windows are not in the sidebar; keep their pages in the Library.
         for w in littleWindows { w.archivePage() }
+        for w in mainWindows { w.saveFrameNow() }
         store.saveAll()
         return .terminateNow
     }
@@ -315,6 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Sparkle quits Cra to install an update and starts it again: no quit confirmation.
     func prepareForUpdateRelaunch() {
         isRelaunching = true
+        for w in mainWindows { w.saveFrameNow() }
         store.saveAll()
     }
 
@@ -387,7 +390,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// A page an extension opens as a tab. Its options page stays one tab, as in Chrome and
     /// Arc: opening it again selects the open one (GitHub #38).
     /// `profile` is the Chromium profile folder whose extension asked, nil for the focused page's.
-    func openExtensionPage(_ url: String, window: UUID, profile: String? = nil) {
+    /// `singleton`: an open tab with the page in that profile is selected instead of a new one.
+    func openExtensionPage(_ url: String, window: UUID, profile: String? = nil, singleton: Bool = false) {
         // Extensions run in the normal profile, so Chrome opens their pages in a normal window:
         // in an incognito one the page can't load (#107). Incognito is Default's off the record.
         var window = window, profile = profile
@@ -408,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let target = ExtensionPagePlacement.target(
             focused: space(store.focusedSpaceID(window: window)),
             spaces: store.orderedSpaces.filter { !store.isIncognito(space: $0.id) }.map { space($0.id) },
-            profile: profile, openTabs: open, singleton: ExtensionStore.shared.optionsPageOwner(url) != nil)
+            profile: profile, openTabs: open, singleton: singleton || ExtensionStore.shared.optionsPageOwner(url) != nil)
         switch target {
         case .select(let tab): store.selectTab(tab, window: window)
         case .create(let sid): store.createTab(url: url, in: sid, select: true, window: window)
@@ -443,11 +447,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Arc's New Window (⌘N): another window on the space in use, cascaded from the
     /// current one, with the command bar up. With every window closed it brings the
     /// hidden one back instead. New Incognito Window (⇧⌘N) always opens a new one.
-    func openNewWindow(incognito: Bool = false) {
+    /// With `url` (a page's Open Link in New Window) the window opens on that page instead.
+    func openNewWindow(incognito: Bool = false, url: String? = nil) {
         if !incognito, let hidden = mainWindows.first(where: { !$0.isIncognito }),
            !mainWindows.contains(where: { $0.window?.isVisible == true || $0.window?.isMiniaturized == true }) {
             hidden.showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
+            if let url { store.createTab(url: url, select: true, window: hidden.windowID) }
             return
         }
         var frame: String?
@@ -465,7 +471,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         store.activeWindowID = c.windowID
         c.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        c.openCommandBar(.newTab)
+        if let url { store.createTab(url: url, select: true, window: c.windowID) } else { c.openCommandBar(.newTab) }
+    }
+
+    /// A page's context menu: Arc's Open Link in New Window, Little Arc (Little Window here)
+    /// and Incognito Window. From an incognito page a new window is incognito too, as in Chrome,
+    /// and nothing opens in a Little Window, whose pages load in the normal profile.
+    func openLink(_ url: String, in kind: CraLinkWindow, space: UUID?, fromIncognito: Bool) {
+        // cra:// is Cra's scripting scheme; a page must not drive it.
+        if url.lowercased().hasPrefix("cra:") { return }
+        switch kind {
+        case .little where !fromIncognito: openLittleWindow(url: url, space: space)
+        case .incognito: openNewWindow(incognito: true, url: url)
+        default: openNewWindow(incognito: fromIncognito, url: url)
+        }
     }
 
     /// Closing one of several windows ends it; the last normal one stays around hidden,
@@ -538,7 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         littleWindows.append(w)
         // Arc badges the tab the Peek came from with the peeked page's favicon (modalIcon).
         parent.sidebarUI.peekBadge = tabID.map { .init(tabID: $0, iconKey: FaviconKey.key(for: url)) }
-        w.showAsPeek()
+        w.showAsPeek(fromTab: tabID)
     }
 
     func removeLittleWindow(_ w: LittleWindowController) {
@@ -675,6 +694,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             // Scenario hooks (scripts/scenario.sh): what a journey needs without a pointer.
             if dict["checkStore"] != nil { logSidebarProblems(); return }
+            // releaseFrames: hidden tabs' page windows release Chromium's evicted frames now (#195).
+            if dict["releaseFrames"] != nil { for w in mainWindows { w.releaseHiddenFrames(now: composition.clock.now) }; return }
             // A main-thread stall of this many milliseconds, for the performance recorder's tests.
             if let ms = dict["stall"].flatMap(Double.init) { usleep(useconds_t(min(max(ms, 0), 30_000) * 1000)); return }
             if let path = dict["perfReport"] {
@@ -704,6 +725,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // themes switch halves without changing the Mac's own setting (#155).
             if let v = dict["systemAppearance"] {
                 NSApp.appearance = v == "system" ? nil : NSAppearance(named: v == "dark" ? .darkAqua : .aqua)
+                return
+            }
+            // themeShown=<label>: which half each window draws now (the space's theme, the window content
+            // and the sidebar), without redrawing first, so a missed macOS switch shows (#155).
+            if let label = dict["themeShown"] {
+                func sidebar(in v: NSView) -> SidebarView? {
+                    v as? SidebarView ?? v.subviews.lazy.compactMap { sidebar(in: $0) }.first
+                }
+                func side(_ dark: Bool) -> String { dark ? "dark" : "light" }
+                for m in mainWindows {
+                    let space = m.focusedSpace
+                    let drawn = m.window?.contentView.flatMap(sidebar(in:)).map { side($0.palette.isDark) } ?? "-"
+                    NSLog("Cra theme shown %@: space=%@ follows=%d theme=%@ shell=%@ sidebar=%@", label, space.title, space.theme.followsSystem ? 1 : 0,
+                          side(space.theme.shown.isDark), side(m.shell.isDarkTheme), drawn)
+                }
                 return
             }
             if dict["relaunch"] != nil { relaunch(); return }
@@ -1074,7 +1110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "reopenClosedTab":
             guard !main.isIncognito else { break }  // incognito tabs leave nothing to restore
             // Arc: a Peek closed after the last archived tab comes back, over the tab it came from.
-            if let peek = main.closedPeek, peek.at > store.archive.first?.archivedAt ?? .distantPast {
+            if let peek = main.closedPeek, PeekTrigger.reopensClosedPeek(closedAt: peek.at, lastArchivedAt: store.archive.first?.archivedAt) {
                 main.closedPeek = nil
                 if let id = peek.tabID, store.item(id) != nil { store.selectTab(id, window: main.windowID) }
                 openPeek(url: peek.url, over: main, fromTab: peek.tabID)
@@ -1151,6 +1187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case "rebuildArcProfiles": ArcProfileRebuilder.run(store: store) { [weak self] in self?.relaunch() }
         case "setDefaultBrowser": Task { await SystemIntegration.shared.makeDefaultBrowser() }
         case "checkForUpdates": SoftwareUpdater.shared.checkForUpdates(nil)
+        case "languageSettings":
+            // Chromium's page edits the profile of the space it opens in.
+            let normal = useNormalWindow()
+            _ = store.createTab(url: BrowserLanguages.settingsPage, select: true)
+            normal.showWindow(nil)
         case "clearBrowsingData":
             // Chrome's dialog, in a normal window: what it deletes from history leaves the command bar too.
             let normal = useNormalWindow()
@@ -1207,6 +1248,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     self.settingsWindow?.close()
                     self.main.showWindow(nil)
                 },
+                openProfilePage: { [weak self] url, profileID in
+                    guard let self else { return }
+                    let window = self.useNormalWindow()
+                    self.openExtensionPage(url, window: window.windowID,
+                                           profile: self.store.profile(profileID)?.directoryName ?? "Default", singleton: true)
+                    self.settingsWindow?.close()
+                    window.showWindow(nil)
+                },
                 exportDiagnostics: { [weak self] in self?.exportDiagnostics() },
                 newProfile: { [weak self] in
                     guard let self, let w = self.settingsWindow else { return }
@@ -1216,6 +1265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             settingsController = c
             settingsWindow = c.window
         }
+        settingsController?.didShow()
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
@@ -1349,7 +1399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                              ("Report an Issue…", "https://github.com/VictorKildahl/cra/issues"), ("Support Cra…", "https://crabrowser.app/support")] {
             let link = NSMenuItem(title: title, action: #selector(openHelpLink(_:)), keyEquivalent: "")
             link.target = self
-            link.representedObject = url
+            link.representedObject = SiteLinks.tagged(url, from: .helpMenu)
             help.addItem(link)
         }
         help.addItem(.separator())

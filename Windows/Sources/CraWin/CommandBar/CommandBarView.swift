@@ -147,6 +147,7 @@ final class CommandBarView {
             switch scope {
             case .site(let site): result = engine.suggestions(for: newQuery, in: site)
             case .tabs: result = engine.suggestions(for: newQuery, inTabsOf: store.focusedSpaceID(window: windowID), currentTabID: store.selectedTabID(window: windowID))
+            case .actions: result = engine.suggestions(forActionsMatching: newQuery, currentTabID: store.selectedTabID(window: windowID))
             }
             render()
             return
@@ -454,7 +455,8 @@ final class CommandBarView {
                 pill.background = UI.brush(space.accent ?? space.colors.first ?? "#5C6BC0")
             }
         }
-        let offered = scope == nil && !previewing ? result.scope : nil
+        // Arc shows no hint for the actions Tab offers on the empty field.
+        let offered = scope == nil && !previewing && result.scope != .actions ? result.scope : nil
         hint.visibility = offered == nil ? .collapsed : .visible
         if let offered { hintLabel.text = "Search \(offered.name)" }
         showLeading(leadingGlyph())
@@ -479,7 +481,9 @@ final class CommandBarView {
         let untouched = !previewing && (query.isEmpty || query == openedPrefill)
         let row = result.items.indices.contains(selectedIndex) ? result.items[selectedIndex] : nil
         return CommandBarGlyph.resolve(
-            editingURL: mode == .editURL && openedPrefill != nil, untouched: untouched, scoped: scope != nil,
+            editingURL: mode == .editURL && openedPrefill != nil && scope == nil, untouched: untouched,
+            // Actions run the row, not a search: Arc shows the row's glyph once something is typed.
+            scoped: scope != nil && scope != .actions,
             pageFaviconKey: openedPrefill.flatMap(FaviconKey.key(for:)),
             row: row.map { (faviconKey: $0.faviconKey, symbol: WinGlyph.symbol(for: $0)) },
             hasFavicon: { [favicons] in favicons.has($0) })

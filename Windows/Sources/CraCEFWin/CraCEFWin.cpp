@@ -806,6 +806,13 @@ public:
         CEF_REQUIRE_UI_THREAD();
         CraBrowser *o = owner_;
         if (!o || o->close_requested || !o->callbacks.popup_host_requested) return true;
+        // A target=_blank link the user clicked (Shift-clicked: a new window) may open in a
+        // Peek; window.open with features (a sign-in popup) is CEF_WOD_NEW_POPUP and stays one.
+        if (user_gesture && o->callbacks.opens_peek &&
+            (target_disposition == CEF_WOD_NEW_FOREGROUND_TAB || target_disposition == CEF_WOD_NEW_WINDOW) &&
+            o->callbacks.opens_peek(o->callbacks.context, target_url.ToString().c_str(), target_disposition == CEF_WOD_NEW_WINDOW ? 1 : 0,
+                                    target_disposition == CEF_WOD_NEW_FOREGROUND_TAB ? 1 : 0))
+            return true;
         bool background = target_disposition == CEF_WOD_NEW_BACKGROUND_TAB;
         CraBrowser *host = o->callbacks.popup_host_requested(o->callbacks.context, target_url.ToString().c_str(),
                                                              background ? 1 : 0);
@@ -979,9 +986,24 @@ public:
 
     // Request -------------------------------------------------------------
 
+    /// A link the user clicked in the page itself: Arc may open it in a Peek (another host's link
+    /// from a pinned tab) instead of loading it here.
+    bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request, bool user_gesture,
+                        bool is_redirect) override {
+        CraBrowser *o = Live();
+        if (!o || !frame->IsMain() || !user_gesture || is_redirect || !o->callbacks.opens_peek) return false;
+        cef_transition_type_t tt = request->GetTransitionType();
+        if ((tt & TT_SOURCE_MASK) != TT_LINK || (tt & TT_FORWARD_BACK_FLAG)) return false;
+        return o->callbacks.opens_peek(o->callbacks.context, request->GetURL().ToString().c_str(), 0, 0) != 0;
+    }
+
     bool OnOpenURLFromTab(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString &target_url,
                           WindowOpenDisposition target_disposition, bool user_gesture) override {
         CraBrowser *o = Live();
+        // Shift-click (Chrome: a new window).
+        if (o && user_gesture && target_disposition == CEF_WOD_NEW_WINDOW && o->callbacks.opens_peek &&
+            o->callbacks.opens_peek(o->callbacks.context, target_url.ToString().c_str(), 1, 0))
+            return true;
         if (!o || !o->callbacks.new_tab_requested) return false;
         bool background = target_disposition == CEF_WOD_NEW_BACKGROUND_TAB;
         o->callbacks.new_tab_requested(o->callbacks.context, target_url.ToString().c_str(), background ? 1 : 0);

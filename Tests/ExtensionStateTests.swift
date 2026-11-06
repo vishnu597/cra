@@ -56,6 +56,92 @@ enum ExtensionStateTests {
               "a just-loaded unpacked extension: on, localized name, its own folder")
         check(fromLive.first { $0.id == "store" }?.folder.path == store.path, "a relative path sits in the profile's Extensions")
         check(ExtensionImporter.disabledIDs(settings: live) == off, "live disabled IDs match the files'")
+
+        // Settings must show extension descriptions, not manifest message keys (1Password and
+        // LanguageTool). An unavailable optional description is hidden; names retain their fallback.
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/LocalizedExtension")
+        let localizedFolder = profile.appendingPathComponent("localized")
+        try fm.copyItem(at: fixture, to: localizedFolder)
+        let manifestData = try Data(contentsOf: localizedFolder.appendingPathComponent("manifest.json"))
+        let manifest = try JSONSerialization.jsonObject(with: manifestData) as! [String: Any]
+        check(ExtensionImporter.localizedDescription(manifest: manifest, folder: localizedFolder) == "Passwörter sicher verwalten.",
+              "the actual fixture manifest resolves its description for Settings")
+        func messages(_ locale: String, _ contents: String) throws {
+            let dir = localizedFolder.appendingPathComponent("_locales/\(locale)")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: dir.appendingPathComponent("messages.json"))
+        }
+        func description(_ value: String, folder: URL? = nil) -> String {
+            var input = manifest
+            input["description"] = value
+            return ExtensionImporter.localizedDescription(manifest: input, folder: folder ?? localizedFolder)
+        }
+        check(description("__MSG_extDescription__") == "Passwörter sicher verwalten.", "default locale before English")
+        check(description("__MSG_appDesc__") == "Texte prüfen – überall.", "LanguageTool key and Unicode")
+        check(description("__MSG_EXTDESCRIPTION__") == "Passwörter sicher verwalten.", "case-insensitive message keys")
+        check(description("A plain description") == "A plain description", "literal descriptions stay unchanged")
+        check(description("").isEmpty, "empty descriptions stay empty")
+        check(ExtensionImporter.localizedDescription(manifest: [:], folder: localizedFolder).isEmpty,
+              "absent descriptions stay empty")
+        check(ExtensionImporter.localizedDescription(manifest: ["description": 42], folder: localizedFolder).isEmpty,
+              "invalid description type stays empty")
+        check(description("__MSG_englishOnly__") == "English fallback", "missing default key falls back to English")
+        check(description("__MSG_usOnly__") == "US fallback", "en_US fallback")
+        check(description("__MSG_missing__").isEmpty, "missing key never appears in settings")
+        try messages("en_US", #"{"invalid":{"message":42}}"#)
+        check(description("__MSG_invalid__").isEmpty, "non-string translation is hidden")
+        check(description("__MSG_extDescription__", folder: profile.appendingPathComponent("missing")).isEmpty,
+              "missing locale files do not expose the key")
+        check(ExtensionImporter.localized("__MSG_missing__", manifest: manifest, folder: unpacked) == "__MSG_missing__",
+              "existing name fallback remains unchanged")
+        try messages("de", "not JSON")
+        check(description("__MSG_extDescription__") == "Manage passwords.", "invalid catalog falls back to English")
+        check(description("__MSG_appDesc__").isEmpty, "invalid catalog without a fallback message hides the key")
+        checks += turnedOffInChromeExtensions()
+        checks += liveSettingsShowAJustLoadedExtension()
         print("ExtensionStateTests: \(checks) checks passed")
+    }
+
+    static let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("Fixtures/ExtensionState", isDirectory: true)
+    static let store = (off: "aaaabbbbccccddddeeeeffffgggghhhh", on: "iiiijjjjkkkkllllmmmmnnnnoooopppp")
+
+    /// #41: an extension turned off in chrome://extensions reads as off from the profile's files,
+    /// whatever its install location (an older Chromium's state 0, a Web Store install, a
+    /// --load-extension copy), so Cra's toolbar leaves it out and never runs it. A turned-off Web
+    /// Store install stays listed, as off, so its pin comes back when it is turned on again.
+    // promise: #41
+    static func turnedOffInChromeExtensions() -> Int {
+        let profile = fixture.appendingPathComponent("Default", isDirectory: true)
+        let off = ExtensionImporter.disabledIDs(inProfile: profile)
+        precondition(off == ["olderchromiumoffaaaaaaaaaaaaaaaa", "commandlineoffaaaaaaaaaaaaaaaaaa", store.off],
+                     "turned off: \(off.sorted())")
+        let listed = ExtensionImporter.extensions(inProfile: profile).sorted { $0.name < $1.name }
+        precondition(listed.map(\.id) == [store.off, store.on], "the Web Store installs: \(listed.map(\.id))")
+        precondition(listed.map(\.isEnabled) == [false, true] && listed.map(\.name) == ["Store Off", "Store On"],
+                     "listed with whether each is on")
+        return 3
+    }
+
+    /// #43: the settings Chromium holds in memory (it writes the files about 10 s later) read
+    /// like the files, so an extension just loaded unpacked is listed, on, at once, and one just
+    /// turned off reads as off at once.
+    // promise: #43
+    static func liveSettingsShowAJustLoadedExtension() -> Int {
+        let profile = fixture.appendingPathComponent("Default", isDirectory: true)
+        let text = try! String(contentsOf: fixture.appendingPathComponent("live-extensions-settings.json"), encoding: .utf8)
+            .replacingOccurrences(of: "${FIXTURE}", with: fixture.path)
+        let live = try! JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+        let listed = ExtensionImporter.extensions(settings: live, inProfile: profile)
+        let fresh = listed.first { $0.id == "unpackedjustloadedaaaaaaaaaaaaaa" }
+        precondition(fresh?.isEnabled == true && fresh?.name == "Just Loaded"
+                     && fresh?.folder.standardizedFileURL == fixture.appendingPathComponent("Unpacked").standardizedFileURL,
+                     "the extension Load unpacked just added is listed, on, from its own folder")
+        precondition(Set(listed.map(\.id)) == [store.off, store.on, "unpackedjustloadedaaaaaaaaaaaaaa"], "live list: \(listed.map(\.id))")
+        let off = ExtensionImporter.disabledIDs(settings: live)
+        precondition(off == ExtensionImporter.disabledIDs(inProfile: profile).union(["commandlineonaaaaaaaaaaaaaaaaaaa"]),
+                     "the switch the files don't have yet already counts: \(off.sorted())")
+        return 3
     }
 }
