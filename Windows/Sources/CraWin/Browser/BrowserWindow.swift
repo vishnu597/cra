@@ -195,8 +195,14 @@ final class BrowserWindow {
         return "\(tab) - \(app)"
     }
 
-    /// Brings the window to the front (another Cra launch, a link from another app).
-    func activate() { window.activate() }
+    /// Brings the window to the front (another Cra launch, a link from another app, a Little
+    /// Window's page moved in). A redraw the store asked for comes first: taking the front hands
+    /// the keyboard to the page on screen, and a stale one taking it would select its tab again
+    /// over the one just picked (pageDidReceiveFocus; seen when a Little Window's page moved in).
+    func activate() {
+        if refreshQueued { refresh() }
+        window.activate()
+    }
 
     /// Asks the window to close as its close button does (Ctrl+Shift+W).
     func requestClose() {

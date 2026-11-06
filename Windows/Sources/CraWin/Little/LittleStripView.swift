@@ -198,7 +198,8 @@ final class LittleStripView {
         let label = StackPanel()
         label.orientation = .horizontal
         label.verticalAlignment = .center
-        openLabel.text = "Open in "
+        // XAML drops a TextBlock's trailing space: the gap is the name's margin.
+        openLabel.text = "Open in"
         openLabel.fontSize = 13
         openLabel.fontWeight = UWP.FontWeight(weight: 500)
         openLabel.foreground = brush(L.Palette.label)
@@ -206,6 +207,7 @@ final class LittleStripView {
         label.children.append(openLabel)
         spaceLabel.fontSize = 13
         spaceLabel.fontWeight = UWP.FontWeight(weight: 700)
+        spaceLabel.margin = Thickness(left: 4, top: 0, right: 0, bottom: 0)
         spaceLabel.verticalAlignment = .center
         spaceLabel.maxWidth = 180
         spaceLabel.textTrimming = .characterEllipsis

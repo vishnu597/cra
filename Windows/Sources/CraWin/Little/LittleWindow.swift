@@ -217,7 +217,8 @@ final class LittleWindow {
         // Arc's shouldShowProfileIndicators: only once there is a profile besides Default.
         let profile: String? = store.profiles.isEmpty ? nil : store.profile(profileID)?.name ?? "Default"
         strip.show(url: hasPage ? currentURL : "", space: space, profile: profile)
-        window.title = title.isEmpty ? "Little Window" : "\(title) - Little Window"
+        // An empty window's about:blank is no title.
+        window.title = title.isEmpty || !hasPage ? "Little Window" : "\(title) - Little Window"
     }
 
     // MARK: Command bar
