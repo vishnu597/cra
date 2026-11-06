@@ -131,8 +131,9 @@ browser is a child window in the page's place, its frontend (loaded with `can_do
 the split and the device toolbar, and the bridge lays the page window over the part it leaves
 for the page. The frontend's dock menu picks the side; undocking moves them into a window of
 their own (they close and open again there), and docking moves them back. CraCore's
-`DevToolsToggle` decides what each press does, as on the Mac. Cra's own page probes report
-through `console.debug`, which DevTools' Console hides unless Verbose is on.
+`DevToolsToggle` decides what each press does, as on the Mac. Cra's own page probes (page and
+theme colours) report through `window.__craReport`, a native function CraHelper's renderer puts
+in each main frame, so nothing of Cra's shows in a page's Console, even at Verbose.
 
 Developer Mode (Ctrl+Shift+D or the command bar, per site, the Mac's ⌃D): Arc's striped bar over
 the page, in a second XAML island HostWindow keeps over the page area's top (the pages move

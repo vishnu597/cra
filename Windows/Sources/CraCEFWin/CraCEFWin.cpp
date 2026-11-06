@@ -36,6 +36,7 @@
 #include "include/cef_parser.h"
 #include "include/cef_request_context.h"
 #include "include/cef_task.h"
+#include "include/cef_v8.h"
 #include "include/cef_values.h"
 #include "include/cef_version.h"
 #include "include/wrapper/cef_helpers.h"
@@ -80,11 +81,14 @@ std::string HexFromCSSColor(const std::string &css) {
     "color;d.remove();}"                                                                                        \
     "return c;}"
 
-// The probes report through console.debug: OnConsoleMessage hears every level, and DevTools'
-// Console hides Verbose messages unless asked, so Cra's reports stay out of a page's Console.
+// The probes report through window.__craReport(kind, value), a native function the renderer
+// (CraRendererApp) puts in each main frame: its calls reach the page's client as a "Cra.report"
+// process message and never show in DevTools. Without it (a renderer that isn't Cra's helper)
+// they fall back to console.debug, which OnConsoleMessage reads.
+#define CRA_REPORT "(window.__craReport||function(k,v){console.debug('__cra_'+k+':'+v);})"
 const char kBackgroundProbe[] =
     "(function(){if(!window.__craBg){var color=" CRA_PAGE_BACKGROUND_FN ";"
-    "window.__craBg=function(){try{var c=color();if(c)console.debug('__cra_bg:'+c);}catch(e){}};"
+    "window.__craBg=function(){try{var c=color();if(c)" CRA_REPORT "('bg',c);}catch(e){}};"
     "matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){setTimeout(window.__craBg,50);});"
     "setTimeout(window.__craBg,1500);}"
     "window.__craBg();})();";
@@ -98,7 +102,7 @@ const char kThemeProbe[] =
     "0)'&&h!=='transparent'){c=h;}}"
     "if(!c){c='rgb(255, 255, 255)';}"
     "var d=document.createElement('div');d.style.color=c;document.body.appendChild(d);"
-    "var rgb=getComputedStyle(d).color;d.remove();console.debug('__cra_theme:'+rgb);}catch(e){}}"
+    "var rgb=getComputedStyle(d).color;d.remove();" CRA_REPORT "('theme',rgb);}catch(e){}}"
     "probe();setTimeout(probe,1500);})();";
 
 /// Settings for every page Cra makes. Cra draws its own status bubble.
@@ -524,11 +528,12 @@ const char kDevToolsHooks[] =
     "var lc=h.loadCompleted;h.loadCompleted=function(){var r=lc&&lc.apply(h,arguments);h.__craLoaded=1;"
     "var q=h.__craRun||[];h.__craRun=[];q.forEach(function(f){f();});return r;};"
     // The panel on show, so Console and Network can tell a switch from a close (GitHub #138):
-    // the main tab bar is the one with Elements; its selected tab is #tab-<panel>.
+    // the main tab bar is the one with Elements; its selected tab is #tab-<panel>. A panel opened
+    // from the » overflow of a narrow docked frontend comes in as a new tab, hence childList.
     "(function(){var now=null,n=0,w=setInterval(function(){var e=find(document,'#tab-elements'),tabs=e&&e.parentNode;"
     "if(tabs){clearInterval(w);var report=function(){var t=tabs.querySelector('.tabbed-pane-header-tab.selected');"
     "var p=t&&t.id.indexOf('tab-')==0?t.id.slice(4):null;if(p&&p!==now){now=p;console.log('__cra_devtools_panel:'+p);}};"
-    "report();new MutationObserver(report).observe(tabs,{attributes:true,subtree:true,attributeFilter:['class']});return;}"
+    "report();new MutationObserver(report).observe(tabs,{attributes:true,childList:true,subtree:true,attributeFilter:['class']});return;}"
     "if(++n>200)clearInterval(w);},150);})();"
     "if(!/[?&]can_dock=/.test(location.search))return;"
     "var sent=false;"
@@ -901,24 +906,40 @@ public:
         if (o->callbacks.media_capture_changed) o->callbacks.media_capture_changed(o->callbacks.context, capturing);
     }
 
+    // The page probes' answers (kBackgroundProbe, kThemeProbe), from window.__craReport.
+    bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                                  CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override {
+        if (source_process != PID_RENDERER || message->GetName() != "Cra.report") return false;
+        CefRefPtr<CefListValue> args = message->GetArgumentList();
+        if (frame && frame->IsMain() && args->GetSize() == 2)
+            Report(args->GetString(0).ToString(), args->GetString(1).ToString());
+        return true;
+    }
+
+    // The same answers from a renderer without __craReport, through the console.
     bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level, const CefString &message,
                           const CefString &source, int line) override {
         std::string m = message.ToString();
-        const std::string bg = "__cra_bg:", theme = "__cra_theme:";
-        CraBrowser *o = Live();
-        if (m.compare(0, bg.size(), bg) == 0) {
-            std::string hex = HexFromCSSColor(m.substr(bg.size()));
-            if (o && !hex.empty() && o->callbacks.background_color_reported)
-                o->callbacks.background_color_reported(o->callbacks.context, hex.c_str());
-            return true;
-        }
-        if (m.compare(0, theme.size(), theme) == 0) {
-            std::string rgb = m.substr(theme.size());
-            std::string hex = rgb == "none" ? "none" : HexFromCSSColor(rgb);
-            if (o && o->callbacks.theme_color_reported) o->callbacks.theme_color_reported(o->callbacks.context, hex.c_str());
-            return true;
+        for (const char *kind : {"bg", "theme"}) {
+            std::string prefix = std::string("__cra_") + kind + ":";
+            if (m.compare(0, prefix.size(), prefix) == 0) {
+                Report(kind, m.substr(prefix.size()));
+                return true;
+            }
         }
         return false;
+    }
+
+    void Report(const std::string &kind, const std::string &value) {
+        CraBrowser *o = Live();
+        if (kind == "bg") {
+            std::string hex = HexFromCSSColor(value);
+            if (o && !hex.empty() && o->callbacks.background_color_reported)
+                o->callbacks.background_color_reported(o->callbacks.context, hex.c_str());
+        } else if (kind == "theme") {
+            std::string hex = value == "none" ? "none" : HexFromCSSColor(value);
+            if (o && o->callbacks.theme_color_reported) o->callbacks.theme_color_reported(o->callbacks.context, hex.c_str());
+        }
     }
 
     // Load ----------------------------------------------------------------
@@ -1160,6 +1181,47 @@ private:
     IMPLEMENT_REFCOUNTING(CraApp);
 };
 
+/// window.__craReport(kind, value): hands a page probe's answer to the browser process.
+class CraReportHandler : public CefV8Handler {
+public:
+    bool Execute(const CefString &name, CefRefPtr<CefV8Value> object, const CefV8ValueList &arguments,
+                 CefRefPtr<CefV8Value> &retval, CefString &exception) override {
+        if (arguments.size() != 2 || !arguments[0]->IsString() || !arguments[1]->IsString()) return true;
+        CefRefPtr<CefV8Context> context = CefV8Context::GetCurrentContext();
+        CefRefPtr<CefFrame> frame = context ? context->GetFrame() : nullptr;
+        if (!frame || !frame->IsMain()) return true;
+        CefRefPtr<CefProcessMessage> message = CefProcessMessage::Create("Cra.report");
+        CefRefPtr<CefListValue> args = message->GetArgumentList();
+        args->SetString(0, arguments[0]->GetStringValue());
+        args->SetString(1, arguments[1]->GetStringValue());
+        frame->SendProcessMessage(PID_BROWSER, message);
+        return true;
+    }
+
+private:
+    IMPLEMENT_REFCOUNTING(CraReportHandler);
+};
+
+/// The renderer side, in CraHelper's processes: a channel for the page probes that DevTools'
+/// Console doesn't show (console messages, even at Verbose, would).
+class CraRendererApp : public CefApp, public CefRenderProcessHandler {
+public:
+    CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
+
+    void OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                          CefRefPtr<CefV8Context> context) override {
+        if (!frame->IsMain()) return;
+        CefRefPtr<CefV8Value> report = CefV8Value::CreateFunction("__craReport", new CraReportHandler());
+        context->GetGlobal()->SetValue("__craReport", report,
+                                       static_cast<cef_v8_propertyattribute_t>(V8_PROPERTY_ATTRIBUTE_READONLY |
+                                                                               V8_PROPERTY_ATTRIBUTE_DONTENUM |
+                                                                               V8_PROPERTY_ATTRIBUTE_DONTDELETE));
+    }
+
+private:
+    IMPLEMENT_REFCOUNTING(CraRendererApp);
+};
+
 }  // namespace
 
 void CraBrowser::Create() {
@@ -1193,7 +1255,8 @@ void CraBrowser::Finish() {
 
 extern "C" int cra_cef_execute_process(void) {
     CefMainArgs main_args(GetModuleHandleW(nullptr));
-    return CefExecuteProcess(main_args, nullptr, nullptr);
+    CefRefPtr<CefApp> app = new CraRendererApp();
+    return CefExecuteProcess(main_args, app, nullptr);
 }
 
 extern "C" int cra_cef_initialize(const CraCEFSettings *s) {

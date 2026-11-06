@@ -269,8 +269,19 @@ final class DeveloperBarView {
         }
     }
 
+    /// The field lets go of the keyboard inside the bar too. Handing Win32 focus to the page alone
+    /// leaves XAML's focus on the field (no LostFocus): its clear button and selection would stay,
+    /// and the next click on it would not select the address.
+    func resignEditing() {
+        guard editing else { return }
+        _ = try? buttons["copyURL"]?.focus(.pointer)  // pointer: no focus rectangle after Return or Escape
+        if editing { editingChanged(false) }
+        try? field.select(0, 0)
+    }
+
     private func endEditing() {
         setText(url)
+        resignEditing()
         onEditEnded()
     }
 

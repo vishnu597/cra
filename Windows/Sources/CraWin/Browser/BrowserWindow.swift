@@ -758,7 +758,10 @@ final class BrowserWindow {
         let on = paneIDs.count <= 1 && !url.isEmpty && store.settings.isDeveloperMode(url: url)
         // An edit ends without loading when the bar goes or shows another tab (as on the Mac):
         // the keyboard goes back to the page.
-        if developerBar.isEditing, !on || tab?.id != developerTabID { focusContent() }
+        if developerBar.isEditing, !on || tab?.id != developerTabID {
+            developerBar.resignEditing()
+            focusContent()
+        }
         developerTabID = on ? tab?.id : nil
         if on { developerBar.show(url: url, theme: store.focusedSpace(window: windowID).theme) }
         window.topBarHeight = on ? DeveloperBarView.height : 0
