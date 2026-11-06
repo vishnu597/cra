@@ -925,8 +925,6 @@ final class ToolbarURLButton: NSView, NSTextFieldDelegate {
 /// running down to the right, 21 pt wide along the bar every 45 pt, the first band starting
 /// 14.5 pt from the bar's left edge at its top.
 final class DeveloperStripesView: NSView {
-    private static let pitch: CGFloat = 45, band: CGFloat = 21, phase: CGFloat = 14.5
-
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func setFrameSize(_ newSize: NSSize) {
@@ -935,18 +933,14 @@ final class DeveloperStripesView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let h = bounds.height, w = bounds.width
+        // CraCore's DeveloperStripes has the geometry (Windows draws the same bands).
         let path = NSBezierPath()
-        var x = Self.phase - (floor((Self.phase + h) / Self.pitch) + 1) * Self.pitch
-        while x < w {
-            path.move(to: NSPoint(x: x, y: 0))
-            path.line(to: NSPoint(x: x + Self.band, y: 0))
-            path.line(to: NSPoint(x: x + Self.band + h, y: h))
-            path.line(to: NSPoint(x: x + h, y: h))
+        for band in DeveloperStripes.bands(width: bounds.width, height: bounds.height) {
+            path.move(to: NSPoint(x: band[0].x, y: band[0].y))
+            for p in band.dropFirst() { path.line(to: NSPoint(x: p.x, y: p.y)) }
             path.close()
-            x += Self.pitch
         }
-        NSColor.white.withAlphaComponent(0.02).setFill()
+        NSColor.white.withAlphaComponent(DeveloperStripes.whiteAlpha).setFill()
         path.fill()
     }
 }

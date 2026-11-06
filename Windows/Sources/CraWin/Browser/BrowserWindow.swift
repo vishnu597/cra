@@ -69,6 +69,9 @@ final class BrowserWindow {
     private var commandBarDeactivated = false
     /// Ctrl+F: find in the shown page, in a window of its own at the page's top right.
     private let findBar = FindBarView()
+    /// Arc's Developer Mode bar over a site's page (HostWindow's strip).
+    private let developerBar = DeveloperBarView()
+    private var developerTabID: UUID?
     private var findWindow: FloatingWindow?
     private var findVisible = false
     private var refreshQueued = false
@@ -127,7 +130,7 @@ final class BrowserWindow {
             // The XAML island starts at the client area's top left.
             return (Double(p.x) / window.scale, Double(p.y) / window.scale)
         }
-        window = try HostWindow(content: makeLayout(), sidebarWidth: Self.sidebarWidth, frame: frame)
+        window = try HostWindow(content: makeLayout(), topBar: developerBar.root, sidebarWidth: Self.sidebarWidth, frame: frame)
         window.title = Self.title(nil, incognito: isIncognito)
         hwnd = window.hwnd
         window.onLayout = { [weak self] _ in
@@ -156,6 +159,7 @@ final class BrowserWindow {
         }
         makeCommandBar()
         makeFindBar()
+        makeDeveloperBar()
         makePermissionPrompt()
         makeProfileDialog()
         makeSiteControlCenter()
@@ -232,6 +236,7 @@ final class BrowserWindow {
             applyPaneColors(store.focusedSpace(window: windowID).theme)
             downloads.apply(SidebarPalette(store.focusedSpace(window: windowID).theme), fill: sidebar.fill)
             syncPages()
+            syncDeveloperBar()
             showAddress(store.selectedTab(window: windowID)?.tab?.url ?? "")
         } onChange: { [weak self] in
             // Called inside the change, on the main thread: draw once it is done.
@@ -584,6 +589,8 @@ final class BrowserWindow {
         case "devTools": shownPage?.runDevTools(.toggle)
         case "jsConsole": shownPage?.runDevTools(.console)
         case "inspectElement": shownPage?.runDevTools(.inspect)
+        case "networkPanel": shownPage?.runDevTools(.network)
+        case "toggleDeveloperMode": toggleDeveloperMode()
         case "goBack": shownPage?.goBack()
         case "goForward": shownPage?.goForward()
         case "addSplitView": addSplitPane()
@@ -720,6 +727,44 @@ final class BrowserWindow {
         }
         Self.settingsWindow?.onNewProfile = { [weak self] in self?.showNewProfile(ticked: []) }
         Self.settingsWindow?.show(over: window)
+    }
+
+    // MARK: Developer Mode
+
+    private func makeDeveloperBar() {
+        developerBar.onAction = { [weak self] id in self?.perform(id) }
+        developerBar.onKey = { [weak self] key in self?.handleShortcut(key) ?? false }
+        developerBar.onEditEnded = { [weak self] in self?.focusContent() }
+        // Arc's developer bar edits its full URL in place (ContentPanelTextField): what's typed
+        // loads in the tab, or searches.
+        developerBar.onCommit = { [weak self] typed in
+            guard let self else { return }
+            self.loadInSelectedTab(SuggestionEngine.looksLikeURL(typed) ? SuggestionEngine.urlFromInput(typed) : self.engine.searchURL(typed))
+        }
+    }
+
+    /// Arc's per-site Developer Mode (View ▸ Developer): the bar over the page, the site's host
+    /// and port under its tabs' titles, and a ring round the open one.
+    private func toggleDeveloperMode() {
+        guard let url = store.selectedTab(window: windowID)?.tab?.url, !url.isEmpty else { return }
+        store.settings.toggleDeveloperMode(url: url)
+    }
+
+    /// The bar shows over the open tab's page when its site is in Developer Mode, not in a split
+    /// (the Mac's ToolbarComposition kind `.developer`), and the pages move down under it.
+    private func syncDeveloperBar() {
+        let tab = store.selectedTab(window: windowID)
+        let url = tab?.tab?.url ?? ""
+        let on = paneIDs.count <= 1 && !url.isEmpty && store.settings.isDeveloperMode(url: url)
+        // An edit ends without loading when the bar goes or shows another tab (as on the Mac):
+        // the keyboard goes back to the page.
+        if developerBar.isEditing, !on || tab?.id != developerTabID {
+            developerBar.resignEditing()
+            focusContent()
+        }
+        developerTabID = on ? tab?.id : nil
+        if on { developerBar.show(url: url, theme: store.focusedSpace(window: windowID).theme) }
+        window.topBarHeight = on ? DeveloperBarView.height : 0
     }
 
     // MARK: Keys

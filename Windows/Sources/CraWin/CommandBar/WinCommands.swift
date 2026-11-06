@@ -30,6 +30,10 @@ enum WinGlyph {
         case "shield.fill": return "\u{EA18}"
         case "gearshape.fill": return "\u{E713}"
         case "trash": return "\u{E74D}"
+        // The Developer Mode bar's.
+        case "terminal": return "\u{E756}"  // CommandPrompt
+        case "scope": return "\u{E8B0}"  // SelectAll: a dashed box, like Chrome's inspect icon
+        case "square.split.2x1": return "\u{E89A}"  // TwoPage
         default: return "\u{E721}"  // magnifyingglass
         }
     }

@@ -248,77 +248,9 @@ extension SpaceTheme {
         return Color(.sRGB, red: rgb.r, green: rgb.g, blue: rgb.b, opacity: dark ? 0.48 : 1)
     }
 
-    /// Arc's developer-mode toolbar: the space's semantic "focus" colour (dark) over black, opaque.
-    /// Arc 1.170, JYSK, 1 Nov 2026: focus (0.294, 0.329, 1.021) at α 0.8075 → sRGB 61/67/210, the bar
-    /// measured 61/67/210 after undoing the display's P3. Focus sits a little darker than hover at the
-    /// sRGB gamut edge in the theme's hue; fitted on JYSK as OKLab L 0.552 at full chroma. Arc's palette
-    /// hue drifts ~5° from its base colour's, so JYSK lands at 44/72/206 (one space measured so far).
-    var developerBarColor: NSColor {
-        let hex = accent ?? colors.first ?? "#808080"
-        let c = HexColor.components(hex) ?? (0.5, 0.5, 0.5)
-        let lab = OKLab.from(r: c.r, g: c.g, b: c.b)
-        let chroma = (lab.a * lab.a + lab.b * lab.b).squareRoot()
-        let hue = atan2(lab.b, lab.a)
-        let L = 0.552
-        let target = OKLab.maxChroma(L: L, hue: hue) * min(1, chroma / 0.03)
-        let rgb = OKLab.toRGB(L: L, a: target * cos(hue), b: target * sin(hue))
-        let k = 0.8075
-        return NSColor(srgbRed: rgb.r * k, green: rgb.g * k, blue: rgb.b * k, alpha: 1)
-    }
+    /// Arc's developer-mode toolbar (CraCore's SpaceTheme.developerBar, which has the measurements).
+    var developerBarColor: NSColor { NSColor(developerBar) }
 
-    /// Arc's foregroundSecondary (JYSK 131/137/255, OKLab L 0.68): the developer bar's dividers at 45%,
-    /// its selected text at 60%.
-    var developerSecondaryColor: NSColor {
-        let c = HexColor.components(accent ?? colors.first ?? "#808080") ?? (0.5, 0.5, 0.5)
-        let lab = OKLab.from(r: c.r, g: c.g, b: c.b)
-        let hue = atan2(lab.b, lab.a)
-        let L = 0.68
-        let target = OKLab.maxChroma(L: L, hue: hue) * min(1, (lab.a * lab.a + lab.b * lab.b).squareRoot() / 0.03)
-        let rgb = OKLab.toRGB(L: L, a: target * cos(hue), b: target * sin(hue))
-        return NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1)
-    }
-}
-
-/// Björn Ottosson's OKLab, for colours that keep the same perceived lightness across hues.
-enum OKLab {
-    static func from(r: Double, g: Double, b: Double) -> (L: Double, a: Double, b: Double) {
-        func lin(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
-        let (lr, lg, lb) = (lin(r), lin(g), lin(b))
-        let l = cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb)
-        let m = cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb)
-        let s = cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb)
-        return (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
-                1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
-                0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
-    }
-
-    /// Linear-light sRGB before clamping, so callers can tell whether it is in gamut.
-    static func toLinear(L: Double, a: Double, b: Double) -> (r: Double, g: Double, b: Double) {
-        let l = pow(L + 0.3963377774 * a + 0.2158037573 * b, 3)
-        let m = pow(L - 0.1055613458 * a - 0.0638541728 * b, 3)
-        let s = pow(L - 0.0894841775 * a - 1.2914855480 * b, 3)
-        return (4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-                -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-                -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)
-    }
-
-    static func toRGB(L: Double, a: Double, b: Double) -> (r: Double, g: Double, b: Double) {
-        func enc(_ c: Double) -> Double {
-            let x = max(0, min(1, c))
-            return x <= 0.0031308 ? x * 12.92 : 1.055 * pow(x, 1 / 2.4) - 0.055
-        }
-        let v = toLinear(L: L, a: a, b: b)
-        return (enc(v.r), enc(v.g), enc(v.b))
-    }
-
-    /// The largest chroma at this lightness and hue that sRGB can show.
-    static func maxChroma(L: Double, hue: Double) -> Double {
-        var lo = 0.0, hi = 0.4
-        for _ in 0..<24 {
-            let mid = (lo + hi) / 2
-            let v = toLinear(L: L, a: mid * cos(hue), b: mid * sin(hue))
-            if [v.r, v.g, v.b].allSatisfy({ $0 >= 0 && $0 <= 1 }) { lo = mid } else { hi = mid }
-        }
-        return lo
-    }
+    /// Arc's foregroundSecondary: the developer bar's dividers at 45%, its selected text at 60%.
+    var developerSecondaryColor: NSColor { NSColor(developerSecondary) }
 }

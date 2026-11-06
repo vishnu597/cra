@@ -175,6 +175,9 @@ public enum KeyBindingDefaults {
             "devTools": [KeyChord("i", ctrlShift), KeyChord(KeyChord.function(12), [])],
             "jsConsole": [KeyChord("j", ctrlShift)],
             "inspectElement": [],
+            // The Mac's ⌃D is Pin Tab's Ctrl+D here, so Shift joins it (Chrome's Bookmark All Tabs,
+            // which Cra doesn't have).
+            "toggleDeveloperMode": [KeyChord("d", ctrlShift)],
             "clearCache": [],
             "clearCookies": [],
         ]
