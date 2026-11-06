@@ -130,6 +130,17 @@ final class WindowList: BrowserWindowHost {
     /// showing that space, else the one used last (SpaceWindow), which switches to it. The live
     /// page moves, history and sign-ins included (BrowserManager.adopt on the Mac).
     func adopt(_ page: WebPage, url: String, title: String, space: UUID) {
+        if !windows.contains(where: { !$0.isIncognito }) {
+            // Every browser window closed: the last one's session opens again with the page's tab
+            // already selected, so it never makes a page for the tab it showed before.
+            let session = closedNormalSession()
+            store.activeWindowID = session.id
+            let tab = store.createTab(url: url, title: title, in: space, select: true, window: session.id)
+            guard let target = reopen(session) else { return page.close() }
+            target.adopt(page, for: tab.id)
+            target.activate()
+            return
+        }
         guard let target = normalWindow(forSpace: space) else { return page.close() }
         store.activeWindowID = target.windowID
         let tab = store.createTab(url: url, title: title, in: space, select: true, window: target.windowID)
@@ -170,9 +181,17 @@ final class WindowList: BrowserWindowHost {
             ?? windows.last(where: { !$0.isIncognito }) {
             return w
         }
-        let session = store.prefs.windows.first { !$0.isIncognito && $0.id == store.lastNormalWindowID }
+        return reopen(closedNormalSession())
+    }
+
+    /// The session the last normal window left (kept while Little Windows stayed open).
+    private func closedNormalSession() -> WindowSession {
+        store.prefs.windows.first { !$0.isIncognito && $0.id == store.lastNormalWindowID }
             ?? store.prefs.windows.first { !$0.isIncognito }
             ?? store.addWindow(spaceID: store.focusedSpaceID(window: store.lastNormalWindowID), frame: nil)
+    }
+
+    private func reopen(_ session: WindowSession) -> BrowserWindow? {
         let areas = HostWindow.workAreas
         let frame = session.frame.flatMap(WindowFrame.init(string:)).flatMap { $0.isReachable(in: areas) ? $0 : nil }
         return open(session, frame: frame, newWindow: false)

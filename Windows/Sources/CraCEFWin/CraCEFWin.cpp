@@ -1227,6 +1227,9 @@ private:
 void CraBrowser::Create() {
     CefWindowInfo info;
     info.SetAsChild(parent, frame);
+    // Hidden before Chromium made it (a tab left at once, as when a window opens for a Little
+    // Window's page): created hidden, or it showed over the page picked (PC test).
+    if (!visible) info.style &= ~static_cast<DWORD>(WS_VISIBLE);
     CefBrowserSettings settings;
     CraPageSettings(settings);
     CefBrowserHost::CreateBrowser(info, client, pending_url.empty() ? "about:blank" : pending_url, settings, nullptr,
