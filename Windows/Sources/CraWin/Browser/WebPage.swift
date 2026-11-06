@@ -177,6 +177,15 @@ final class WebPage: @unchecked Sendable {
         didSet { if let handle, isVisible != oldValue { cra_browser_set_visible(handle, isVisible ? 1 : 0) } }
     }
 
+    /// Moves the live page into another window (a Little Window's page going into a browser
+    /// window, as BrowserManager.adopt on the Mac): history, scroll position and sign-ins go with it.
+    func move(toParent parent: UInt, frame: PixelRect) {
+        guard let handle, !isClosed else { return }
+        cra_browser_set_parent(handle, UInt(parent))
+        self.frame = frame
+        cra_browser_set_frame(handle, frame.x, frame.y, frame.width, frame.height)
+    }
+
     func loadURL(_ url: String) { if let handle { url.withCString { cra_browser_load_url(handle, $0) } } }
     func goBack() { if let handle { cra_browser_go_back(handle) } }
     func goForward() { if let handle { cra_browser_go_forward(handle) } }

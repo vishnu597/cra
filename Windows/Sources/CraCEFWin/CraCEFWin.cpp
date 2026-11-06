@@ -1363,6 +1363,16 @@ extern "C" void cra_browser_set_frame(CraBrowser *b, int x, int y, int width, in
     b->ApplyFrame();
 }
 
+extern "C" void cra_browser_set_parent(CraBrowser *b, uintptr_t parent) {
+    if (!b || !parent) return;
+    b->parent = reinterpret_cast<HWND>(parent);
+    if (!b->browser) return;  // Create() uses the new parent
+    if (HWND hwnd = b->browser->GetHost()->GetWindowHandle()) SetParent(hwnd, b->parent);
+    if (HWND devtools = b->DockedDevToolsWindow()) SetParent(devtools, b->parent);
+    b->browser->GetHost()->NotifyMoveOrResizeStarted();
+    b->ApplyFrame();
+}
+
 extern "C" void cra_browser_set_visible(CraBrowser *b, int visible) {
     if (!b || b->visible == (visible != 0)) return;
     b->visible = visible != 0;

@@ -142,6 +142,19 @@ View; the site's host and port under its tabs' titles and Arc's dashed ring roun
 The bar's colours, stripes and ring are CraCore's (`DeveloperBar.swift`), which the Mac's
 toolbar reads too. As on the Mac there is no developer bar in a split.
 
+Little Windows (Ctrl+Alt+N, Arc's Little Arc): one page in a small window, a HostWindow with no
+sidebar and the Mac's navy strip in its top island (`Little/LittleStripView.swift`): the host in a
+pill that opens the command bar, the profile chip once there are profiles, Copy URL, and "Open in
+<Space> Ctrl+O | ⌄". Open in moves the live page into a browser window as a Today tab
+(`cra_browser_set_parent` reparents its window and docked DevTools; SpaceWindow picks the window);
+closing archives it. Links a Little Window's page opens in a new tab or a popup get Little
+Windows of their own. Ctrl+Alt+N also works from any app (Settings ▸ Tabs): `GlobalHotkey`
+registers it for the UI thread with RegisterHotKey and `MessageLoop` hands WM_HOTKEY over; a chord
+that types a character on the keyboard layout (AltGr+N is ń on Polish keyboards) is left alone,
+in Cra's own windows too. CraCore's `LittleWindowLayout` holds the sizes, the placement on the
+monitor under the pointer, the colours and the space and profile rules, which the Mac uses too.
+Cra stays open while a Little Window is, after its last browser window closes.
+
 [`Windows/PARITY.md`](../Windows/PARITY.md) lists every Mac feature, what Windows has of it and the
 CraCore code both apps share; `Windows/scripts/parity.py` keeps it in step with the Mac app and
 upstream (see "Keeping up with upstream").

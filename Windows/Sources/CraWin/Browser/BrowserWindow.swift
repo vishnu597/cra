@@ -223,6 +223,21 @@ final class BrowserWindow {
     /// The tab has a live page in this window.
     func hasPage(_ id: UUID) -> Bool { pages[id] != nil }
 
+    /// A Little Window's live page as tab `id`'s (its "Open in <Space>"): moved into this window,
+    /// history, scroll position and sign-ins included (BrowserManager.adopt on the Mac). A page in
+    /// another profile than the tab's space loads there again (syncPages).
+    func adopt(_ page: WebPage, for id: UUID) {
+        guard !closing else { return page.close() }
+        pages[id]?.close()
+        page.delegate = self
+        page.userInfo = id
+        page.isVisible = false
+        page.move(toParent: hwnd, frame: paneFrames[id] ?? contentFrame())
+        livePages.insert(ObjectIdentifier(page))
+        pages[id] = page
+        queueRefresh()
+    }
+
     // MARK: Store → window
 
     /// Draws the sidebar and shows the open tab's page, then waits for the next change to
@@ -560,7 +575,7 @@ final class BrowserWindow {
     /// An action by its id (KeyBindingDefaults.windows): a command row or a shortcut. False
     /// for an id the Windows app doesn't perform yet.
     @discardableResult
-    private func perform(_ id: String) -> Bool {
+    func perform(_ id: String) -> Bool {
         switch id {
         case "find": showFindBar()
         case "findNext": findNext(forward: true)
@@ -568,6 +583,8 @@ final class BrowserWindow {
         case "settings": openSettings()
         case "newWindow": host?.openNewWindow(incognito: false)
         case "newIncognitoWindow": host?.openNewWindow(incognito: true)
+        case "newLittleWindow": host?.newLittleWindow()
+        case "closeLittleWindows": host?.closeLittleWindows()
         case "closeWindow": requestClose()
         case "changeProfile": if !isIncognito { showChangeProfile(forSpace: store.focusedSpaceID(window: windowID)) }
         case "newTab": beginNewTab()
@@ -771,8 +788,11 @@ final class BrowserWindow {
 
     /// Shortcuts Cra keeps from the page: Windows' table with the user's own keys (Settings ▸
     /// Shortcuts, keybindings.json).
+    /// A Ctrl+Alt chord that types a character on the keyboard layout (AltGr+N is ń on Polish
+    /// keyboards) is left to type.
     private func handleShortcut(_ key: KeyPress) -> Bool {
-        guard let chord = KeyChord(windowsVirtualKey: key.keyCode, control: key.control, shift: key.shift, alt: key.alt),
+        guard !WinKeyboard.typesCharacter(key),
+              let chord = KeyChord(windowsVirtualKey: key.keyCode, control: key.control, shift: key.shift, alt: key.alt),
               let action = WinKeyBindings.shared.action(matching: chord) else { return false }
         return perform(action.id)
     }

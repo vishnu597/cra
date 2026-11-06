@@ -114,6 +114,12 @@ enum SettingsPanes {
         }
         cleanup.children.append(duration)
         form.group("Tab Cleanup:", [cleanup])
+        // Arc's Links pane: "Open Little Arc when I press ⌥⌘N" (#195), New Little Window's key
+        // from any app. The Mac's other link settings come with links from other apps and Peek.
+        let littleKey = WinKeyBindings.shared.action("newLittleWindow")?.primary?.windowsDisplay ?? "Ctrl+Alt+N"
+        form.group("Links:", [
+            checkbox("Open a Little Window when I press \(littleKey) in any app", \.littleWindowShortcutEverywhere),
+        ])
 
         return SettingsPaneContent(element: form.grid) { for sync in syncs { sync() } }
     }

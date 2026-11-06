@@ -1,6 +1,7 @@
 import CraCEFWin
 import CraCore
 import Foundation
+import Observation
 import WinAppSDK
 import WinSDK
 import WinUI
@@ -17,6 +18,8 @@ public final class CraApp: SwiftApplication {
     @MainActor private var clock: WinScheduler?
     /// Auto-archive, as the Mac runs it (AppComposition): kept until the app quits.
     @MainActor private var periodic: [ScheduledWork] = []
+    /// New Little Window's key from any app (Settings ▸ Tabs).
+    @MainActor private var hotkey: GlobalHotkey?
 
     public required init() {
         super.init()
@@ -45,6 +48,7 @@ public final class CraApp: SwiftApplication {
         // Saved and shut down while XAML is still up; then the process ends (MessageLoop.finish).
         MessageLoop.willQuit = { [weak self] in
             onMain {
+                self?.windows?.archiveLittleWindows()
                 self?.windows?.saveFrames()
                 self?.store?.saveAll()
             }
@@ -64,7 +68,26 @@ public final class CraApp: SwiftApplication {
             let windows = WindowList(store: store, dispatcher: dispatcher)
             self.windows = windows
             windows.restore()
+            observeGlobalShortcut(store: store, windows: windows)
         }
+    }
+
+    /// Arc's "Open Little Arc when I press ⌥⌘N" (#195), Ctrl+Alt+N here: New Little Window's key
+    /// from any app, following the setting and the key's binding (AppDelegate.observeGlobalShortcut).
+    @MainActor
+    private func observeGlobalShortcut(store: SidebarStore, windows: WindowList) {
+        let hotkey = GlobalHotkey { [weak windows] in windows?.newLittleWindow() }
+        self.hotkey = hotkey
+        func follow() {
+            let chord = withObservationTracking {
+                GlobalShortcut.registrable(WinKeyBindings.shared.action("newLittleWindow")?.shortcuts ?? [],
+                                           enabled: store.settings.littleWindowShortcutEverywhere)
+            } onChange: {
+                onMain { _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { follow() } }
+            }
+            hotkey.set(chord)
+        }
+        follow()
     }
 
     private func startChromium() -> Bool {

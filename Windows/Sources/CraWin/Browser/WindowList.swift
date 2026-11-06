@@ -9,17 +9,23 @@ import WinSDK
 protocol BrowserWindowHost: AnyObject {
     /// Arc's New Window (Ctrl+N) or New Incognito Window (Ctrl+Shift+N).
     func openNewWindow(incognito: Bool)
+    /// New Little Window (Ctrl+Alt+N): an empty one asking for an address.
+    func newLittleWindow()
+    /// Close Little Windows: each archives its page.
+    func closeLittleWindows()
     func windowDidClose(_ window: BrowserWindow)
 }
 
 /// The app's browser windows, one per window session in the store (AppDelegate's mainWindows
-/// and openNewWindow on the Mac). Closing one of several ends its session; closing the last
-/// quits and keeps it, so the next launch opens the same windows where they were.
+/// and openNewWindow on the Mac), and its Little Windows (littleWindows). Closing one of several
+/// browser windows ends its session; closing the last quits and keeps it, so the next launch
+/// opens the same windows where they were. Cra waits for its Little Windows to close first.
 @MainActor
 final class WindowList: BrowserWindowHost {
     private let store: SidebarStore
     private let dispatcher: WinAppSDK.DispatcherQueue
     private(set) var windows: [BrowserWindow] = []
+    private(set) var littleWindows: [LittleWindow] = []
     /// Arc cascades a new window this far right and down from the one in use (22 pt on the
     /// Mac), in DIPs.
     private static let cascadeStep = 22.0
@@ -59,8 +65,10 @@ final class WindowList: BrowserWindowHost {
     func windowDidClose(_ window: BrowserWindow) {
         windows.removeAll { $0 === window }
         guard !windows.isEmpty else {
-            // The last window: Cra quits and the session stays for the next launch.
-            PostQuitMessage(0)
+            if window.isIncognito { cra_cef_end_incognito_session() }
+            // The last window: Cra quits and the session stays for the next launch, once no
+            // Little Window is open either (a page moved out of one reopens the window).
+            if littleWindows.isEmpty { PostQuitMessage(0) }
             return
         }
         // The last normal window keeps its session while private ones stay open, so the next
@@ -80,6 +88,130 @@ final class WindowList: BrowserWindowHost {
     /// Every window's frame into its session, before the store saves at quit.
     func saveFrames() {
         for w in windows { w.saveFrame() }
+    }
+
+    // MARK: Little Windows
+
+    func newLittleWindow() {
+        openLittleWindow(url: "", opener: nil, activate: true)
+    }
+
+    /// A Little Window on `url` ("" asks for an address; nil hosts `opener`'s window.open),
+    /// cascaded off the ones already open (AppDelegate.openLittleWindow on the Mac).
+    @discardableResult
+    func openLittleWindow(url: String?, opener: WebPage?, activate: Bool) -> LittleWindow? {
+        do {
+            let w = try LittleWindow(store: store, url: url, opener: opener, index: littleWindows.count, scale: scaleUnderPointer(),
+                                     dispatcher: dispatcher, list: self)
+            littleWindows.append(w)
+            if activate { w.activate() }
+            return w
+        } catch {
+            print("The Little Window could not be made: \(error)")
+            return nil
+        }
+    }
+
+    func closeLittleWindows() {
+        for w in littleWindows { w.requestClose() }
+    }
+
+    func littleWindowDidClose(_ window: LittleWindow) {
+        littleWindows.removeAll { $0 === window }
+        if windows.isEmpty, littleWindows.isEmpty { PostQuitMessage(0) }
+    }
+
+    /// Every Little Window's page into the Library, at quit.
+    func archiveLittleWindows() {
+        for w in littleWindows { w.archivePage() }
+    }
+
+    /// A Little Window's page into `space` as its selected tab, in the browser window already
+    /// showing that space, else the one used last (SpaceWindow), which switches to it. The live
+    /// page moves, history and sign-ins included (BrowserManager.adopt on the Mac).
+    func adopt(_ page: WebPage, url: String, title: String, space: UUID) {
+        guard let target = normalWindow(forSpace: space) else { return page.close() }
+        store.activeWindowID = target.windowID
+        let tab = store.createTab(url: url, title: title, in: space, select: true, window: target.windowID)
+        target.adopt(page, for: tab.id)
+        target.activate()
+    }
+
+    /// An open tab picked in a Little Window's command bar: shown in the browser window used last.
+    func showTab(_ id: UUID) {
+        guard let target = lastNormalWindow() else { return }
+        store.activeWindowID = target.windowID
+        store.selectTab(id, window: target.windowID)
+        target.activate()
+    }
+
+    /// An archived tab picked in a Little Window's command bar: back in the browser window used last.
+    func restoreArchived(_ id: UUID) {
+        guard let target = lastNormalWindow() else { return }
+        store.activeWindowID = target.windowID
+        _ = store.restoreArchived(id)
+        target.activate()
+    }
+
+    /// An action a Little Window leaves to the browser window used last (Ctrl+N, Ctrl+, …).
+    func perform(_ id: String) -> Bool {
+        lastNormalWindow()?.perform(id) ?? false
+    }
+
+    /// A Little Window's download, in the browser window used last's downloads list.
+    func recordDownload(_ download: DownloadInfo, from page: WebPage) {
+        lastNormalWindow()?.page(page, didUpdateDownload: download)
+    }
+
+    /// The normal browser window in use last; with none open, the last normal window's session
+    /// opens again (it stayed while Little Windows were open).
+    private func lastNormalWindow() -> BrowserWindow? {
+        if let w = windows.first(where: { !$0.isIncognito && $0.windowID == store.lastNormalWindowID })
+            ?? windows.last(where: { !$0.isIncognito }) {
+            return w
+        }
+        let session = store.prefs.windows.first { !$0.isIncognito && $0.id == store.lastNormalWindowID }
+            ?? store.prefs.windows.first { !$0.isIncognito }
+            ?? store.addWindow(spaceID: store.focusedSpaceID(window: store.lastNormalWindowID), frame: nil)
+        let areas = HostWindow.workAreas
+        let frame = session.frame.flatMap(WindowFrame.init(string:)).flatMap { $0.isReachable(in: areas) ? $0 : nil }
+        return open(session, frame: frame, newWindow: false)
+    }
+
+    private func normalWindow(forSpace space: UUID) -> BrowserWindow? {
+        guard let last = lastNormalWindow() else { return nil }
+        let order = Self.zOrder()
+        let normal = windows.filter { !$0.isIncognito }
+            .sorted { (order.firstIndex(of: $0.window.hwnd) ?? .max) < (order.firstIndex(of: $1.window.hwnd) ?? .max) }
+        let id = SpaceWindow.window(for: space, windows: normal.map { (id: $0.windowID, space: store.focusedSpaceID(window: $0.windowID)) },
+                                    lastUsed: last.windowID)
+        return normal.first { $0.windowID == id } ?? last
+    }
+
+    /// Top-level windows front to back (EnumWindows' order).
+    private static func zOrder() -> [UInt] {
+        var list: [UInt] = []
+        let collect: WNDENUMPROC = { hwnd, context in
+            guard let hwnd, let list = UnsafeMutablePointer<[UInt]>(bitPattern: Int(context)) else { return true }
+            list.pointee.append(UInt(bitPattern: hwnd))
+            return true
+        }
+        withUnsafeMutablePointer(to: &list) { pointer in
+            _ = EnumWindows(collect, LPARAM(Int(bitPattern: pointer)))
+        }
+        return list
+    }
+
+    /// The scale of the monitor under the pointer, from a browser window on it (a guess the new
+    /// Little Window corrects once it knows its own).
+    private func scaleUnderPointer() -> Double {
+        var p = POINT()
+        if GetCursorPos(&p), let monitor = MonitorFromPoint(p, DWORD(MONITOR_DEFAULTTONEAREST)),
+           let w = windows.first(where: { MonitorFromWindow(HWND(bitPattern: $0.window.hwnd), DWORD(MONITOR_DEFAULTTONEAREST)) == monitor }) {
+            return w.scale
+        }
+        let dpi = GetDpiForSystem()
+        return dpi > 0 ? Double(dpi) / 96 : 1
     }
 
     @discardableResult
