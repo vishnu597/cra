@@ -4,7 +4,7 @@ Every feature of the Mac app, what the Windows app has of it, and where the code
 can share lives. The goal is the Mac app's features on Windows, built on the Mac's own logic:
 what decides something goes in CraCore once and both shells call it (CLAUDE.md, rule 1).
 
-<!-- upstream-reviewed: 565e477 -->
+<!-- upstream-reviewed: 9da50e7 -->
 Upstream reviewed through **565e477** (VictorKildahl/cra main, 6 Nov 2026). Fork main has
 merged upstream through 565e477 (#24).
 
@@ -21,7 +21,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 <!-- summary: parity.py summary --write -->
 | Area | ✅ | 🟡 | 🔜 | ❌ | ➖ |
 |---|--:|--:|--:|--:|--:|
-| Window, pages and toolbar | 6 | 3 | 0 | 5 | 1 |
+| Window, pages and toolbar | 6 | 3 | 0 | 6 | 1 |
 | Sidebar | 5 | 5 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
@@ -35,7 +35,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 8 | 2 |
-| **All** | 30 | 16 | 0 | 56 | 8 |
+| **All** | 30 | 16 | 0 | 57 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -45,6 +45,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Browser window with pages inside it (CEF child windows), crash-safe start | ✅ [#2] [#3] | `main.swift`, `AppDelegate.swift`, `AppComposition.swift`, `MainWindowController.swift`, `ShellView.swift`, `BrowserManager.swift`, `EmbeddedPages.swift`, `ChromiumWindowCorners.swift`, `ChromiumChildHover.swift`, `ChromiumChildFullscreen.swift`, `WindowDragGesture.swift`, `CraCEF.mm`, `CraCEF.h`, `main.cc` | `ChromiumCrashState`, `JSONStore`, `Scheduling`, `ObserveChanges` | Windows: `HostWindow`, `CraCEFWin.cpp`. Missing: Settings' edge-to-edge pages, Escape leaves video fullscreen (check). |
 | More than one window, window frames saved in `windows.json` | ✅ [#18] | `MainWindowController.swift` | `WindowFrame`, `SpaceWindow` | `SpaceWindow` picks the window a Little Window's page goes to (#23); `moveTabToSpaceN` still waits for a key. |
 | Private (incognito) windows | ✅ [#18] | `BrowserManager.swift` | `SidebarStore` | |
+| Blank Window (`newBlankWindow`, "This Window" with a sidebar of its own); a tab dragged out of the window opens in one | ❌ | `AppDelegate.swift`, `MainWindowController.swift`, `SidebarRowViews.swift` | `BlankWindow`, `TabTearOff`, `SidebarStore` (`addBlankWindow`, `moveToBlankWindow`, `isStandalone`) | Upstream #220, #219 (f1d9c56, 9de5a59). The store already saves Blank Windows' spaces outside `spaceOrder`, so Windows needs the window, its header and the drag out of the sidebar (which waits for drag and drop). |
 | Toolbar: optional (`toggleToolbar`), host-only address, Show Full URL, reload that turns into stop (`stop`), tab colour, link-copy glyph | ❌ | `PaneToolbarView.swift`, `AppKitControls.swift` | `ToolbarComposition`, `ToolbarColor`, `ToolbarExtensionFit` | Off by default as on the Mac, so it comes after the sidebar's address pill. Composition and colour decisions are already shared. |
 | Loading bar at the top middle of the window | ❌ | `LoadingIndicatorView.swift` | `LoadingIndicator` | Small: drive a XAML bar from `LoadingIndicator`. |
 | Hide the sidebar (`toggleSidebar`) and the floating sidebar that slides in from the left edge | ❌ | `FloatingSidebar.swift`, `FloatingSidebarGeometry.swift` | (move `FloatingSidebarGeometry` here) | `FloatingSidebarGeometry` is a CLAUDE.md known exception: move it to CraCore with this PR. |
@@ -66,7 +67,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Go to Space N (`spaceN`) on Alt+1–9, next and previous space on Ctrl+Alt+Right and Left | ✅ [#5] [#21] | `MainWindowController.swift`, `AppDelegate.swift` | `KeyBindingDefaults`, `SidebarStore` (`focusSpace(number:)`) | Arc for Windows' keys: Ctrl+1–9 stays Go to Tab, as in Chrome. |
 | Move Tab to Space N (`moveTabToSpaceN`) | ❌ | `MainWindowController.swift`, `AppDelegate.swift` | `SpaceWindow`, `SidebarStore` | No Windows key yet (the Mac's is ⌃⌘N); comes with Little Windows, whose page it can also send. |
 | Swipe, Shift + wheel or sideways wheel between spaces | ❌ | `SpacePagerView.swift` | `WheelSpaceSwitch` | Decision shared; Windows needs the wheel hook and the slide. |
-| Pinned tabs and folders, Today, Clear Today, archive on close | ✅ [#5] | `SidebarRowViews.swift`, `SidebarItemView.swift` | `SidebarStore`, `CloseSuccessor`, `SidebarClose` | `clearToday` and `newFolder` are in the sidebar menus, not yet commands; `SidebarClose` (Arc's close buttons per row kind) isn't used on Windows yet. |
+| Pinned tabs and folders, Today, Clear Today, archive on close | ✅ [#5] | `SidebarRowViews.swift`, `SidebarItemView.swift` | `SidebarStore`, `CloseSuccessor`, `SidebarClose`, `PinnedPeek` | `clearToday` and `newFolder` are in the sidebar menus, not yet commands; `SidebarClose` (Arc's close buttons per row kind) isn't used on Windows yet. |
 | Pinned tab extras: back to its page by the favicon, the slash, Reset (`resetTab`), edit URL | ❌ | `EditPinnedURLDialog.swift`, `SidebarRowViews.swift` | `PinnedNavigation` | Since 6e371cc "Back to Pinned URL" slides in under the title on hovering the icon (0.16 s). |
 | Folders: hinge animation, hover previews with search, tabs shown under a closed folder | 🟡 | `FolderPreview.swift` | `FolderPeek` | Windows has folders without previews or the animation. |
 | Favorites | 🟡 [#5] | `SidebarRowViews.swift`, `TileColor.swift` | `FavoritesLayout`, `FavoritesSharing` | Missing: 4/2/1 columns by width (`FavoritesLayout`), tile colours and icons, "Drag to add Favorites" card, Settings' share-across-spaces switch. |
@@ -90,7 +91,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 |---|---|---|---|---|
 | Command bar: tabs, archive, history, domains, actions, inline completion, ⌘Return background tab, Tab on the empty field lists actions (#195) | ✅ [#8] [#9] [#24] | `CommandBarController.swift`, `CommandBarView.swift`, `CommandTextField.swift`, `SearchSuggestLoader.swift` | `SuggestionEngine`, `CommandBarDedupe`, `CommandBarGlyph`, `TypedURL`, `RelativeTime`, `ActionSearchScope` | The actions scope (upstream 390cc0b) came with #24's sync. Windows: `WinSuggestLoader` repeats the Mac's loader on FoundationNetworking; move the loader to CraCore. Missing: the theme-following glow and scope bounce, ⌥Return as a split, `checkForUpdates`. |
 | Search suggestions, Site Search with Tab, % tab search, Chromium's engines | ✅ [#9] [#13] | `SearchEngines.swift` | `SearchSuggestions`, `SiteSearch`, `TabSearchScope` | Windows reads Cra's engine setting; the Mac also reads Chromium's engine list (SQLite). |
-| Shortcuts in `keybindings.json`, Settings ▸ Shortcuts | ✅ [#15] | `KeyBindings.swift`, `ShortcutsPane.swift` | `KeyBindingDefaults`, `KeyBindings`, `KeyChord`, `KeyChord+Windows` | Windows' table is `KeyBindingDefaults.windowsShortcuts`; a command joins it when Windows performs it (`parity.py report` lists the rest, each named in its feature's row). |
+| Shortcuts in `keybindings.json`, Settings ▸ Shortcuts | ✅ [#15] | `KeyBindings.swift`, `ShortcutsPane.swift`, `KeyboardLayoutCharacters.swift` | `KeyBindingDefaults`, `KeyBindings`, `KeyChord`, `KeyChord+Windows` | Since upstream 370ca1a (#212) the Mac matches by the character the layout types and falls back to the key's ANSI place (`KeyChord.match`); Windows matches virtual keys, which already follow the layout. Windows' table is `KeyBindingDefaults.windowsShortcuts`; a command joins it when Windows performs it (`parity.py report` lists the rest, each named in its feature's row). |
 | Recent-tab switcher on ⌃Tab (`recentTab`, `recentTabBackward`) | ❌ | `TabSwitcher.swift`, `TabSwitcherView.swift` | `SidebarStore` | Ctrl+Tab cycles sidebar order on Windows until this lands. |
 | Context menus show shortcut glyphs | 🟡 | `SidebarMenus.swift` | `KeyBindings` | WinUI menu items take KeyboardAcceleratorTextOverride. |
 
@@ -106,11 +107,11 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ✅ [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
-| Peek: card over the page with its own bar, Close, Expand, Add To Split | ✅ [#24] | `PeekChrome.swift`, `LittleWindowController.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation`, `PeekTabs` (`openLinkTab`, `peekSplitTabs`, `joinSplit`) | Windows: the card is an owned HostWindow with the page-coloured bar (`Peek/PeekBarView.swift`); the veil, click catcher and round buttons are owned layered windows (`CraOverlay.cpp`, `Peek/PeekOverlays.swift`). Settings ▸ Tabs ▸ Links, Shift-click, Escape, Ctrl+O, Ctrl+Shift+T reopening it, links leaving it for a tab, the badge on the tab it came from. Left: the card growing out of the link and back (#204, `PeekTransition`); the veil only fades. Known: right after Add To Split from a pinned tab, the first click into the copied pane doesn't focus it (the second does); follow-up. |
+| Peek: card over the page with its own bar, Close, Expand, Add To Split | ✅ [#24] | `PeekChrome.swift`, `PeekDimPanel.swift`, `ChromiumChildFocus.swift`, `LittleWindowController.swift` | `PeekLayout`, `PeekTrigger`, `PeekVeil`, `PinnedNavigation`, `PeekTabs` (`openLinkTab`, `peekSplitTabs`, `joinSplit`) | Windows: the card is an owned HostWindow with the page-coloured bar (`Peek/PeekBarView.swift`); the veil, click catcher and round buttons are owned layered windows (`CraOverlay.cpp`, `Peek/PeekOverlays.swift`). Settings ▸ Tabs ▸ Links, Shift-click, Escape, Ctrl+O, Ctrl+Shift+T reopening it, links leaving it for a tab, the badge on the tab it came from. Left: the card growing out of the link and back (#204, `PeekTransition`); the veil only fades. Known: right after Add To Split from a pinned tab, the first click into the copied pane doesn't focus it (the second does); follow-up. Since #24 the Mac shrinks the page behind a Peek a little unless pages fill the window edge to edge (#221, `PeekVeil`, `PeekLayout.backdrop`) and keeps the browser window's shadow (#222, `ChromiumChildFocus.swift`); Windows' browser window already stays active under the card, and its page doesn't shrink yet. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
 | Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
 | History and archive view (`viewArchive`) | ❌ | `LibraryView.swift` | `SidebarStore` | Archive and reopen already work (Ctrl+Shift+T, the command bar). |
-| Now-playing player in the sidebar | ❌ | `NowPlayingTray.swift`, `NowPlaying.swift` | | Windows counterpart for media keys: System Media Transport Controls. |
+| Now-playing player in the sidebar | ❌ | `NowPlayingTray.swift`, `NowPlaying.swift` | `AudibleHold` (Mac's WebKit tabs) | Windows counterpart for media keys: System Media Transport Controls. |
 | Downloads rename card | 🟡 | `DownloadRenameCard.swift` | `TidyDownloads` | The Windows list has open and Show in Folder; the rename card comes with Tidy Downloads. |
 
 ## Tabs and memory
@@ -217,7 +218,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Shortcuts set in the system's keyboard settings work in pages | ➖ | `AppDelegate.swift` | | macOS only. |
 | Feature flags | ❌ | `FeatureFlags.swift` | | |
 | Persistence of the data folder | ✅ [#5] | `Persistence.swift`, `SidebarStore+App.swift`, `Scheduler.swift` | `JSONStore`, `Scheduling`, `SidebarStore` | `%LOCALAPPDATA%\Cra` holds the same files. Keep both versions of `Persistence.swift` in step: Mac tests compile it with CraCore. |
-| Portability helpers, CraCore seen by every Mac file | ✅ [#1] [#16] | `CraCoreExports.swift` | `CGVector+Portable`, `ChromiumLocale` | |
+| Portability helpers, CraCore seen by every Mac file | ✅ [#1] [#16] | `CraCoreExports.swift` | `CGVector+Portable`, `CGAffineTransform+Portable`, `ChromiumLocale` | |
 
 ## Moving Mac code into CraCore
 
@@ -238,29 +239,19 @@ Windows code that repeats Mac logic instead of calling CraCore is a bug to fix t
 
 ## Waiting in upstream
 
-Upstream commits after the fork's last sync (565e477, in #24), triaged. The 34 commits #24
-merged (dd8ae64 to 565e477), with what each means for Windows:
+Upstream commits after the fork's last sync (9da50e7, in #25), triaged. The 16 commits #25
+merged (565e477 to 9da50e7), with what each means for Windows:
 
 | Commit | What | Windows |
 |---|---|---|
-| 030f789 | Copy URL is reserved before the page (#194); ⇧⌘V Paste and Match Style reaches Chromium pages (#192) | Nothing to do: every Windows shortcut is taken before the page, and Ctrl+Shift+V is Chromium's own paste as plain text. |
-| dd8ae64 | Leaving a Google Meet call's tab opens its Document Picture in Picture window (#198) | With the Picture in Picture row (`BrowserManager.swift`, `PageScript.swift`). |
-| 9344185, c33b736 | Camera and microphone use and Meet's automatic Picture in Picture the way Arc gets them; Picture in Picture over full-screen apps (#206) | With the Picture in Picture and mute rows; needs Cra's CEF patches (`auto-pip-tab-hidden.patch`, `audible-state.patch`) on the Windows build. |
-| 106adcc | Background tabs give their GPU tiles back (#195) | With the background tabs row (`HiddenFrameRelease`). |
-| 1647eb6, e1bf433 | Extensions' translated descriptions (#200); imported Web Store extensions stay the store's (#203) | With the Extensions rows (`WebStoreInstalls`). |
-| ac1b3d1 | Windows reopen where they were, on their own display (#201) | Windows already saves frames in `windows.json` (#18) and keeps them on a reachable monitor. |
-| fc14398, a55078d | Peek grows out of the clicked link and back (#204); a new-tab link in a Peek opens a tab in the space (#202) | Built with Windows' Peek (#24): `PeekLayout`, `PeekTrigger`. |
-| 390cc0b | Tab on the empty command bar lists actions (#195) | Done in #24 (`ActionSearchScope`). |
-| 8f511ac, 740441a | Space icons as symbols (#205); an Auto space follows the system again (#155) | Space menu and theme rows. Windows themes have no Auto mode yet. |
-| 94c1fc3, d1ad2af | crabrowser.app links name their button; other apps' links open the app (#207) | New System integration rows (`SiteLinks`, `AppLinks`). |
-| f8042d5 | Cra writes nothing to a site's DevTools console | Windows already reports through `window.__craReport` (#22). |
-| 676a093 | A middle click on a page never closes a tab (#208) | Nothing to do yet: Windows rows have no middle-click close. When they get one, close the row under the click, as the Mac now does. |
-| b528590 | Website languages per profile (#209) | New Profiles row (`BrowserLanguages`, `languageSettings`). |
-| 8c26618 | Arc's page right-click menu: Chromium's menu, extension icons, Arc's items | With the page context menu row. |
-| 41fec6d | A live folder signed out of GitHub says so | With the live folders row. |
-| 061a0ef | Tabs on one host keep their own favicons (#211) | Favicons row, now 🟡. |
-| 398f292, 7951db4, 565e477 | Arc import with a repeated item; the performance recorder; nightly scenarios | Import and Performance rows; nothing on Windows yet. |
-| fcacd29 to 0bd9a83 | `scripts/promises.py` and `Tests/promises.lock` pin shipped issues' tests | The fork's lock names the CraCore tests the fork moved (`CommandBarGlyph`, `DevToolsToggle`) and Linux's `9.0 * 60` in a Tab sleep test. Re-run `scripts/promises.py --update` after each sync and say why in the merge. |
+| f1d9c56, 9de5a59 | Blank Window (⌃⌘N) and a tab dragged out of the window opens in one (#220, #219) | New Blank Window row (`BlankWindow`, `TabTearOff`, `newBlankWindow`). The store side came with the sync. |
+| 09cbcb6, 3b57e7f | The page behind a Peek gently shrinks (#221); a Peek keeps the browser window's shadow (#222) | Peek row (`PeekVeil`, `PeekDimPanel.swift`, `ChromiumChildFocus.swift`). |
+| 154d357, 5cc90c3 | A collapsed pinned section keeps the last pinned tab in sight (`PinnedPeek`); a click opens a closed folder that keeps the open tab in sight (#213) | Pinned tabs and folders rows; Windows has no collapsed pinned section or folder previews yet. |
+| 370ca1a | Shortcuts follow the keyboard layout (#212) | Shortcuts row: Windows matches virtual keys. |
+| 657a1f9, 3008649, 7f3ba00 | Extension popups: close buttons, imported files kept until verified, downloads from popups (#216, #217, #218) | With the Extensions rows (`WebStoreInstalls`). |
+| 4aa54e6 | Arc's GitHub live folder imports as a live folder (#215) | With the live folders and import rows. |
+| 9da50e7 | A WebKit video played again within 2 s shows as playing (`AudibleHold`) | Mac only (Safari's engine); now-playing row. |
+| 9e2d728, 60d6e13, 800cc36, 5e79e3a | Perf harness, nightly, snapshots, mutation testing | Nothing for Windows. 9e2d728 was also cherry-picked into #24. |
 
 ## Keeping this current
 

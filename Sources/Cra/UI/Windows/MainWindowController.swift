@@ -66,6 +66,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     let windowID: UUID
     /// Pages load in the off-the-record profile; nothing is saved (WindowSession.isIncognito).
     let isIncognito: Bool
+    /// Arc's Blank Window (#220): a sidebar of its own, "This Window", in the normal profile.
+    var isBlank: Bool { store.isBlank(window: windowID) }
+    /// Shows only a space of its own (incognito or Blank): no other spaces, no space switching.
+    var isStandalone: Bool { isIncognito || isBlank }
     var focusedSpaceID: UUID { store.focusedSpaceID(window: windowID) }
     var focusedSpace: Space { store.focusedSpace(window: windowID) }
     var selectedTabID: UUID? { store.selectedTabID(window: windowID) }
@@ -252,6 +256,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         sidebarActions.titleBarDoubleClick = { [weak self] in (self?.window as? CraWindow)?.performTitleDoubleClickAction() }
         sidebarActions.openCommandBar = { [weak self] mode in self?.openCommandBar(mode) }
         sidebarActions.closeTab = { [weak self] id in self?.closeTab(id) }
+        sidebarActions.moveBlankWindow = { [weak self] space in
+            guard let self else { return }
+            self.app.moveBlankWindow(self, toSpace: space)
+        }
+        sidebarActions.tearOffTab = { [weak self] id, point in
+            guard let self else { return }
+            self.app.tearOffTab(id, at: point, from: self)
+        }
         sidebarActions.goBack = { [weak self] in self?.currentBrowser?.goBack() }
         sidebarActions.goForward = { [weak self] in self?.currentBrowser?.goForward() }
         sidebarActions.reload = { [weak self] in
@@ -491,6 +503,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     /// The browser window the user is in (AppDelegate follows the key window).
     private var isActiveWindow: Bool { store.activeWindowID == windowID }
 
+    /// `cra://debug?dragEnd`: a drag of a row of this window's list let go at a screen point
+    /// with nothing taking it, as a drag out of the sidebar ends (#219).
+    func testDragEnded(_ id: UUID, at screenPoint: NSPoint) {
+        func list(in v: NSView) -> SpaceListView? {
+            if let l = v as? SpaceListView, l.spaceID == focusedSpaceID { return l }
+            return v.subviews.lazy.compactMap { list(in: $0) }.first
+        }
+        guard let l = window?.contentView.flatMap(list(in:)) else { CraLog.note("dragEnd: no list"); return }
+        l.dragEnded(id, at: screenPoint, operation: [])
+    }
+
     /// The tab's page belongs to another window that has it open: the window in use takes it,
     /// others keep it where it is. Windows restored at launch (none has the page yet, and
     /// `app.mainWindows` is still empty) leave it to the window in use, else the first one.
@@ -628,6 +651,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         updateRecentDownload(download)
         if download.state == .complete, !download.fullPath.isEmpty, finishedDownloads.insert(download.identifier).inserted {
             DownloadHistory.shared.add(path: download.fullPath)
+            // The address's scheme only, never the file: scenarios wait for this line.
+            CraLog.note("Download finished from a \(URL(string: download.url)?.scheme ?? "unknown"): address")
             let id = download.identifier
             TidyDownloadsService.shared.finished(id, path: download.fullPath, downloadURL: download.url, window: windowID, store: store) { [weak self] path in
                 guard let self, var recent = self.sidebarUI.recentDownload, recent.id == id else { return }
@@ -1575,15 +1600,62 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         }
     }
 
-    /// Arc fades the page under a Peek to 28 % over the window's background, its sidebar as it is.
-    func setPeekVeil(_ on: Bool, duration: TimeInterval, timing: CAMediaTimingFunction? = nil) {
-        let alpha: CGFloat = on ? PeekLayout.pageAlpha : 1
+    /// Arc fades the page under a Peek to 28 % over the window's background, its sidebar as it is;
+    /// Cra also draws it back a little unless it fills the window edge to edge (PR #221).
+    /// `PeekVeil` says which Peek it is veiled for, so a Peek that ended early never veils it and
+    /// one whose close already fades it back doesn't snap that fade.
+    private var peekVeil = PeekVeil()
+
+    /// `peek` is opening over this window.
+    func showPeekVeil(for peek: UUID) {
+        guard peekVeil.show(for: peek) else { return }
+        applyPeekVeil(duration: PeekLayout.openVeilDuration, timing: PeekTransition.easeOutCubic)
+    }
+
+    /// `peek` is closing: the page comes back over Arc's 0.2 s while the card lands.
+    func hidePeekVeil(for peek: UUID) {
+        guard peekVeil.hide(for: peek) else { return }
+        applyPeekVeil(duration: PeekLayout.closeVeilDuration, timing: PeekTransition.easeOutCubic)
+    }
+
+    /// `peek`'s window is gone (Expand and Add To Split don't animate): the page snaps back.
+    func endPeekVeil(for peek: UUID) {
+        guard peekVeil.end(for: peek) else { return }
+        applyPeekVeil(duration: 0)
+    }
+
+    /// cra://debug?peekShown: the page behind a Peek as it is set now (the peek-backdrop scenario).
+    func peekBackdropShown() -> String {
+        func scale(_ v: NSView?) -> String {
+            String(format: "%.3f", v?.layer.map { CATransform3DGetAffineTransform($0.sublayerTransform).a } ?? 1)
+        }
+        let content = shell.contentContainer
+        // Pages in their own windows (DevTools docked, or CRA_EMBED_PAGES=0); embedded ones go with the content.
+        let pages = browsers.runtimes.values.compactMap(\.hostWindow).filter { $0.parent === window && !EmbeddedPages.isHost($0) }
+        return String(format: "veiled=%d alpha=%.2f scale=%@ windows=%@", peekVeil.isOn ? 1 : 0, content.alphaValue, scale(content),
+                      pages.map { String(format: "%.2f@", $0.alphaValue) + scale($0.contentView) }.joined(separator: ","))
+    }
+
+    private func applyPeekVeil(duration: TimeInterval, timing: CAMediaTimingFunction? = nil) {
+        let look = PeekLayout.backdrop(veiled: peekVeil.isOn, edgeToEdge: shell.edgeToEdge)
+        let content = shell.contentContainer
+        let center = CGPoint(x: content.bounds.midX, y: content.bounds.midY)
+        PeekTransition.scaleBackdrop(content, around: center, to: look.scale, duration: duration, timing: timing)
         let pages = browsers.runtimes.values.compactMap(\.hostWindow).filter { $0.parent === window }
+        if let window {
+            // Each page window shrinks around the same point on screen as the page's card.
+            let screenCenter = window.convertPoint(toScreen: content.convert(center, to: nil))
+            for page in pages where !EmbeddedPages.isHost(page) {
+                guard let view = page.contentView else { continue }
+                let pageCenter = view.convert(page.convertPoint(fromScreen: screenCenter), from: nil)
+                PeekTransition.scaleBackdrop(view, around: pageCenter, to: look.scale, duration: duration, timing: timing)
+            }
+        }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = duration
             ctx.timingFunction = timing
-            shell.contentContainer.animator().alphaValue = alpha
-            for w in pages { w.animator().alphaValue = alpha }
+            content.animator().alphaValue = look.alpha
+            for w in pages { w.animator().alphaValue = look.alpha }
         }
     }
 
@@ -2011,7 +2083,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
                     self.swipeY += event.scrollingDeltaY
                     guard max(abs(self.swipeX), abs(self.swipeY)) > 6 else { return event }
                     // One space still swipes into the Library.
-                    guard abs(self.swipeX) > abs(self.swipeY) * 1.2, !self.isIncognito,
+                    guard abs(self.swipeX) > abs(self.swipeY) * 1.2, !self.isStandalone,
                           self.store.spaceOrder.count > 1 || !self.shell.floatingSidebar,
                           // At the Spaces page's end a swipe back along the cards scrolls them.
                           !(self.sidebarUI.libraryPage == .spaces && self.swipeX > 0) else {
@@ -2217,7 +2289,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
     private func wheelSwitchesSpace(_ event: NSEvent) -> Bool {
         let host = shell.sidebarHost
         guard shell.sidebarVisible || shell.floatingSidebar, event.window != nil, event.window === host.window,
-              host.bounds.contains(host.convert(event.locationInWindow, from: nil)), !isIncognito else { return false }
+              host.bounds.contains(host.convert(event.locationInWindow, from: nil)), !isStandalone else { return false }
         let dx = event.scrollingDeltaX
         // On the Spaces page the cards scroll first; once they can't scroll that way the wheel pages,
         // which leaves the Library when it heads for the next space, and over the rail it leaves at
@@ -2920,7 +2992,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         guard let window else { return }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 651, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         // Arc's New Space starts on the profile of the space it was opened from.
-        let initialProfile = space == nil && !isIncognito ? SpaceProfiles.forNewSpace(from: store.focusedSpace, profiles: store.profiles) : nil
+        let initialProfile = space == nil && !isStandalone ? SpaceProfiles.forNewSpace(from: store.focusedSpace, profiles: store.profiles) : nil
         let store = self.store
         let view = SpaceEditorView(existing: space, profiles: store.profiles, initialProfile: initialProfile, onSave: { [weak panel] title, icon, theme, profile, newName in
             let id: UUID
@@ -2992,6 +3064,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
         // A toast that stays (the protected media one) follows the page's corner, once laid out.
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
+            // The page behind a Peek shrinks around its new centre.
+            if self.peekVeil.isOn { self.applyPeekVeil(duration: 0) }
             self.toast.follow(page: self.shell.webContainer.convert(self.shell.webContainer.bounds, to: nil), in: window)
         }
         saveFrame()
@@ -3031,7 +3105,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, BrowserM
 
     /// A page handed over by a window that is closing.
     func takePage(_ rt: TabRuntime) {
-        browsers.adopt(rt.browser, for: rt.tabID)
+        browsers.adopt(rt.browser, for: rt.tabID, from: "another window's")
         refresh()
     }
 
