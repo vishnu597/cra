@@ -136,6 +136,13 @@ final class HostWindow {
         return areas
     }
 
+    /// The work area of the monitor under the pointer (where a Little Window opens).
+    static var workAreaUnderPointer: WindowFrame? {
+        var p = POINT()
+        guard GetCursorPos(&p), let monitor = MonitorFromPoint(p, DWORD(MONITOR_DEFAULTTONEAREST)) else { return nil }
+        return workArea(of: monitor)
+    }
+
     private static func workArea(of monitor: HMONITOR) -> WindowFrame? {
         var info = MONITORINFO()
         info.cbSize = DWORD(MemoryLayout<MONITORINFO>.size)

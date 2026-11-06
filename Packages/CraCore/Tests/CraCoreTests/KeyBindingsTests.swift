@@ -168,7 +168,7 @@ struct KeyBindingsTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let r = Self.registry(KeyBindingDefaults.windows, in: dir)
         let all = ShortcutsList.groups(in: r, query: "")
-        #expect(all.map(\.title) == ["Cra", "File", "Edit", "View", "Spaces", "Tabs", "Archive"])
+        #expect(all.map(\.title) == ["Cra", "File", "Edit", "View", "Spaces", "Tabs", "Archive", "Window"])  // Window: the Little Window actions
         #expect(all.reduce(0) { $0 + $1.actions.count } == KeyBindingDefaults.windows.count)
         #expect(ShortcutsList.groups(in: r, query: "  SPLIT ").flatMap(\.actions).map(\.id)
             == ["addSplitView", "closeSplitPane", "separateFromSplit", "flipSplitOrientation", "nextSplitPane", "previousSplitPane"])

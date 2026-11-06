@@ -1227,6 +1227,9 @@ private:
 void CraBrowser::Create() {
     CefWindowInfo info;
     info.SetAsChild(parent, frame);
+    // Hidden before Chromium made it (a tab left at once, as when a window opens for a Little
+    // Window's page): created hidden, or it showed over the page picked (PC test).
+    if (!visible) info.style &= ~static_cast<DWORD>(WS_VISIBLE);
     CefBrowserSettings settings;
     CraPageSettings(settings);
     CefBrowserHost::CreateBrowser(info, client, pending_url.empty() ? "about:blank" : pending_url, settings, nullptr,
@@ -1360,6 +1363,16 @@ extern "C" CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int
 extern "C" void cra_browser_set_frame(CraBrowser *b, int x, int y, int width, int height) {
     if (!b) return;
     b->frame = CefRect(x, y, width, height);
+    b->ApplyFrame();
+}
+
+extern "C" void cra_browser_set_parent(CraBrowser *b, uintptr_t parent) {
+    if (!b || !parent) return;
+    b->parent = reinterpret_cast<HWND>(parent);
+    if (!b->browser) return;  // Create() uses the new parent
+    if (HWND hwnd = b->browser->GetHost()->GetWindowHandle()) SetParent(hwnd, b->parent);
+    if (HWND devtools = b->DockedDevToolsWindow()) SetParent(devtools, b->parent);
+    b->browser->GetHost()->NotifyMoveOrResizeStarted();
     b->ApplyFrame();
 }
 

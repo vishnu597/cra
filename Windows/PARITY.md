@@ -4,7 +4,7 @@ Every feature of the Mac app, what the Windows app has of it, and where the code
 can share lives. The goal is the Mac app's features on Windows, built on the Mac's own logic:
 what decides something goes in CraCore once and both shells call it (CLAUDE.md, rule 1).
 
-<!-- upstream-reviewed: ef42649 -->
+<!-- upstream-reviewed: dd8ae64 -->
 Upstream reviewed through **ef42649** (VictorKildahl/cra main, 5 Nov 2026). Fork main has
 merged upstream through ef42649 (#22).
 
@@ -25,17 +25,17 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Sidebar | 6 | 4 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
-| Little Windows, Peek and the Library | 0 | 1 | 0 | 6 | 0 |
+| Little Windows, Peek and the Library | 0 | 1 | 1 | 5 | 0 |
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
 | Profiles, privacy and site data | 3 | 1 | 0 | 6 | 0 |
-| DevTools and Developer Mode | 1 | 0 | 1 | 1 | 0 |
+| DevTools and Developer Mode | 2 | 0 | 0 | 1 | 0 |
 | Extensions | 0 | 0 | 0 | 5 | 0 |
 | Settings | 4 | 1 | 0 | 4 | 0 |
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 6 | 2 |
-| **All** | 28 | 15 | 1 | 55 | 8 |
+| **All** | 29 | 15 | 1 | 54 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -43,7 +43,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | Browser window with pages inside it (CEF child windows), crash-safe start | ✅ [#2] [#3] | `main.swift`, `AppDelegate.swift`, `AppComposition.swift`, `MainWindowController.swift`, `ShellView.swift`, `BrowserManager.swift`, `EmbeddedPages.swift`, `ChromiumWindowCorners.swift`, `ChromiumChildHover.swift`, `ChromiumChildFullscreen.swift`, `WindowDragGesture.swift`, `CraCEF.mm`, `CraCEF.h`, `main.cc` | `ChromiumCrashState`, `JSONStore`, `Scheduling`, `ObserveChanges` | Windows: `HostWindow`, `CraCEFWin.cpp`. Missing: Settings' edge-to-edge pages, Escape leaves video fullscreen (check). |
-| More than one window, window frames saved in `windows.json` | ✅ [#18] | `MainWindowController.swift` | `WindowFrame`, `SpaceWindow` | `SpaceWindow` (which window a page sent to a space opens in) waits for `moveTabToSpaceN` and Little Windows. |
+| More than one window, window frames saved in `windows.json` | ✅ [#18] | `MainWindowController.swift` | `WindowFrame`, `SpaceWindow` | `SpaceWindow` picks the window a Little Window's page goes to (#23); `moveTabToSpaceN` still waits for a key. |
 | Private (incognito) windows | ✅ [#18] | `BrowserManager.swift` | `SidebarStore` | |
 | Toolbar: optional (`toggleToolbar`), host-only address, Show Full URL, reload that turns into stop (`stop`), tab colour, link-copy glyph | ❌ | `PaneToolbarView.swift`, `AppKitControls.swift` | `ToolbarComposition`, `ToolbarColor`, `ToolbarExtensionFit` | Off by default as on the Mac, so it comes after the sidebar's address pill. Composition and colour decisions are already shared. |
 | Loading bar at the top middle of the window | ❌ | `LoadingIndicatorView.swift` | `LoadingIndicator` | Small: drive a XAML bar from `LoadingIndicator`. |
@@ -105,7 +105,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
-| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ❌ | `LittleWindowController.swift`, `GlobalHotkey.swift` | `SpaceWindow`, `GlobalShortcut` | Next in the Phase 2 list. Global hotkey on Windows: RegisterHotKey. |
+| Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | 🔜 [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
 | Peek: card over the page with its own bar, Close, Expand, Add To Split | ❌ | `PeekChrome.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation` | With Little Windows. Layout and trigger are shared. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
 | Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
@@ -128,7 +128,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | Capture (`capturePage`): copy the page | 🟡 [#17] | `CaptureOverlay.swift`, `ViewSnapshot.swift` | `PageCapture`, `ContentCapture` | Windows copies the visible page or the full page. Missing: Arc's element pick and region drag with copy, save and send (`ContentCapture`). |
-| Picture in Picture (`pictureInPicture`), automatic on leaving a video tab, throw into corners | ❌ | `PictureInPictureChrome.swift`, `PictureInPictureControls.swift` | `PictureInPictureGesture`, `PictureInPictureThrow` | Gestures and throws are shared. |
+| Picture in Picture (`pictureInPicture`), automatic on leaving a video tab or a Meet call (Document Picture in Picture, upstream #198), throw into corners | ❌ | `PictureInPictureChrome.swift`, `PictureInPictureControls.swift` | `PictureInPictureGesture`, `PictureInPictureThrow` | Gestures and throws are shared. |
 | Protected media (DRM services in Safari's engine) | ➖ | `PageEngines.swift`, `WebKitBrowser.swift`, `WebKitStores.swift` | `ProtectedMedia` | Mac only (FairPlay in WebKit). On Windows the counterpart is a Widevine-capable CEF build; the per-site choices in `ProtectedMedia` can be reused. |
 | Screen sharing with tab audio, web notifications shown and clicked | 🟡 [#17] | `CraCEF.mm` | `PermissionPrompt` | The prompts work on Windows; Chrome's screen picker and notifications opening their page haven't been checked on the PC. |
 | Speech recognition on device | ❌ | `CraCEF.mm` | `ChromiumLocale` | The `speech-on-device` CEF patch is Mac only. |
@@ -153,7 +153,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | DevTools docked in the page's place (`devTools`, `inspectElement`, `jsConsole`), Chrome's dock sides and undocking | ✅ [#20] | `MainWindowController.swift` | `DevToolsToggle` | Moved to CraCore in #20; both apps decide each press with it. |
-| Developer Mode for a site (`toggleDeveloperMode`): the striped bar with the full URL edited in place, Copy, Console, Network, Inspect; host and port under the tab's title; the ring round the open tab | 🔜 [#22] | `PaneToolbarView.swift`, `SidebarRowViews.swift` | `ToolbarComposition`, `DeveloperBar` (`SpaceTheme.developerBar`, `DeveloperStripes`, `DeveloperTabRing`, `OKLab`) | Windows: Ctrl+Shift+D (the Mac's ⌃D is Pin Tab there). The bar's colours, stripes and ring moved to CraCore in #22 for both apps. Not in a split, as on the Mac; Windows has no normal toolbar yet, so a split pane shows no bar. |
+| Developer Mode for a site (`toggleDeveloperMode`): the striped bar with the full URL edited in place, Copy, Console, Network, Inspect; host and port under the tab's title; the ring round the open tab | ✅ [#22] | `PaneToolbarView.swift`, `SidebarRowViews.swift` | `ToolbarComposition`, `DeveloperBar` (`SpaceTheme.developerBar`, `DeveloperStripes`, `DeveloperTabRing`, `OKLab`) | Windows: Ctrl+Shift+D (the Mac's ⌃D is Pin Tab there). The bar's colours, stripes and ring moved to CraCore in #22 for both apps. Not in a split, as on the Mac; Windows has no normal toolbar yet, so a split pane shows no bar. |
 | Performance recorder, Settings ▸ Performance, Export Diagnostics | ❌ | `PerformancePane.swift`, `Perf.swift`, `PerfCEF.swift`, `PerfFiles.swift`, `PerfRecorder.swift`, `PerfSamplers.swift`, `MainLoopObserver.swift`, `HitchMonitor.swift`, `Diagnostics.swift`, `CraLog.swift` | `PerfHistory`, `PerfInsights`, `PerfMetric`, `PerfProcessTable`, `PerfReport`, `PerfSampleStack`, `PerfSession`, `PerfStall`, `PerfState`, `LogHistogram`, `SiteNames`, `DiagnosticsRedaction`, `DisplayDiagnostics` | The recorder's model is shared; samplers are per platform. `CraLog.swift` is Foundation only: move it to CraCore so both apps log the same way. |
 
 ## Extensions
@@ -235,7 +235,12 @@ Windows code that repeats Mac logic instead of calling CraCore is a bug to fix t
 
 ## Waiting in upstream
 
-Upstream commits after the fork's last sync (ef42649, in #22), triaged: none yet.
+Upstream commits after the fork's last sync (dd8ae64, in #23), triaged:
+
+| Commit | What | Windows |
+|---|---|---|
+| 030f789 | Copy URL is reserved before the page (#194); ⇧⌘V Paste and Match Style reaches Chromium pages (#192) | Nothing to do: every Windows shortcut is taken before the page, and Ctrl+Shift+V is Chromium's own paste as plain text. |
+| dd8ae64 | Leaving a Google Meet call's tab opens its Document Picture in Picture window (#198) | With the Picture in Picture row (`BrowserManager.swift`, `PageScript.swift`). |
 
 ## Keeping this current
 
@@ -268,3 +273,4 @@ Upstream commits after the fork's last sync (ef42649, in #22), triaged: none yet
 [#20]: https://github.com/vishnu597/cra-windows/pull/20
 [#21]: https://github.com/vishnu597/cra-windows/pull/21
 [#22]: https://github.com/vishnu597/cra-windows/pull/22
+[#23]: https://github.com/vishnu597/cra-windows/pull/23

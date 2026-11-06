@@ -18,6 +18,22 @@ public enum GlobalShortcut {
         }
     }
 
+    /// RegisterHotKey's modifier bits on Windows (MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN), and
+    /// MOD_NOREPEAT so holding the keys doesn't open one window after another.
+    public static let windowsAlt: UInt32 = 0x1, windowsControl: UInt32 = 0x2, windowsShift: UInt32 = 0x4
+    public static let windowsWin: UInt32 = 0x8, windowsNoRepeat: UInt32 = 0x4000
+
+    /// KeyChord.Modifiers as Windows' (KeyChord+Windows: `.control` is Ctrl, `.option` Alt,
+    /// `.command` the Windows key).
+    public static func windowsModifiers(_ modifiers: KeyChord.Modifiers) -> UInt32 {
+        var out = windowsNoRepeat
+        if modifiers.contains(.control) { out |= windowsControl }
+        if modifiers.contains(.option) { out |= windowsAlt }
+        if modifiers.contains(.shift) { out |= windowsShift }
+        if modifiers.contains(.command) { out |= windowsWin }
+        return out
+    }
+
     /// NSEvent-style modifier bits (KeyChord.Modifiers) as Carbon's.
     public static func carbonModifiers(_ modifiers: KeyChord.Modifiers) -> UInt32 {
         var out: UInt32 = 0

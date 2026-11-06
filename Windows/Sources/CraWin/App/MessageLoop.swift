@@ -10,6 +10,8 @@ import WinSDK
 enum MessageLoop {
     /// Runs on the UI thread when the loop gets WM_QUIT, while XAML is still up.
     nonisolated(unsafe) static var willQuit: (() -> Void)?
+    /// A hotkey registered for the thread (RegisterHotKey with no window, GlobalHotkey): its id.
+    nonisolated(unsafe) static var onHotKey: ((Int32) -> Void)?
 
     private typealias PreTranslate = @convention(c) (UnsafePointer<MSG>?) -> Bool
     private static let contentPreTranslateMessage: PreTranslate? = {
@@ -26,6 +28,10 @@ enum MessageLoop {
                     willQuit?()
                     return Int32(msg.wParam)
                 }
+                if msg.message == wmHotKey, msg.hwnd == nil {
+                    onHotKey?(Int32(truncatingIfNeeded: msg.wParam))
+                    continue
+                }
                 if isChromium(msg.hwnd) || !(contentPreTranslateMessage?(&msg) ?? false) {
                     TranslateMessage(&msg)
                     DispatchMessageW(&msg)
@@ -40,6 +46,8 @@ enum MessageLoop {
             _ = MsgWaitForMultipleObjects(0, nil, false, wait, DWORD(QS_ALLINPUT))
         }
     }
+
+    private static let wmHotKey: UINT = 0x0312  // WM_HOTKEY
 
     /// Ends the process once everything is saved and Chromium has shut down. What is left is
     /// swift-winui's teardown after its loop returns, which releases the XAML manager and the

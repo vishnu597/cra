@@ -220,6 +220,9 @@ CraBrowser *cra_browser_create(uintptr_t parent, int x, int y, int width, int he
 CraBrowser *cra_browser_create_in(uintptr_t parent, int x, int y, int width, int height, const char *url,
                                   int incognito, const char *profile_path, CraBrowserCallbacks callbacks);
 void cra_browser_set_frame(CraBrowser *browser, int x, int y, int width, int height);
+/// Moves the page (and its docked DevTools) into another window, live: a Little Window's page
+/// going into a browser window. Set its frame for the new parent after.
+void cra_browser_set_parent(CraBrowser *browser, uintptr_t parent);
 /// Shows or hides the page (a background tab is hidden; Chromium also throttles it).
 void cra_browser_set_visible(CraBrowser *browser, int visible);
 void cra_browser_set_focused(CraBrowser *browser, int focused);
