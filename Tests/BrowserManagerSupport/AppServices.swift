@@ -49,6 +49,10 @@ enum TestRoot { case today }
         items[item.id] = item
         return item
     }
+    /// CraCore's PeekTabs.openLinkTab, without the Today placement (these tests don't read it).
+    func openLinkTab(_ url: String, from source: UUID?, inBackground background: Bool, window: UUID? = nil) -> TestItem {
+        createTab(url: url, select: !background, window: window)
+    }
 }
 /// The extensions turned on in the Default profile.
 @MainActor final class ExtensionStore {
