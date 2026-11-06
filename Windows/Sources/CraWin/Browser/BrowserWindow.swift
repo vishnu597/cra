@@ -101,6 +101,9 @@ final class BrowserWindow {
     private var toast: ToastView!
     /// A full-page capture is running.
     private var capturing = false
+    /// The Peek closed last over this window and the tab it came from: Arc's Ctrl+Shift+T brings
+    /// it back when nothing was archived after it.
+    var closedPeek: (url: String, tabID: UUID?, at: Date)?
 
     private static let sidebarWidth = 280.0
     /// What a new window opens when the sidebar has nothing to show.
@@ -134,6 +137,7 @@ final class BrowserWindow {
         window.title = Self.title(nil, incognito: isIncognito)
         hwnd = window.hwnd
         window.onLayout = { [weak self] _ in
+            self?.repositionPeeks()
             self?.layoutPanes()
             self?.placeCommandBar()
             self?.placeFindBar()
@@ -141,6 +145,7 @@ final class BrowserWindow {
             self?.hideSiteControlCenter()
         }
         window.onMove = { [weak self] in
+            self?.repositionPeeks()
             self?.placeFindBar()
             self?.placePermissionPrompt()
             self?.hideSiteControlCenter()
@@ -168,7 +173,7 @@ final class BrowserWindow {
         window.shouldClose = { [weak self] in
             guard let self, !self.readyToClose else { return true }
             self.saveFrame()
-            guard !self.livePages.isEmpty else { return true }
+            guard !self.canFinishClosing else { return true }
             self.beginClosing()
             return false
         }
@@ -346,13 +351,27 @@ final class BrowserWindow {
         paneIDs = []
         paneDrag = nil
         for page in open { page.close() }
+        // A Peek's card is owned by this window: its page closes before the window goes.
+        host?.closePeeks(over: self)
         // Popup hosts and pages already on their way out count too (livePages).
         closeTimer = try? dispatcher.createTimer()
         closeTimer?.interval = TimeSpan(duration: 3 * 10_000_000)
         closeTimer?.isRepeating = false
         closeTimer?.tick.addHandler { [weak self] _, _ in self?.finishClosing() }
         try? closeTimer?.start()
-        if livePages.isEmpty { finishClosing() }
+        if canFinishClosing { finishClosing() }
+    }
+
+    /// No page of this window's and no Peek over it waits for Chromium.
+    private var canFinishClosing: Bool { livePages.isEmpty && host?.hasPeek(over: self) != true }
+
+    /// A Peek over this window closed: the window may be waiting for it to go.
+    func peekDidClose() {
+        if host?.hasPeek(over: self) != true {
+            sidebar.peekBadge = nil
+            queueRefresh()
+        }
+        if closing, canFinishClosing { _ = try? dispatcher.tryEnqueue { [weak self] in self?.finishClosing() } }
     }
 
     private func finishClosing() {
@@ -656,7 +675,37 @@ final class BrowserWindow {
     }
 
     private func reopenClosedTab() {
-        store.reopenLastArchived()
+        // Arc: a Peek closed after the last archived tab comes back, over the tab it came from.
+        if !isIncognito, let peek = closedPeek,
+           PeekTrigger.reopensClosedPeek(closedAt: peek.at, lastArchivedAt: store.archive.first?.archivedAt) {
+            closedPeek = nil
+            if let id = peek.tabID, store.item(id) != nil { store.selectTab(id, window: windowID) }
+            host?.openPeek(url: peek.url, over: self, fromTab: peek.tabID)
+        } else {
+            store.reopenLastArchived()
+        }
+    }
+
+    // MARK: Peek
+
+    /// Where a Peek over this window goes now (its client area on screen, the sidebar's width).
+    func peekPlacement() -> PeekPlacement? {
+        guard !closing, let host = HWND(bitPattern: hwnd) else { return nil }
+        var origin = POINT(x: 0, y: 0)
+        _ = ClientToScreen(host, &origin)
+        let size = window.appWindow.clientSize
+        return PeekPlacement(client: PixelRect(x: origin.x, y: origin.y, width: size.width, height: size.height),
+                             sidebar: window.sidebarWidth, scale: window.scale)
+    }
+
+    /// Arc badges the tab a Peek came from with the peeked page's favicon.
+    func showPeekBadge(tab id: UUID?, url: String) {
+        sidebar.peekBadge = id.map { ($0, FaviconKey.key(for: url)) }
+        queueRefresh()
+    }
+
+    private func repositionPeeks() {
+        host?.repositionPeeks(over: self)
     }
 
     // MARK: Find in page
@@ -1217,7 +1266,7 @@ final class BrowserWindow {
         }
     }
 
-    private func showToast(_ text: String, action: ToastView.Action? = nil) {
+    func showToast(_ text: String, action: ToastView.Action? = nil) {
         guard !closing else { return }
         toast.show(text, action: action, theme: store.focusedSpace(window: windowID).theme)
     }
@@ -1303,9 +1352,25 @@ extension BrowserWindow: WebPageDelegate {
         if let id = tabID(of: page) { store.setThemeColor(id, hex) }
     }
 
+    /// In the space of the tab it came from, right below it when that is a Today tab
+    /// (SidebarStore.openLinkTab, #202).
     func page(_ page: WebPage, requestsNewTabWithURL url: String, inBackground background: Bool) {
-        let space = tabID(of: page).flatMap { store.spaceID(ofItem: $0) }
-        store.createTab(url: url, in: space, select: !background, window: windowID)
+        store.openLinkTab(url, from: tabID(of: page), inBackground: background, window: windowID)
+    }
+
+    /// Arc's Peek (PeekTrigger, Settings ▸ Tabs ▸ Links): the link opens over the window and the
+    /// tab stays put. Never in a private window.
+    func page(_ page: WebPage, opensPeekForURL url: String, shiftClick: Bool, newTab: Bool) -> Bool {
+        guard !isIncognito, !closing, !url.lowercased().hasPrefix("cra:"), let id = tabID(of: page), pages[id] === page else { return false }
+        let from = page.currentURL.isEmpty ? (store.item(id)?.tab?.url ?? "") : page.currentURL
+        guard PeekTrigger.opens(url, from: from, shiftClick: shiftClick, newTab: newTab, fromPinned: store.isPinned(id),
+                                settings: store.settings) else { return false }
+        // Not from inside Chromium's navigation callback.
+        _ = try? dispatcher.tryEnqueue { [weak self] in
+            guard let self, !self.closing else { return }
+            self.host?.openPeek(url: url, over: self, fromTab: id)
+        }
+        return true
     }
 
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage? {
@@ -1424,7 +1489,7 @@ extension BrowserWindow: WebPageDelegate {
         if closing {
             // After this callback: it comes from inside CEF's OnBeforeClose, and destroying the
             // pages' parent window there crashed libcef.
-            if livePages.isEmpty {
+            if canFinishClosing {
                 _ = try? dispatcher.tryEnqueue { [weak self] in self?.finishClosing() }
             }
             return

@@ -25,7 +25,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Sidebar | 5 | 5 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
-| Little Windows, Peek and the Library | 1 | 1 | 0 | 5 | 0 |
+| Little Windows, Peek and the Library | 1 | 1 | 1 | 4 | 0 |
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
 | Profiles, privacy and site data | 3 | 1 | 0 | 7 | 0 |
@@ -35,7 +35,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 8 | 2 |
-| **All** | 29 | 16 | 0 | 57 | 8 |
+| **All** | 29 | 16 | 1 | 56 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -106,7 +106,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Feature | Windows | Mac code | Shared in CraCore | Notes and next step |
 |---|---|---|---|---|
 | Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ✅ [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
-| Peek: card over the page with its own bar, Close, Expand, Add To Split | ❌ | `PeekChrome.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation` | With Little Windows. Layout and trigger are shared. |
+| Peek: card over the page with its own bar, Close, Expand, Add To Split | 🔜 [#24] | `PeekChrome.swift`, `LittleWindowController.swift` | `PeekLayout`, `PeekTrigger`, `PinnedNavigation`, `PeekTabs` (`openLinkTab`, `peekSplitTabs`, `joinSplit`) | Windows: the card is an owned HostWindow with the page-coloured bar (`Peek/PeekBarView.swift`); the veil, click catcher and round buttons are owned layered windows (`CraOverlay.cpp`, `Peek/PeekOverlays.swift`). Settings ▸ Tabs ▸ Links, Shift-click, Escape, Ctrl+O, Ctrl+Shift+T reopening it, links leaving it for a tab, the badge on the tab it came from. Left: the card growing out of the link and back (#204, `PeekTransition`); the veil only fades. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
 | Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
 | History and archive view (`viewArchive`) | ❌ | `LibraryView.swift` | `SidebarStore` | Archive and reopen already work (Ctrl+Shift+T, the command bar). |

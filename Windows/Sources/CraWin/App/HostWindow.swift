@@ -70,9 +70,24 @@ final class HostWindow {
     /// `frame`: where to open, in screen pixels (a restored or cascaded window); nil opens a
     /// `width` × `height` window where Windows puts it.
     /// `topBar`: what the strip over the page area shows while `topBarHeight` isn't 0.
+    /// `owner`: a card over that window (the Peek): a border without a title bar, which Windows 11
+    /// rounds and shadows, never on the taskbar or in Alt+Tab, always over its owner. It opens
+    /// hidden; `placeClient` puts it on screen.
     init(content: UIElement, topBar: UIElement? = nil, sidebarWidth: Double, frame: WindowFrame? = nil,
-         width: Double = 1280, height: Double = 820) throws {
-        appWindow = try AppWindow.create()
+         width: Double = 1280, height: Double = 820, owner: HostWindow? = nil) throws {
+        if let owner {
+            guard let presenter = try OverlappedPresenter.create() else { throw FloatingWindowError.noPresenter }
+            presenter.isResizable = false
+            presenter.isMaximizable = false
+            presenter.isMinimizable = false
+            try presenter.setBorderAndTitleBar(true, false)
+            guard let window = try AppWindow.create(presenter, owner.appWindow.id) else { throw FloatingWindowError.noWindow }
+            appWindow = window
+            appWindow.isShownInSwitchers = false
+        } else {
+            appWindow = try AppWindow.create()
+        }
+        isCard = owner != nil
         hwnd = UInt(appWindow.id.value)
         self.sidebarWidth = sidebarWidth
         try xaml.initialize(appWindow.id)
@@ -93,7 +108,9 @@ final class HostWindow {
                 _ = try? WinAppSDK.DispatcherQueue.getForCurrentThread()?.tryEnqueue { [weak self] in self?.close() }
             }
         }
-        if let frame {
+        if isCard {
+            // Placed and shown by its owner (placeClient).
+        } else if let frame {
             try appWindow.moveAndResize(RectInt32(x: Int32(frame.x.rounded()), y: Int32(frame.y.rounded()),
                                                   width: Int32(frame.width.rounded()), height: Int32(frame.height.rounded())))
         } else {
@@ -101,7 +118,39 @@ final class HostWindow {
         }
         layout()
         hookWindowProcedure()
-        try appWindow.show()
+        if !isCard { try appWindow.show() }
+    }
+
+    /// An owned card (init's `owner`).
+    let isCard: Bool
+
+    /// Puts the client area at `x, y` on screen, `width` × `height` physical pixels, and shows the
+    /// window (FloatingWindow.place: the frame's borders sit outside that area).
+    func placeClient(x: Int32, y: Int32, width: Int32, height: Int32) {
+        guard !closed else { return }
+        let size = SizeInt32(width: max(width, 1), height: max(height, 1))
+        try? appWindow.resizeClient(size)
+        let client = appWindow.clientSize
+        if client.width != size.width || client.height != size.height {
+            let outer = appWindow.size
+            try? appWindow.resize(SizeInt32(width: outer.width - (client.width - size.width), height: outer.height - (client.height - size.height)))
+        }
+        guard let window = HWND(bitPattern: hwnd) else { return }
+        var origin = POINT(x: 0, y: 0), frame = RECT()
+        _ = ClientToScreen(window, &origin)
+        _ = GetWindowRect(window, &frame)
+        try? appWindow.move(PointInt32(x: x - (origin.x - frame.left), y: y - (origin.y - frame.top)))
+        if !appWindow.isVisible { try? appWindow.show(true) }
+        layout()
+    }
+
+    /// Puts the window just below `other` among its owner's windows (0: in front of them all),
+    /// without moving or activating it.
+    func order(below other: UInt) {
+        guard let window = HWND(bitPattern: hwnd) else { return }
+        let noSize: UINT = 0x0001, noMove: UINT = 0x0002, noActivate: UINT = 0x0010, noOwnerZOrder: UINT = 0x0200
+        _ = SetWindowPos(window, other == 0 ? HWND(bitPattern: 0) : HWND(bitPattern: other), 0, 0, 0, 0,
+                         noSize | noMove | noActivate | noOwnerZOrder)
     }
 
     var title: String {

@@ -70,6 +70,10 @@ protocol WebPageDelegate: AnyObject {
     /// window.open / target=_blank: a popup host (`WebPage(popupHostIn:)`) keeps the opener;
     /// nil blocks the popup.
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage?
+    /// A link the user clicked that may open in a Peek (PeekTrigger): one the page goes to
+    /// (`newTab` and `shiftClick` false), a target=_blank one, a Shift-click. True when Cra
+    /// opened it, and the page doesn't.
+    func page(_ page: WebPage, opensPeekForURL url: String, shiftClick: Bool, newTab: Bool) -> Bool
     /// Reserved shortcuts, before the page sees the key. Return true to consume it.
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool
     /// A key press while the page's DevTools have the keyboard. Return true to consume it.
@@ -99,6 +103,7 @@ extension WebPageDelegate {
     func page(_ page: WebPage, didChangeFullscreen fullscreen: Bool) {}
     func page(_ page: WebPage, requestsNewTabWithURL url: String, inBackground background: Bool) {}
     func page(_ page: WebPage, popupHostForURL url: String, inBackground background: Bool) -> WebPage? { nil }
+    func page(_ page: WebPage, opensPeekForURL url: String, shiftClick: Bool, newTab: Bool) -> Bool { false }
     func page(_ page: WebPage, handleKey key: KeyPress) -> Bool { false }
     func page(_ page: WebPage, handleDevToolsKey key: KeyPress) -> Bool { false }
     func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool { false }
@@ -341,6 +346,10 @@ final class WebPage: @unchecked Sendable {
                 page.delegate?.page(page, popupHostForURL: url, inBackground: background != 0)?.opaque.map { UInt(bitPattern: $0) } ?? 0
             }
             return OpaquePointer(bitPattern: host)
+        }
+        cb.opens_peek = { ctx, url, shift, newTab in
+            let url = string(url)
+            return WebPage.with(ctx, false) { $0.delegate?.page($0, opensPeekForURL: url, shiftClick: shift != 0, newTab: newTab != 0) ?? false } ? 1 : 0
         }
         cb.key_event = { ctx, event in
             guard let event else { return 0 }
