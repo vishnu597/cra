@@ -270,29 +270,33 @@ final class SidebarView {
             label.children.append(name)
         }
 
-        let pick = UI.button(label, fill: selected ? palette.selected : nil, action)
+        // The Peek's badge sits at the end of the row's own pill (Arc's modalIcon).
+        var content: FrameworkElement = label
+        if let peek {
+            let inside = Grid()
+            inside.columnDefinitions.append(UI.column(UI.star))
+            inside.columnDefinitions.append(UI.column(UI.auto))
+            inside.children.append(label)
+            let badge = rowIcon(peek)
+            badge.verticalAlignment = .center
+            badge.margin = Thickness(left: 6, top: 0, right: 0, bottom: 0)
+            try? AutomationProperties.setName(badge, "Peek")
+            inside.children.append(badge)
+            try? Grid.setColumn(badge, 1)
+            content = inside
+        }
+        let pick = UI.button(content, fill: selected ? palette.selected : nil, action)
         pick.horizontalAlignment = .stretch
-        pick.horizontalContentAlignment = .left
+        pick.horizontalContentAlignment = peek == nil ? .left : .stretch
         if let menu { pick.contextFlyout = menu }
         row.children.append(pick)
         try? Grid.setColumn(pick, 0)
 
-        let end = StackPanel()
-        end.orientation = .horizontal
-        end.verticalAlignment = .center
-        if let peek {
-            let badge = rowIcon(peek)
-            badge.verticalAlignment = .center
-            badge.margin = Thickness(left: 4, top: 0, right: 4, bottom: 0)
-            try? AutomationProperties.setName(badge, "Peek")
-            end.children.append(badge)
-        }
         if let id = closable {
             let close = UI.button("✕", color: palette.secondaryText) { [weak self] in self?.actions?.closeTab(id) }
-            end.children.append(close)
+            row.children.append(close)
+            try? Grid.setColumn(close, 1)
         }
-        row.children.append(end)
-        try? Grid.setColumn(end, 1)
         if ring { addDeveloperRing(to: row) }
         list.children.append(row)
     }

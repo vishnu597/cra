@@ -520,8 +520,9 @@ final class LittleWindow {
         permissionQueue.removeAll { $0.page.page === page }
         parent.adopt(page, for: made.tab)
         store.joinSplit(made.tab, with: made.partner, window: parent.windowID)
-        requestClose()
+        // The window redraws on the split and takes the front before the card goes.
         parent.activate()
+        requestClose()
     }
 
     /// Arc 1.171 (#202): a link from a Peek that asks for a new tab is a Today tab in the space,

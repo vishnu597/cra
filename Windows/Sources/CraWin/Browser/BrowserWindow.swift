@@ -160,6 +160,10 @@ final class BrowserWindow {
         window.onMoveEnded = { [weak self] in self?.saveFrame() }
         window.onFocus = { [weak self] in
             guard let self, !self.closing, !self.commandBar.isOpen else { return }
+            // A redraw the store asked for first, so the keyboard goes to the page now selected
+            // (a Peek's Add To Split selects the new pane just before the card goes and the window
+            // takes the keyboard back).
+            if self.refreshQueued { self.refresh() }
             self.focusContent()
         }
         makeCommandBar()
@@ -1479,8 +1483,11 @@ extension BrowserWindow: WebPageDelegate {
     }
 
     /// A click into another pane focuses it (Arc: the split's focusItemID follows the click).
+    /// Not while a redraw is waiting: the panes on screen are then the old selection's, and a
+    /// stale page taking the keyboard would select its tab again over the one just picked.
     func pageDidReceiveFocus(_ page: WebPage) {
-        guard !closing, let id = tabID(of: page), id != store.selectedTabID(window: windowID), paneIDs.contains(id) else { return }
+        guard !closing, !refreshQueued, let id = tabID(of: page), id != store.selectedTabID(window: windowID),
+              paneIDs.contains(id) else { return }
         store.selectTab(id, window: windowID)
     }
 

@@ -216,7 +216,7 @@ void UpdateTips(HWND hwnd, Buttons *b) {
     if (!b->tooltip) return;
     for (size_t i = 0; i < b->rects.size(); ++i) {
         TOOLINFOW tool{};
-        tool.cbSize = sizeof(tool);
+        tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
         tool.hwnd = hwnd;
         tool.uId = i + 1;
         tool.rect = b->rects[i];
@@ -338,7 +338,7 @@ uintptr_t cra_round_buttons_create(uintptr_t owner, const char *const *glyphs, c
     if (b->tooltip) {
         for (size_t i = 0; i < count; ++i) {
             TOOLINFOW tool{};
-            tool.cbSize = sizeof(tool);
+            tool.cbSize = TTTOOLINFOW_V2_SIZE;  // Cra loads comctl32 5.82, which refuses v6's size
             tool.uFlags = TTF_SUBCLASS;
             tool.hwnd = hwnd;
             tool.uId = i + 1;
