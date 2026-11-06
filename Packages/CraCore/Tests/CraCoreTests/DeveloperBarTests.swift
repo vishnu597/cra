@@ -47,14 +47,18 @@ struct DeveloperBarTests {
     }
 }
 
+/// Width, height and the dash: the path's length over 60, 80 or 100. Typed up front, which the
+/// Mac's compiler needs to check the @Test arguments in time.
+private let developerRings: [(Double, Double, Double)] = [
+    (200, 30, 441.115 / 60),  // a narrow sidebar: 1/60 of the path
+    (300, 30, 641.115 / 80),
+    (400, 30, 841.115 / 100),
+    (100, 10, 211.416 / 60),  // a short row rounds by half its height
+]
+
 /// The ring round a Developer Mode site's open tab (GitHub #139).
 struct DeveloperTabRingTests {
-    @Test(arguments: [
-        (200.0, 30.0, 441.115 / 60),  // a narrow sidebar: 1/60 of the path
-        (300.0, 30.0, 641.115 / 80),
-        (400.0, 30.0, 841.115 / 100),
-        (100.0, 10.0, 211.416 / 60),  // a short row rounds by half its height
-    ])
+    @Test(arguments: developerRings)
     func dashesFollowThePathsLength(width: Double, height: Double, dash: Double) {
         #expect(abs(DeveloperTabRing.dash(width: width, height: height) - dash) < 0.001)
     }
