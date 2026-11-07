@@ -1,27 +1,5 @@
 import AppKit
 
-/// The Library's pages Cra has, in the order of Arc's rail (which also lists Media, Easels and Boosts).
-enum LibraryPage: String, CaseIterable {
-    case downloads, spaces, archive
-
-    var title: String {
-        switch self {
-        case .downloads: "Downloads"
-        case .spaces: "Spaces"
-        case .archive: "Archived Tabs"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .downloads: "arrow.down.circle"
-        case .spaces: "square.on.square"
-        case .archive: "archivebox"
-        }
-    }
-    var selectedSymbol: String { symbol + ".fill" }
-    var searchPrompt: String { self == .downloads ? "Search Downloads…" : "Search Archive…" }
-}
-
 /// Arc's Library: not a window but a mode of the sidebar (WindowState+Library, HomeButton/*),
 /// so it never ends up behind the browser. Measured on Arc 1.170 (window captures + AX tree,
 /// 1728×1084 window, 27 Oct 2026):
@@ -38,10 +16,11 @@ enum LibraryPage: String, CaseIterable {
 ///   clicking elsewhere, and reopens it on the page last shown.
 /// - Opening takes 2–3 frames (the Library slides in from a little to the left); closing slides
 ///   it left over ~0.1 s while the tab list fades back in.
+/// LibraryPage, the sizes (LibraryLayout) and what a page lists (LibraryList) are in CraCore.
 enum LibraryMetrics {
-    static let rail: CGFloat = 113
+    static let rail = CGFloat(LibraryLayout.rail)
     /// Arc's Library sidebar was 70 pt wider than the 347 pt tab sidebar.
-    static let extraWidth: CGFloat = 70
+    static let extraWidth = CGFloat(LibraryLayout.extraWidth)
 }
 
 /// The Library column: the page rail on the left, the page's search and list on the right.
@@ -363,32 +342,24 @@ private final class LibraryListView: NSView, NSTextFieldDelegate, NSTableViewDat
         reload()
     }
 
-    private var needle: String { query.lowercased().trimmingCharacters(in: .whitespaces) }
-
     private func reload() {
         var out: [Row] = []
         switch page {
         case .downloads:
-            let all = DownloadHistory.shared.entries.reversed().filter { FileManager.default.fileExists(atPath: $0.path) }
-            let shown = needle.isEmpty ? all : all.filter { ($0.path as NSString).lastPathComponent.lowercased().contains(needle) }
-            for (label, entries) in Self.grouped(shown, date: \.date) {
-                out.append(.header(label))
-                out += entries.map { .download($0) }
+            let exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+            for section in LibraryList.downloads(DownloadHistory.shared.entries, matching: query, exists: exists) {
+                out.append(.header(section.title))
+                out += section.items.map { .download($0) }
             }
-            empty.show(symbol: "arrow.down.circle", title: all.isEmpty ? "Nothing here yet!" : "No matches",
-                       detail: all.isEmpty ? "Files you download show up here." : nil)
+            showEmpty(.downloads, hasAny: DownloadHistory.shared.entries.contains { exists($0.path) })
         case .spaces:
             break
         case .archive:
-            let shown = needle.isEmpty ? store.archive : store.archive.filter {
-                $0.item.displayTitle.lowercased().contains(needle) || ($0.item.tab?.url.lowercased().contains(needle) ?? false)
+            for section in LibraryList.archive(store.archive, matching: query) {
+                out.append(.header(section.title))
+                out += section.items.map { .archived($0) }
             }
-            for (label, entries) in Self.grouped(shown, date: \.archivedAt) {
-                out.append(.header(label))
-                out += entries.map { .archived($0) }
-            }
-            empty.show(symbol: "archivebox", title: store.archive.isEmpty ? "Nothing here yet!" : "No matches",
-                       detail: store.archive.isEmpty ? "Tabs you close end up here." : nil)
+            showEmpty(.archive, hasAny: !store.archive.isEmpty)
         }
         rows = out
         empty.isHidden = !out.isEmpty
@@ -407,19 +378,9 @@ private final class LibraryListView: NSView, NSTextFieldDelegate, NSTableViewDat
         empty.ink = ink
     }
 
-    private static func grouped<T>(_ items: [T], date: KeyPath<T, Date>) -> [(String, [T])] {
-        let cal = Calendar.current
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        var order: [String] = []
-        var groups: [String: [T]] = [:]
-        for e in items {
-            let d = e[keyPath: date]
-            let label = cal.isDateInToday(d) ? "Today" : (cal.isDateInYesterday(d) ? "Yesterday" : df.string(from: d))
-            if groups[label] == nil { order.append(label) }
-            groups[label, default: []].append(e)
-        }
-        return order.map { ($0, groups[$0]!) }
+    private func showEmpty(_ page: LibraryPage, hasAny: Bool) {
+        let e = LibraryList.empty(page, hasAny: hasAny)
+        empty.show(symbol: e.symbol, title: e.title, detail: e.detail)
     }
 
     override func layout() {

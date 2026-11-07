@@ -40,6 +40,10 @@ enum WinGlyph {
         case "arrow.left": return "\u{E72B}"  // Back
         case "arrow.right": return "\u{E72A}"  // Forward
         case "arrow.clockwise": return "\u{E72C}"  // Refresh
+        // The Library's rail (Fluent has no filled versions of these).
+        case "arrow.down.circle", "arrow.down.circle.fill": return "\u{E896}"  // Download
+        case "archivebox", "archivebox.fill": return "\u{E7B8}"  // Archive
+        case "square.on.square", "square.on.square.fill": return "\u{E8A9}"  // ViewAll
         default: return "\u{E721}"  // magnifyingglass
         }
     }

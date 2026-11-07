@@ -191,6 +191,10 @@ public enum KeyBindingDefaults {
             "newLittleWindow": [KeyChord("n", ctrlAlt)],
             "promoteLittleWindow": [KeyChord("o", ctrl)],
             "closeLittleWindows": [],
+            // The Library: Ctrl+Shift+L as on the Mac; history and downloads take Chrome's keys.
+            "openLibrary": [KeyChord("l", ctrlShift)],
+            "viewArchive": [KeyChord("h", ctrl)],
+            "viewDownloads": [KeyChord("j", ctrl)],
         ]
         for n in 1...9 {
             table["item\(n)"] = [KeyChord("\(n)", ctrl)]
