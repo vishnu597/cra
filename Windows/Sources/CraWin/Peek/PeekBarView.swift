@@ -139,6 +139,12 @@ final class PeekBarView {
         }
     }
 
+    /// The keyboard in the bar (its address), for its key handler to hear: the card's page
+    /// isn't made yet. Win32 focus must be in the strip's XAML first (HostWindow.focusTopBar).
+    func takeKeyboard() {
+        _ = try? address.focus(.programmatic)
+    }
+
     private func glyphButton(_ glyph: FontIcon, symbol: String, name: String, tip: String, _ action: @escaping @MainActor () -> Void) -> Button {
         glyph.glyph = WinGlyph.code(symbol)
         glyph.fontSize = 15

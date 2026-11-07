@@ -18,6 +18,11 @@ protocol BrowserWindowHost: AnyObject {
     func openPeek(url: String, over window: BrowserWindow, fromTab: UUID?)
     func closePeeks(over window: BrowserWindow)
     func hasPeek(over window: BrowserWindow) -> Bool
+    /// A Peek over `window` is on screen and not on its way out (closing, or its page moved
+    /// into a tab).
+    func hasShowingPeek(over window: BrowserWindow) -> Bool
+    /// That Peek takes the keyboard back.
+    func focusPeek(over window: BrowserWindow)
     /// The window moved or changed size: its Peek follows.
     func repositionPeeks(over window: BrowserWindow)
 }
@@ -151,6 +156,14 @@ final class WindowList: BrowserWindowHost {
 
     func hasPeek(over parent: BrowserWindow) -> Bool {
         littleWindows.contains { $0.peekParent === parent }
+    }
+
+    func hasShowingPeek(over parent: BrowserWindow) -> Bool {
+        littleWindows.contains { $0.peekParent === parent && $0.isShowingPeek }
+    }
+
+    func focusPeek(over parent: BrowserWindow) {
+        littleWindows.first { $0.peekParent === parent && $0.isShowingPeek }?.focusPeek()
     }
 
     func repositionPeeks(over parent: BrowserWindow) {

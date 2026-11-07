@@ -168,6 +168,7 @@ final class BrowserWindow {
             // (a Peek's Add To Split selects the new pane just before the card goes and the window
             // takes the keyboard back).
             if self.refreshQueued { self.refresh() }
+            if self.handKeyboardToPeek() { return }
             self.focusContent()
         }
         makeCommandBar()
@@ -689,7 +690,13 @@ final class BrowserWindow {
            PeekTrigger.reopensClosedPeek(closedAt: peek.at, lastArchivedAt: store.archive.first?.archivedAt) {
             closedPeek = nil
             if let id = peek.tabID, store.item(id) != nil { store.selectTab(id, window: windowID) }
-            host?.openPeek(url: peek.url, over: self, fromTab: peek.tabID)
+            // Once the key's event is over and the redraw that selection queued has run: either
+            // could hand the keyboard to this window's page after the card took it, and Escape
+            // then never reached the Peek (seen on the PC after a Peek came back).
+            _ = try? dispatcher.tryEnqueue { [weak self] in
+                guard let self, !self.closing else { return }
+                self.host?.openPeek(url: peek.url, over: self, fromTab: peek.tabID)
+            }
         } else {
             store.reopenLastArchived()
         }
@@ -1495,6 +1502,7 @@ extension BrowserWindow: WebPageDelegate {
     /// A new page's own first focus, without a click, gives the keyboard back to the focused pane.
     func pageDidReceiveFocus(_ page: WebPage) {
         guard !closing else { return }
+        if newPages[ObjectIdentifier(page)] == nil, handKeyboardToPeek() { return }
         if let made = newPages.removeValue(forKey: ObjectIdentifier(page)), Date().timeIntervalSince(made) < Self.newPageFocusWindow,
            !Self.mouseButtonDown, page !== shownPage {
             // After any redraw already waiting, which may change the focused pane.
@@ -1507,6 +1515,19 @@ extension BrowserWindow: WebPageDelegate {
         guard !refreshQueued, let id = tabID(of: page), id != store.selectedTabID(window: windowID),
               paneIDs.contains(id) else { return }
         store.selectTab(id, window: windowID)
+    }
+
+    /// A Peek over the window keeps the keyboard while it is up: the window or a page of its
+    /// taking it (a redraw, Chromium's own focus) gives it back, a turn later, so Escape and the
+    /// shortcuts go to the card. Not for a click (the title bar's; the Peek's catcher takes the
+    /// page's), nor for a page just made, whose tab the Peek opened as it goes (Ctrl+O).
+    private func handKeyboardToPeek() -> Bool {
+        guard host?.hasShowingPeek(over: self) == true, !Self.mouseButtonDown else { return false }
+        _ = try? dispatcher.tryEnqueue { [weak self] in
+            guard let self, !self.closing, !Self.mouseButtonDown else { return }
+            self.host?.focusPeek(over: self)
+        }
+        return true
     }
 
     /// The left, right or middle button is down: the focus came from a click.

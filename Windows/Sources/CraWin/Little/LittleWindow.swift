@@ -170,7 +170,10 @@ final class LittleWindow {
         }
         peekBar?.onEditURL = { [weak self] in self?.openCommandBar() }
         peekBar?.onCopy = { [weak self] in self?.copyURL(markdown: false) }
-        peekBar?.onKey = { [weak self] key in self?.handleShortcut(key) ?? false }
+        peekBar?.onKey = { [weak self] key in
+            guard let self else { return false }
+            return self.exitPeek(on: key) || self.handleShortcut(key)
+        }
         makeCommandBar()
         makePermissionPrompt()
         toast = ToastView(owner: window) { [weak self] in self?.pageOnScreen() }
@@ -234,6 +237,12 @@ final class LittleWindow {
     }
 
     private func focusPage() {
+        // A Peek's bar holds the keyboard until Chromium has made the page (Escape, Cra's
+        // shortcuts); the page takes it once it is made (focus_pending in CraCEFWin).
+        if let peekBar, let page, !page.isCreated {
+            window.focusTopBar()
+            peekBar.takeKeyboard()
+        }
         page?.setFocused(true)
     }
 
@@ -486,6 +495,17 @@ final class LittleWindow {
         overlays.place(placement, card: window, fill: Self.rgb(fill), ink: Self.rgb(ink), scale: parent.scale)
         placeCommandBar()
         placePermissionPrompt()
+    }
+
+    /// A Peek on screen, not on its way out (closing, or its page moved into a tab).
+    var isShowingPeek: Bool { isPeek && overlays != nil && !closing && !promoted }
+
+    /// The Peek takes the keyboard back from the window under it (BrowserWindow
+    /// handKeyboardToPeek). The command bar over it keeps it.
+    func focusPeek() {
+        guard isShowingPeek, !commandBar.isOpen else { return }
+        window.activate()
+        focusPage()
     }
 
     /// The veil and buttons go as the card does; Arc's Ctrl+Shift+T can bring a Peek back that
@@ -822,6 +842,11 @@ extension LittleWindow: WebPageDelegate {
 
     /// Arc's "Exit the current context": Escape the page didn't use closes a Peek.
     func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool {
+        exitPeek(on: key)
+    }
+
+    /// Escape closes a Peek, a turn later (not inside the key's own handler).
+    private func exitPeek(on key: KeyPress) -> Bool {
         guard isPeek, key.keyCode == 0x1B, !key.control, !key.shift, !key.alt, !key.isRepeat else { return false }
         _ = try? dispatcher.tryEnqueue { [weak self] in self?.requestClose() }
         return true
