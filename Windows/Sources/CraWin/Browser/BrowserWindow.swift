@@ -1369,6 +1369,12 @@ extension BrowserWindow: LibraryActions {
         library.focusSearch()
     }
 
+    func focusLibrary() {
+        guard libraryPage != nil, !closing else { return }
+        window.focusXAML()
+        library.focusSearch()
+    }
+
     func closeLibrary() {
         guard libraryPage != nil, !closing else { return }
         libraryPage = nil

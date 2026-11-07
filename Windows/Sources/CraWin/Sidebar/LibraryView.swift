@@ -13,6 +13,8 @@ protocol LibraryActions: AnyObject {
     /// The tab back where it was closed from, selected, and the Library closes (the Mac's
     /// sidebarActions.restoreArchived).
     func restoreArchived(_ id: UUID)
+    /// The keyboard back to the Library's search (Win32 focus into the XAML first).
+    func focusLibrary()
 }
 
 /// Arc's Library as a mode of the sidebar (the Mac's LibraryView): the page rail on the left,
@@ -70,6 +72,14 @@ final class LibraryView {
             guard let self, let args, !args.handled, Int32(truncatingIfNeeded: args.key.rawValue) == 0x1B else { return }
             args.handled = true
             self.actions?.closeLibrary()
+        }
+        // A click on the rail's or the list's background (nothing that takes focus) left the
+        // keyboard with no element, so Escape reached nothing: the search takes it back.
+        // Buttons, rows and the search handle their own taps.
+        root.tapped.addHandler { [weak self] _, args in
+            guard let self, let args, !args.handled else { return }
+            args.handled = true
+            self.actions?.focusLibrary()
         }
     }
 
