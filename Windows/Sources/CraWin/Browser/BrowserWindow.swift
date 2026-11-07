@@ -161,7 +161,12 @@ final class BrowserWindow {
             guard let self, !self.closing else { return }
             self.store.activeWindowID = self.windowID
         }
-        window.onMoveEnded = { [weak self] in self?.saveFrame() }
+        window.onMoveEnded = { [weak self] in
+            self?.saveFrame()
+            // Dragging the title bar made the window under a Peek the active one: the card takes
+            // the keyboard back once the move or resize is over.
+            _ = self?.handKeyboardToPeek()
+        }
         window.onFocus = { [weak self] in
             guard let self, !self.closing, !self.commandBar.isOpen else { return }
             // A redraw the store asked for first, so the keyboard goes to the page now selected
@@ -1519,8 +1524,8 @@ extension BrowserWindow: WebPageDelegate {
 
     /// A Peek over the window keeps the keyboard while it is up: the window or a page of its
     /// taking it (a redraw, Chromium's own focus) gives it back, a turn later, so Escape and the
-    /// shortcuts go to the card. Not for a click (the title bar's; the Peek's catcher takes the
-    /// page's), nor for a page just made, whose tab the Peek opened as it goes (Ctrl+O).
+    /// shortcuts go to the card. Not while a button is down (a click: the title bar's, or the Peek's catcher
+    /// over a page), nor for a page just made, whose tab the Peek opened as it goes (Ctrl+O).
     private func handKeyboardToPeek() -> Bool {
         guard host?.hasShowingPeek(over: self) == true, !Self.mouseButtonDown else { return false }
         _ = try? dispatcher.tryEnqueue { [weak self] in
