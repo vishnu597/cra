@@ -4,7 +4,7 @@ Every feature of the Mac app, what the Windows app has of it, and where the code
 can share lives. The goal is the Mac app's features on Windows, built on the Mac's own logic:
 what decides something goes in CraCore once and both shells call it (CLAUDE.md, rule 1).
 
-<!-- upstream-reviewed: 9da50e7 -->
+<!-- upstream-reviewed: 3d3ff80 -->
 Upstream reviewed through **565e477** (VictorKildahl/cra main, 6 Nov 2026). Fork main has
 merged upstream through 565e477 (#24).
 
@@ -25,7 +25,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Sidebar | 5 | 5 | 0 | 11 | 0 |
 | Command bar and shortcuts | 3 | 1 | 0 | 1 | 0 |
 | Split view | 1 | 1 | 0 | 0 | 0 |
-| Little Windows, Peek and the Library | 2 | 1 | 0 | 4 | 0 |
+| Little Windows, Peek and the Library | 3 | 2 | 0 | 2 | 0 |
 | Tabs and memory | 1 | 1 | 0 | 3 | 0 |
 | Media and capture | 0 | 2 | 0 | 2 | 1 |
 | Profiles, privacy and site data | 3 | 1 | 0 | 7 | 0 |
@@ -35,7 +35,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Import and onboarding | 0 | 0 | 0 | 5 | 1 |
 | Arc Max (on-device AI) | 0 | 0 | 0 | 0 | 3 |
 | System integration and release | 3 | 0 | 0 | 8 | 2 |
-| **All** | 30 | 16 | 0 | 57 | 8 |
+| **All** | 31 | 17 | 0 | 55 | 8 |
 <!-- /summary -->
 
 ## Window, pages and toolbar
@@ -80,7 +80,7 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Rename (`renameTab`), duplicate (`duplicateTab`), Add to Favorites (`favoriteTab`) as commands | 🟡 | `SidebarMenus.swift` | `SidebarStore` | Duplicate and favorites are in the row menu; rename is missing; none are commands yet. |
 | Unread dots and theme colours | ✅ [#5] | `SidebarRowViews.swift` | `SidebarModel` | |
 | Download location per profile: a folder, or ask where to save each file (Settings ▸ Profiles) | ❌ | `DownloadDestinations.swift`, `ProfilesPane.swift` | `DownloadLocation` | Upstream ef42649. `DownloadLocation`'s decoder keeps only folders starting with "/": Windows needs drive paths (`C:\…`) to count as absolute first. |
-| Downloads list in the footer, thumbnails, no Chrome download arrow | ✅ [#10] [#12] | `DownloadsTray.swift`, `DownloadThumbnails.swift`, `ChromeDownloadAnimation.swift` | `DownloadHistory`, `DownloadRow`, `RelativeTime` | Missing: the flight into the bin (`DownloadFlight.swift`), `viewDownloads` (⇧⌘J) as a command. |
+| Downloads list in the footer, thumbnails, no Chrome download arrow | ✅ [#10] [#12] | `DownloadsTray.swift`, `DownloadThumbnails.swift`, `ChromeDownloadAnimation.swift` | `DownloadHistory`, `DownloadRow`, `RelativeTime` | `viewDownloads` is Ctrl+J (Chrome's Downloads key): the Library's Downloads page (#27), with Open, Show in Folder and Open Downloads Folder. Missing: the flight into the bin (`DownloadFlight.swift`). |
 | Download flight into the Library button | ❌ | `DownloadFlight.swift` | | |
 | Favicons in rows, tiles and the command bar | 🟡 [#12] | `FaviconCache.swift` | `FaviconKey` | Since upstream 061a0ef (#211) tabs on one host keep their own icons (`FaviconKey.key(for:iconURL:)`, `SidebarStore.setFaviconKey`); Windows still keeps one icon a site. |
 | GitHub live folders (`newGitHubLiveFolder`) | ❌ | `LiveFolderManager.swift`, `GitHubLiveClient.swift`, `LiveFolderViews.swift` | `LiveFolderModel` | `GitHubLiveClient.swift` is Foundation only: move it to CraCore so Windows doesn't rewrite it. Sign-in token storage needs Credential Manager. |
@@ -109,8 +109,8 @@ which say in users' words how each feature behaves. For look and feel: [brand](h
 | Little Windows (`newLittleWindow`, `promoteLittleWindow`, `closeLittleWindows`), profile chip, ⌥⌘N from any app | ✅ [#23] | `LittleWindowController.swift`, `GlobalHotkey.swift` | `LittleWindowLayout`, `SpaceWindow`, `GlobalShortcut` | Windows: Ctrl+Alt+N (also from any app, RegisterHotKey, skipped where AltGr+N types a letter), Ctrl+O; the strip, Open in Space and its menu, the profile chip, the command bar, size and cascade, archive on close. The live page moves into the browser window (`cra_browser_set_parent`). Windows keeps its own title bar in the strip's navy. Left: Arc's searchable spaces popup (a menu here), the grow-from-the-pointer animation, "Don't ask again" on the profile change. |
 | Peek: card over the page with its own bar, Close, Expand, Add To Split | ✅ [#24] | `PeekChrome.swift`, `PeekDimPanel.swift`, `ChromiumChildFocus.swift`, `LittleWindowController.swift` | `PeekLayout`, `PeekBarColors`, `PeekTrigger`, `PeekVeil`, `PinnedNavigation`, `PeekTabs` (`openLinkTab`, `peekSplitTabs`, `joinSplit`) | Windows: the card is an owned HostWindow with the page-coloured bar (`Peek/PeekBarView.swift`); the veil, click catcher and round buttons are owned layered windows (`CraOverlay.cpp`, `Peek/PeekOverlays.swift`). Settings ▸ Tabs ▸ Links, Shift-click, Escape (from the page or the bar), Ctrl+O, Ctrl+Shift+T reopening it, the card keeping the keyboard while it is up (#26), links leaving it for a tab, the badge on the tab it came from. Left: the card growing out of the link and back (#204, `PeekTransition`); the veil only fades. Since #24 the Mac shrinks the page behind a Peek a little unless pages fill the window edge to edge (#221, `PeekVeil`, `PeekLayout.backdrop`) and keeps the browser window's shadow (#222, `ChromiumChildFocus.swift`); Windows' browser window already stays active under the card, and its page doesn't shrink yet. |
 | Air Traffic Control: route links from other apps to a space or Little Window | ❌ | `AirTrafficControlView.swift` | `LinkRouting` | Needs Cra to be a registered browser first (System integration). |
-| Library in the sidebar (`openLibrary`), swipe or button slides it in | ❌ | `LibraryView.swift` | `LibrarySwipe` | |
-| History and archive view (`viewArchive`) | ❌ | `LibraryView.swift` | `SidebarStore` | Archive and reopen already work (Ctrl+Shift+T, the command bar). |
+| Library in the sidebar (`openLibrary`), swipe or button slides it in | 🟡 [#27] | `LibraryView.swift` | `LibraryPage`, `LibraryLayout`, `LibraryList`, `LibrarySwipe` | Windows (`Sidebar/LibraryView.swift`): the sidebar widens 70 DIPs for the rail (Downloads, Archived Tabs), the page's search and ⋯ menu, rows by day; Ctrl+Shift+L, the downloads button (Arc's Library button: hover lists downloads, a click opens the Library), Escape and the back arrow leave it, and it opens again on the page last shown. Left: the slide in and out, the two-finger swipe (`LibrarySwipe`), the Spaces page (Manage Spaces row), dragging a download out. |
+| History and archive view (`viewArchive`) | ✅ [#27] | `LibraryView.swift` | `SidebarStore`, `LibraryList` | Ctrl+H (Chrome's History key) opens the Library's Archived Tabs: search by title or address, a click restores the tab where it was closed from; Restore, Copy Link, Remove from Archive, and Clear Archive in the ⋯ menu. |
 | Now-playing player in the sidebar | ❌ | `NowPlayingTray.swift`, `NowPlaying.swift` | `AudibleHold` (Mac's WebKit tabs) | Windows counterpart for media keys: System Media Transport Controls. |
 | Downloads rename card | 🟡 | `DownloadRenameCard.swift` | `TidyDownloads` | The Windows list has open and Show in Folder; the rename card comes with Tidy Downloads. |
 
@@ -253,6 +253,8 @@ merged (565e477 to 9da50e7), with what each means for Windows:
 | 9da50e7 | A WebKit video played again within 2 s shows as playing (`AudibleHold`) | Mac only (Safari's engine); now-playing row. |
 | 9e2d728, 60d6e13, 800cc36, 5e79e3a | Perf harness, nightly, snapshots, mutation testing | Nothing for Windows. 9e2d728 was also cherry-picked into #24. |
 
+Then 3d3ff80 (synced with PR 8): the blank-window scenario's window fits GitHub's 1024×768 runner screen. Test tooling, nothing for Windows.
+
 ## Keeping this current
 
 - **Each upstream sync** (CONTRIBUTING's merge before each new PR): run
@@ -286,3 +288,4 @@ merged (565e477 to 9da50e7), with what each means for Windows:
 [#22]: https://github.com/vishnu597/cra-windows/pull/22
 [#23]: https://github.com/vishnu597/cra-windows/pull/23
 [#24]: https://github.com/vishnu597/cra-windows/pull/24
+[#27]: https://github.com/vishnu597/cra-windows/pull/27

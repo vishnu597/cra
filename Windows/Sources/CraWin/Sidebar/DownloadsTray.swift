@@ -21,7 +21,9 @@ extension DownloadHistory {
 @MainActor
 final class DownloadsTray {
     /// In the sidebar's footer: a download glyph, with the progress while a download runs.
+    /// Arc's Library button: hovering it lists the downloads, a click opens the Library.
     let button: Button
+    var onClick: () -> Void = {}
     /// Over the bottom of the tab list.
     let list = StackPanel()
     private let history: DownloadHistory
@@ -66,8 +68,13 @@ final class DownloadsTray {
         list.verticalAlignment = .bottom
         list.padding = Thickness(left: 0, top: 12, right: 0, bottom: 2)
         list.visibility = .collapsed
-        // A click opens it at once (touch, or a pointer quicker than the hover).
-        button.click.addHandler { [weak self] _, _ in self?.setOpen(true) }
+        button.click.addHandler { [weak self] _, _ in
+            guard let self else { return }
+            self.setOpen(false)
+            self.stopWatching()
+            self.onClick()
+        }
+        try? AutomationProperties.setName(button, "Library")
         button.pointerEntered.addHandler { [weak self] _, _ in self?.startWatching() }
         list.pointerEntered.addHandler { [weak self] _, _ in self?.startWatching() }
         observe()
@@ -332,6 +339,10 @@ final class DownloadThumbnails {
 /// Opening files the way Explorer does.
 enum Shell {
     static func open(_ path: String) { run("open", path, nil) }
+
+    /// Explorer on the user's Downloads folder, where Cra saves downloads (CraCEFWin's
+    /// DownloadsFolder).
+    static func openDownloadsFolder() { run("open", "explorer.exe", "shell:Downloads") }
 
     /// An Explorer window on the file's folder, the file selected (explorer /select didn't
     /// select it in a window already open on the folder).

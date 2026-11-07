@@ -28,6 +28,13 @@ final class BrowserWindow {
     private(set) var window: HostWindow!
     private var sidebar: SidebarView!
     private let sidebarPanel = Grid()
+    /// The toolbar, the address pill and the sidebar: what the Library takes the place of.
+    private var sidebarParts: [FrameworkElement] = []
+    /// Arc's Library in the sidebar (LibraryView): the page shown, nil while it shows the tabs.
+    /// Arc keeps it per window and opens it again on the page last shown.
+    private var library: LibraryView!
+    private var libraryPage: LibraryPage?
+    private var lastLibraryPage: LibraryPage = .downloads
     /// The open tab's address; a click opens the command bar on it (Arc's URL bar in the sidebar).
     private let address = TextBlock()
     private var addressButton: Button!
@@ -128,6 +135,8 @@ final class BrowserWindow {
         sidebar = SidebarView(store: store, windowID: session.id, actions: self)
         downloads = DownloadsTray(history: .shared, dispatcher: dispatcher)
         sidebar.attachDownloads(button: downloads.button, list: downloads.list)
+        library = LibraryView(store: store, history: .shared, dispatcher: dispatcher, actions: self)
+        downloads.onClick = { [weak self] in self?.toggleLibrary() }
         downloads.pointer = { [weak self] in
             guard let self, let window = self.window, let host = HWND(bitPattern: self.hwnd) else { return nil }
             var p = POINT(x: Int32.min, y: Int32.min)
@@ -275,6 +284,7 @@ final class BrowserWindow {
             sidebarPanel.background = sidebar.fill
             applyPaneColors(store.focusedSpace(window: windowID).theme)
             downloads.apply(SidebarPalette(store.focusedSpace(window: windowID).theme), fill: sidebar.fill)
+            if libraryPage != nil { library.build(SidebarPalette(store.focusedSpace(window: windowID).theme), dark: sidebar.isDark) }
             syncPages()
             syncDeveloperBar()
             showAddress(store.selectedTab(window: windowID)?.tab?.url ?? "")
@@ -335,7 +345,10 @@ final class BrowserWindow {
         let changed = id != shownTabID
         if shownPage !== page {
             shownPage = page
-            if let page {
+            if libraryPage != nil {
+                // The Library keeps the keyboard: a space changed under it (Alt+1–9).
+                focusContent()
+            } else if let page {
                 page.setFocused(true)
             } else {
                 // Nothing to show (an empty space): keys would stay with the hidden page.
@@ -439,6 +452,12 @@ final class BrowserWindow {
             sidebarPanel.children.append(part)
             try? Grid.setRow(part, Int32(i))
         }
+        sidebarParts = parts
+        // The Library over all three, from the window's top left (its rail runs to the edge).
+        library.root.visibility = .collapsed
+        library.root.margin = Thickness(left: -10, top: -10, right: -10, bottom: -10)
+        sidebarPanel.children.append(library.root)
+        try? Grid.setRowSpan(library.root, 3)
 
         // Shortcuts while the sidebar has the keyboard; the page reports its own (handleKey).
         sidebarPanel.keyDown.addHandler { [weak self] _, args in
@@ -466,8 +485,17 @@ final class BrowserWindow {
     }
 
     /// Keys to the page shown, else the sidebar.
+    /// The keyboard to the page on screen; while the Library is open, to its search (the window
+    /// coming back to the front, a space changing), so Escape and typing reach it.
     private func focusContent() {
-        if let page = shownPage { page.setFocused(true) } else { focusSidebar() }
+        if libraryPage != nil {
+            window.focusXAML()
+            library.focusSearch()
+        } else if let page = shownPage {
+            page.setFocused(true)
+        } else {
+            focusSidebar()
+        }
     }
 
     /// Keys to the sidebar's XAML, so its shortcuts work with no page to take them.
@@ -630,6 +658,9 @@ final class BrowserWindow {
         case "newTab": beginNewTab()
         case "editURL": openCommandBar(.editURL)
         case "reopenClosedTab": reopenClosedTab()
+        case "openLibrary": toggleLibrary()
+        case "viewArchive": showLibrary(.archive)
+        case "viewDownloads": showLibrary(.downloads)
         case "closeTab": closeCurrentTab()
         case "reload": reload(ignoringCache: false)
         case "hardReload": reload(ignoringCache: true)
@@ -687,6 +718,19 @@ final class BrowserWindow {
         let tabs = store.visibleTabs(in: store.focusedSpaceID(window: windowID))
         guard !tabs.isEmpty else { return }
         store.selectTab((n == 9 ? tabs.last : tabs[min(n, tabs.count) - 1])?.id, window: windowID)
+    }
+
+    // MARK: Library
+
+    /// Arc's Library button and Ctrl+Shift+L: the Library on the page last shown, or back to the tabs.
+    private func toggleLibrary() {
+        if libraryPage == nil { showLibrary(lastLibraryPage) } else { closeLibrary() }
+    }
+
+    private func setLibraryShown(_ open: Bool) {
+        for part in sidebarParts { part.visibility = open ? .collapsed : .visible }
+        library.root.visibility = open ? .visible : .collapsed
+        window.sidebarWidth = Self.sidebarWidth + (open ? LibraryLayout.extraWidth : 0)
     }
 
     private func reopenClosedTab() {
@@ -1303,6 +1347,54 @@ final class BrowserWindow {
 }
 
 // MARK: - Sidebar → window
+
+extension BrowserWindow: LibraryActions {
+    /// The Library takes over the sidebar, 70 DIPs wider for its rail; its search takes the keys.
+    func showLibrary(_ page: LibraryPage) {
+        guard !closing else { return }
+        lastLibraryPage = page
+        let opening = libraryPage == nil
+        libraryPage = page
+        library.show(page)
+        // Drawn by the redraw, which also watches what the Library reads from now on (the
+        // archive, the downloads, their thumbnails): drawn here, a Remove from Archive or a
+        // thumbnail arriving went unseen.
+        refresh()
+        guard opening else { return }
+        commandBar.close()
+        hideFindBar()
+        hideSiteControlCenter()
+        setLibraryShown(true)
+        window.focusXAML()
+        library.focusSearch()
+    }
+
+    func focusLibrary() {
+        guard libraryPage != nil, !closing else { return }
+        window.focusXAML()
+        library.focusSearch()
+    }
+
+    func closeLibrary() {
+        guard libraryPage != nil, !closing else { return }
+        libraryPage = nil
+        setLibraryShown(false)
+        focusContent()
+    }
+
+    /// Escape a page didn't use leaves the Library, if the page has the keyboard while it is open.
+    func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool {
+        guard libraryPage != nil, key.keyCode == 0x1B, !key.control, !key.shift, !key.alt, !key.isRepeat else { return false }
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.closeLibrary() }
+        return true
+    }
+
+    func restoreArchived(_ id: UUID) {
+        guard store.restoreArchived(id, select: false) != nil else { return }
+        store.selectTab(id, window: windowID)
+        closeLibrary()
+    }
+}
 
 extension BrowserWindow: SidebarActions {
     /// Set Profile ▸ New Profile… on a space's menu: the space starts ticked.
