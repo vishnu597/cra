@@ -345,7 +345,10 @@ final class BrowserWindow {
         let changed = id != shownTabID
         if shownPage !== page {
             shownPage = page
-            if let page {
+            if libraryPage != nil {
+                // The Library keeps the keyboard: a space changed under it (Alt+1–9).
+                focusContent()
+            } else if let page {
                 page.setFocused(true)
             } else {
                 // Nothing to show (an empty space): keys would stay with the hidden page.
@@ -482,8 +485,17 @@ final class BrowserWindow {
     }
 
     /// Keys to the page shown, else the sidebar.
+    /// The keyboard to the page on screen; while the Library is open, to its search (the window
+    /// coming back to the front, a space changing), so Escape and typing reach it.
     private func focusContent() {
-        if let page = shownPage { page.setFocused(true) } else { focusSidebar() }
+        if libraryPage != nil {
+            window.focusXAML()
+            library.focusSearch()
+        } else if let page = shownPage {
+            page.setFocused(true)
+        } else {
+            focusSidebar()
+        }
     }
 
     /// Keys to the sidebar's XAML, so its shortcuts work with no page to take them.
@@ -1344,7 +1356,10 @@ extension BrowserWindow: LibraryActions {
         let opening = libraryPage == nil
         libraryPage = page
         library.show(page)
-        library.build(SidebarPalette(store.focusedSpace(window: windowID).theme), dark: sidebar.isDark)
+        // Drawn by the redraw, which also watches what the Library reads from now on (the
+        // archive, the downloads, their thumbnails): drawn here, a Remove from Archive or a
+        // thumbnail arriving went unseen.
+        refresh()
         guard opening else { return }
         commandBar.close()
         hideFindBar()
@@ -1359,6 +1374,13 @@ extension BrowserWindow: LibraryActions {
         libraryPage = nil
         setLibraryShown(false)
         focusContent()
+    }
+
+    /// Escape a page didn't use leaves the Library, if the page has the keyboard while it is open.
+    func page(_ page: WebPage, handleUnhandledKey key: KeyPress) -> Bool {
+        guard libraryPage != nil, key.keyCode == 0x1B, !key.control, !key.shift, !key.alt, !key.isRepeat else { return false }
+        _ = try? dispatcher.tryEnqueue { [weak self] in self?.closeLibrary() }
+        return true
     }
 
     func restoreArchived(_ id: UUID) {
