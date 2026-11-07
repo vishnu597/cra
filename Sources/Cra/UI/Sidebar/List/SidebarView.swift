@@ -667,7 +667,11 @@ final class SpaceDockView: NSView {
         self.ui = ui
         self.actions = actions
         library = LibraryButtonView(ui: ui, actions: actions)
-        plus = SidebarGlyphButton(symbol: "plus", size: 28, iconSize: 13, help: "New Space", colors: SidebarColors()) { actions.editSpace(nil) }
+        // Arc 1.172: a Blank Window's + shows but does nothing.
+        plus = SidebarGlyphButton(symbol: "plus", size: 28, iconSize: 13, help: "New Space", colors: SidebarColors()) { [store, ui] in
+            guard !store.isBlank(window: ui.windowID) else { return }
+            actions.editSpace(nil)
+        }
         super.init(frame: .zero)
         addSubview(library)
         addSubview(plus)
@@ -686,8 +690,9 @@ final class SpaceDockView: NSView {
             incognito = store.window(ui.windowID).isIncognito
             let f = store.focusedSpaceID(window: ui.windowID)
             focused = f
-            // Arc's single-space mode drops the lone space icon along with the header.
-            spaces = incognito || store.hidesSpaceHeader(f) ? [] : store.orderedSpaces
+            // Arc's single-space mode drops the lone space icon along with the header; incognito and
+            // Blank Windows show no space icons (Arc 1.172 keeps the + in a Blank Window).
+            spaces = store.isStandalone(window: ui.windowID) || store.hidesSpaceHeader(f) ? [] : store.orderedSpaces
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, !self.syncQueued else { return }

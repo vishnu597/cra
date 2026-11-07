@@ -2667,7 +2667,9 @@ was frontmost, 1x region captures and 100 fps recordings; test tabs archived aft
   closed with the tab listed (two clicks), with another tab open it closes for good and drops the peek and the
   dots. A folder without a peek opens as usual. Arc's window state then has no entry for it. So a click on a
   closed folder that keeps tabs in sight means "close", keeping only the open tab (as the 29 Oct folder-peek
-  notes found). Cra: FolderPeek.clickOpens.
+  notes found). Cra copied this until GitHub #213 (6 Nov 2026): a click on a closed folder now always opens it,
+  peek or not (FolderPeek.clickOpens), since Arc's way left the rest of the folder out of reach while one of its
+  tabs was open. Closing it still keeps the open tab in sight.
 
 ## Secure DNS (Arc 1.171, 2 Nov 2026, issue #110, live net log)
 - [O] Arc leaves Chromium's default. Victor's Arc `Local State` has no `dns_over_https` key, and a net log of Arc
@@ -3048,6 +3050,29 @@ links, A near the top left and B near the bottom right, real HID Shift-clicks (`
   .77, .84, .91, .93, .98 of the way a frame apart (Arc .60, .77, .85, .91, .95, .97), its bottom edge .34,
   .59, .71, .80, .87, .91 (Arc .31, .54, .73, .82, .89, .94), and it closed back into the link.
 
+### Peek, the window's shadow and its edges (Arc 1.172.1, 6 Nov 2026, PR #222, offline Arc)
+Offline Arc (fake home, network blocked) in a 1100 × 760 pt window at 100,80, a Peek opened by a HID
+Shift-click on a lab page's link, then HID clicks and drags; Peek open or closed read from AX (its Close button,
+`confirmCloseModal`), the window's state from AX and `screencapture -l` with the shadow.
+- [O] The Peek is a card inside the browser window: no second CGWindow or AX window while it shows (the
+  `ModalContent.ModalWindow` class is a plain NSWindow subclass with no focus overrides, but none was on
+  screen). The browser window stays main and keeps its full shadow, before and after a click into the
+  Peek's page (capture 2424 × 1744 px both times).
+- [O] Clicks near the edge, outside the card: 1–3 pt inside the right or bottom edge and 1–2 pt inside the
+  top keep the Peek (macOS's resize band takes them); 4 pt in (3 at the top) closes it. Left: the sidebar
+  is there, and 1–6 pt in kept it.
+- [O] A drag from 2 pt inside the right edge, or 2 pt below the bottom edge, resizes the window with the
+  Peek open, and the card grows with the window.
+- [O, Cra] 0.1.32 lost the browser window's active look as soon as a Peek opened (grey traffic lights,
+  capture 2336 × 1656 px): Chromium keeps only the child windows it made itself from becoming main
+  (-[NativeWidgetMacNSWindow canBecomeMainWindow]), and the Peek's page window hangs on Cra's window
+  through AppKit. Its click catcher covered the whole window, so every click 1–12 pt in closed the Peek
+  and a drag from 2 pt inside closed it instead of resizing (from outside it resized).
+- Cra: ChromiumChildFocus keeps a Peek's or Little Window's page from becoming main; PeekDimPanel covers
+  PeekLayout.dismissArea, the window minus a 3 pt band. Checked on a test copy like Arc above: full shadow
+  and coloured traffic lights after a click in the Peek, edge clicks 1–3 pt in keep it and 4 pt in close it,
+  and a drag from 2 pt inside resizes with the Peek open.
+
 ## Capture (Arc 1.171, 4 Nov 2026, X request, Swift metadata + strings + offline Arc at 2x, 120 fps recordings)
 - [O metadata] Module `Capture`: ContentCaptureViewController holds ContentCaptureView (grayscale and darkened layers with
   shape masks, a lens ShadowView, a camera cursor view, single/double click and pan recognizers, an Esc monitor,
@@ -3313,3 +3338,37 @@ Read from the arm64 slice's Swift field metadata (`__swift5_fieldmd`, case and f
   puts Search first for a selection, turns Lens's "Search image with Google" into "Search Google for Image", adds
   Open Link in Little Window and Capture Image… (ContentCapture.liftedLayout), and opens New Window / Incognito /
   Inspect in Cra's own windows and DevTools. Kept on purpose: Open Link in Background Tab under New Tab (#183).
+
+## Blank Window and dragging a tab out (Arc 1.172, 6 Nov 2026, #219 #220, offline Arc on a fake home, AX + 2x window captures)
+
+- [O static] Window styles in StorableWindows.json: `standard { sidebarContext: global | standalone }`, `little`, and the
+  kinds `standard | global | incognito | littleArc | blank`. A Blank Window is `standard` with a `standalone` sidebar:
+  StorableSidebar.json keeps `{standalone: <window id>}` beside `global`, holding one space of its own (Default
+  profile, `customInfo` empty, no pinned container, no top apps). Strings: `newBlankWindow`, `onCreateNewBlankWindow`,
+  "Creates a new blank window.", "Title for Explore tabs in a standalone-sidebar window."; AX id
+  `standaloneBrowserWindow-<id>`.
+- [O] File ▸ Blank Window ⌃⌘N (AX mods 4), between New Window and New Incognito Window. It opens cascaded from the
+  window in use with the command bar up. Sidebar: "This Window" (13 pt semibold, glyphs 16.5 pt in, cap top 51.5 pt
+  from the window's top with the toolbar on), then New Tab (text 20 pt in, top 90 pt): no favorites or empty card, no
+  pinned section, no line, no space icons; the Library button and + stay, and a click on + does nothing (no menu,
+  no editor, no window). Colours follow macOS (window captures, inactive; light forced with Arc's
+  NSRequiresAquaSystemAppearance): dark, sidebar #313246 → #363247 and the empty page area #4F4B5D → #584A5D;
+  light, sidebar #E3E3F4 → #E9E7F1 and page area #F8F7FA → #FCF9F9.
+- [O] With the pointer over its sidebar the header shows "Move to…" (grey #7A7A86, glyphs 153.5–202.5 pt of a 228 pt
+  sidebar) in place of the space's •••. It is the Today section header's accessory (`moveToMainWindow`, tooltip "Move
+  to main window"). A click pops a menu up at the pointer listing the spaces as icon + name ("🧑‍💻 Victor"); while
+  it's open the button sits on a pill, white ~10 % over the sidebar (#474757 on #333247), 142.5–215 × 43–70.5 pt.
+  Picking a space moved the window's tab to the top of that space's Today, opened it in the main window (which came
+  forward) and closed the Blank Window.
+- [O] Closing a Blank Window drops its standalone container and its tabs: nothing went to StorableArchive.json.
+- [O] A sidebar tab dragged out and let go over another app (real HID drags, slow steps; a fast cliclick drag reads as
+  a click, a press on a non-key window drags the window): the tab leaves the global sidebar and opens alone in a new
+  Blank Window the size of the window it came from; that window then showed no tab (the drag had selected it). The
+  window centres on where the pointer let go: 926 × 500 dropped at (1100, 700) and (500, 820) from the top left opened
+  at (637, 450) and (37, 570). Near an edge it stays inside: dropped at (350, 300), a 1000 × 760 window sat at
+  (20, 53), 20 pt inside the visible frame on both sides. Drags that read as clicks: the press selected an unloaded
+  tab; select it first, then drag (scratch tool: CGEvent drag with deltas at 60 Hz).
+- [O] A tab dropped on a Blank Window's sidebar moved there out of the global sidebar.
+- Cra: BlankWindow (Space.standaloneWindowID, saved in sidebar.json outside spaceOrder), SidebarStore.addBlankWindow /
+  isStandalone, TabTearOff (decision + frame), SpaceListView.dragEnded, AppDelegate.tearOffTab and moveBlankWindow
+  ("Move to…", `cra://debug?blankMoveTo=<n>`), BlankWindow.theme (Auto).

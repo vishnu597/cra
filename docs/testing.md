@@ -57,7 +57,8 @@ no page content), so it checks geometry, ink and fills.
 - **CraCore ≥ 85 % of lines.** There is no target for the whole repo: one would be met by
   testing the easy files.
 - **Mutation score ≥ 70 %** (`scripts/mutate.py`, weekly): one operator flipped at a time in
-  the pure code must fail a test.
+  the pure code must fail a test. About a thousand mutants are more than the CI job's hour, so
+  it tests a shuffled sample for 70 minutes (`CRA_MUTATION_MINUTES`), a new order each ISO week.
 - **Scenario invariants**, the same for every scenario: the app is still running at the end,
   no new crash report for its processes, no `fault:` line in `cra.log`, the sidebar sound
   (`SidebarIntegrity`), main-thread stalls inside the scenario's budget, Cra's memory inside
@@ -144,3 +145,10 @@ AddressSanitizer, ThreadSanitizer and UBSan (`CRA_TEST_SWIFTC_FLAGS`), 400 000 f
 (`scripts/fuzz.sh`), and on Mondays mutation testing. Xcode's toolchain has no libFuzzer on
 macOS, so the fuzzer mutates the fixtures itself with a fixed seed; a crash leaves its input
 in `build/fuzz/crash-input`.
+
+On GitHub's runners the scenarios run with `CRA_BUDGETS=report`: budgets (stalls, memory, the
+recorder's cost) and snapshot differences go in the job summary but don't fail the job, because
+they were set on a Mac and a runner VM measures differently (macOS 26.7.2 draws system symbols a
+few pixels apart; one system sample there costs 11–27 ms of CPU against under 1 ms on a Mac).
+What the app does fails it: `expect-log`, faults, crash reports, helper counts, quitting. Judge
+budgets and snapshots with a release build on a Mac.

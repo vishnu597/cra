@@ -11,6 +11,9 @@
 # CRA_APP (default build/Cra.app) picks the build; CRA_FLAGS (FeatureFlags) is passed on, so
 # CRA_FLAGS=backdrop=material runs the NSVisualEffectView path. Scenarios marked
 # "requires screen" (they take over a Space) run only with CRA_SCENARIO_SCREEN=1, as in CI.
+# CRA_BUDGETS=report (the nightly on GitHub's runners) prints budgets and snapshot differences
+# without failing on them: they were set on a Mac, and a runner VM's numbers differ. What the app
+# does (expect-log, faults, crashes, helpers, quitting) fails everywhere.
 # Logs land in build/scenarios/<name>/.
 #
 # Scenario lines: a cra:// command (sent through CRA_COMMAND_FILE, then `pace` seconds),
@@ -36,7 +39,8 @@
 # ${FIXTURES}, ${PAGE} (Tests/Fixtures/Pages/page.html from a local server, so it has a host
 # for developer mode and tab sleep), ${WEBKIT} (that server as http://localhost:<port>, a host the
 # run treats as a DRM service, so its pages open in WebKit), ${EXTENSION_ID} (Tests/Fixtures/Extension) and
-# ${SIDE_PANEL_EXTENSION_ID} (Tests/Fixtures/SidePanelExtension) expand.
+# ${SIDE_PANEL_EXTENSION_ID} (Tests/Fixtures/SidePanelExtension) and ${DOWNLOAD_EXTENSION_ID}
+# (Tests/Fixtures/DownloadExtension) expand.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -44,6 +48,7 @@ APP="${CRA_APP:-$ROOT/build/Cra.app}"
 FIXTURES="$ROOT/Tests/Fixtures"
 EXTENSION_ID="$(cat "$FIXTURES/Extension/ID")"
 SIDE_PANEL_EXTENSION_ID="$(cat "$FIXTURES/SidePanelExtension/ID")"
+DOWNLOAD_EXTENSION_ID="$(cat "$FIXTURES/DownloadExtension/ID")"
 
 if [ "${1:-}" = "all" ]; then
   failed=()
@@ -93,6 +98,11 @@ FAULTS=0
 LOG_OFFSET=0
 PROBLEMS=()
 problem() { PROBLEMS+=("$1"); echo "  ✗ $1"; }
+NOTES=()
+# A budget or a snapshot: a failure, or only a note under CRA_BUDGETS=report.
+budget_problem() {
+  if [ "${CRA_BUDGETS:-}" = "report" ]; then NOTES+=("$1"); echo "  ⚠ $1"; else problem "$1"; fi
+}
 
 # The fixture pages over http on a free port: a real host, no network.
 FIXED_PORT=$(sed -n 's/^port \([0-9]*\).*/\1/p' "$FILE" | head -1)
@@ -152,7 +162,7 @@ sleep 2
 PACE=0.2
 RSS_BUDGET=1500 MAXSTALL=1500 STALLS50=10 LAUNCHSTALL=1000 PERFCPU=0.1
 BASELINE=""
-expand() { local s="$1"; s="${s//\$\{FIXTURES\}/$FIXTURES}"; s="${s//\$\{PAGE\}/$PAGE}"; s="${s//\$\{WEBKIT\}/$WEBKIT}"; s="${s//\$\{EXTENSION_ID\}/$EXTENSION_ID}"; s="${s//\$\{SIDE_PANEL_EXTENSION_ID\}/$SIDE_PANEL_EXTENSION_ID}"; printf '%s' "$s"; }
+expand() { local s="$1"; s="${s//\$\{FIXTURES\}/$FIXTURES}"; s="${s//\$\{PAGE\}/$PAGE}"; s="${s//\$\{WEBKIT\}/$WEBKIT}"; s="${s//\$\{EXTENSION_ID\}/$EXTENSION_ID}"; s="${s//\$\{SIDE_PANEL_EXTENSION_ID\}/$SIDE_PANEL_EXTENSION_ID}"; s="${s//\$\{DOWNLOAD_EXTENSION_ID\}/$DOWNLOAD_EXTENSION_ID}"; printf '%s' "$s"; }
 
 echo "$NAME (pid $PID, logs in ${OUT#$ROOT/})"
 while IFS= read -r raw || [ -n "$raw" ]; do
@@ -211,7 +221,7 @@ while IFS= read -r raw || [ -n "$raw" ]; do
       elif [ ! -f "$ref" ]; then problem "no reference Tests/Snapshots/$3.png (CRA_SNAPSHOT_RECORD=1 records one)"
       else
         [ -x "$OUT/compare-png" ] || xcrun swiftc -O "$ROOT/scripts/compare-png.swift" -o "$OUT/compare-png" 2>"$OUT/compare-png.log"
-        verdict=$("$OUT/compare-png" "$ref" "$shot" "$OUT/snapshots/$3.diff.png" 2>&1) || problem "snapshot $3: $verdict"
+        verdict=$("$OUT/compare-png" "$ref" "$shot" "$OUT/snapshots/$3.diff.png" 2>&1) || budget_problem "snapshot $3: $verdict"
       fi ;;
     fresh|requires|port|seed|env|home) ;;
     *) problem "unknown scenario line: $line" ;;
@@ -224,7 +234,7 @@ if alive; then
   rss=$(ps -o rss= -p "$PID" | tr -d ' ')
   total=$(( rss + $(ps -o rss= -p "$(pgrep -P "$PID" | paste -sd, -)" 2>/dev/null | awk '{s+=$1} END {print s+0}') ))
   echo "  memory: Cra $((rss / 1024)) MB, with helpers $((total / 1024)) MB (budget $RSS_BUDGET MB for Cra)"
-  [ $((rss / 1024)) -le "$RSS_BUDGET" ] || problem "Cra uses $((rss / 1024)) MB, budget $RSS_BUDGET MB"
+  [ $((rss / 1024)) -le "$RSS_BUDGET" ] || budget_problem "Cra uses $((rss / 1024)) MB, budget $RSS_BUDGET MB"
 else
   problem "Cra is not running at the end"
 fi
@@ -236,9 +246,9 @@ read -r launch maxstall over50 < <(cat "$OUT/hitch.earlier" "$HITCH" 2>/dev/null
   $2 == "stall" && started { if ($3 > m) m = $3; if ($3 > 50) n++ }
   END { printf "%d %d %d\n", l, m, n }' || echo "0 0 0")
 echo "  stalls: start-up ${launch} ms (budget ${LAUNCHSTALL}); then longest ${maxstall} ms, ${over50} over 50 ms (budget ${MAXSTALL} ms, ${STALLS50})"
-[ "${launch:-0}" -le "$LAUNCHSTALL" ] || problem "a ${launch} ms main-thread stall at start-up, budget ${LAUNCHSTALL} ms"
-[ "${maxstall:-0}" -le "$MAXSTALL" ] || problem "a ${maxstall} ms main-thread stall, budget ${MAXSTALL} ms"
-[ "${over50:-0}" -le "$STALLS50" ] || problem "${over50} stalls over 50 ms, budget ${STALLS50}"
+[ "${launch:-0}" -le "$LAUNCHSTALL" ] || budget_problem "a ${launch} ms main-thread stall at start-up, budget ${LAUNCHSTALL} ms"
+[ "${maxstall:-0}" -le "$MAXSTALL" ] || budget_problem "a ${maxstall} ms main-thread stall, budget ${MAXSTALL} ms"
+[ "${over50:-0}" -le "$STALLS50" ] || budget_problem "${over50} stalls over 50 ms, budget ${STALLS50}"
 
 # The performance recorder (#91): what it costs, and whether it saw the stalls HitchMonitor saw.
 if alive; then
@@ -260,7 +270,7 @@ if abs(seen - hitch) > max(2, hitch // 5): print(f"PROBLEM the recorder counted 
 PY
 )
     echo "  $(head -1 <<< "$verdict")"
-    while IFS= read -r l; do [[ "$l" == PROBLEM* ]] && problem "${l#PROBLEM }"; done <<< "$verdict"
+    while IFS= read -r l; do [[ "$l" == PROBLEM* ]] && budget_problem "${l#PROBLEM }"; done <<< "$verdict"
   fi
 fi
 
@@ -286,6 +296,6 @@ done
 result="passed"; [ ${#PROBLEMS[@]} -eq 0 ] || result="FAILED"
 echo "$NAME: $result"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  echo "| $NAME${CRA_FLAGS:+ ($CRA_FLAGS)} | $result | ${maxstall:-?} ms / ${over50:-?} | ${rss:+$((rss / 1024)) MB} | ${PROBLEMS[*]:-} |" >> "$GITHUB_STEP_SUMMARY"
+  echo "| $NAME${CRA_FLAGS:+ ($CRA_FLAGS)} | $result | ${maxstall:-?} ms / ${over50:-?} | ${rss:+$((rss / 1024)) MB} | ${PROBLEMS[*]:-} ${NOTES[*]:+(over budget: ${NOTES[*]})} |" >> "$GITHUB_STEP_SUMMARY"
 fi
 [ ${#PROBLEMS[@]} -eq 0 ]

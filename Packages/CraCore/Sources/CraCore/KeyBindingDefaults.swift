@@ -14,6 +14,9 @@ public enum KeyBindingDefaults {
             // File
             KeyAction(id: "newTab", name: "New Tab…", section: .file, shortcuts: [KeyChord("t", cmd)], triggers: ["new tab"]),
             KeyAction(id: "newWindow", name: "New Window", section: .file, shortcuts: [KeyChord("n", cmd)], inCommandBar: false),
+            // Arc: File ▸ Blank Window ⌃⌘N, a window with a sidebar of its own (#220).
+            KeyAction(id: "newBlankWindow", name: "Blank Window", section: .file, shortcuts: [KeyChord("n", [.command, .control])],
+                      triggers: ["blank window", "this window"]),
             KeyAction(id: "newIncognitoWindow", name: "New Incognito Window", section: .file, shortcuts: [KeyChord("n", cmdShift)],
                       triggers: ["incognito", "private"]),
             // Arc: File ▸ New Little Arc Window ⌥⌘N.
@@ -210,6 +213,7 @@ public enum ShortcutDescriptions {
     private static let table: [String: String] = [
         "newTab": "Create a new tab.",
         "newWindow": "Open a new window.",
+        "newBlankWindow": "Open a window with a sidebar of its own, apart from your spaces.",
         "newIncognitoWindow": "Open a window that keeps no history, cookies or tabs once closed.",
         "newLittleWindow": "Open a small, disposable window for a quick look.",
         "reopenClosedTab": "Bring back the tab you closed last.",

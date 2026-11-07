@@ -124,6 +124,8 @@ struct SidebarStoreTreeTests {
         #expect(!f.store.isPinnedCollapsed(f.space.id))
     }
 
+    /// Upstream 154d357 (PinnedPeek): the open tab's row stays in sight after a Today tab is
+    /// picked, as in Arc; it used to vanish.
     @Test func aCollapsedPinnedListShowsOnlyTheOpenTab() {
         let f = StoreFixture()
         let a = f.store.createTab(url: "https://a.test/", pinned: true)
@@ -132,7 +134,7 @@ struct SidebarStoreTreeTests {
         f.store.togglePinnedCollapsed(f.space.id)
         #expect(f.store.listedPinnedItems(in: f.space).map(\.id) == [b.id])
         f.store.createTab(url: "https://today.test/")
-        #expect(f.store.listedPinnedItems(in: f.space).isEmpty)
+        #expect(f.store.listedPinnedItems(in: f.space).map(\.id) == [b.id])
     }
 
     @Test func droppingATabOnAnotherMakesAFolder() {

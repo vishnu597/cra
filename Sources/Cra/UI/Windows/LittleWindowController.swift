@@ -134,6 +134,8 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
     /// covers; a click on it, Escape or the close button ends the Peek.
     let isPeek: Bool
     private(set) weak var peekParent: MainWindowController?
+    /// This Peek to its window's veil (MainWindowController.showPeekVeil).
+    private let peekID = UUID()
     /// The tab the Peek came from: links that leave the Peek open as tabs placed from it.
     private let peekSourceTab: UUID?
     private var dim: PeekDimPanel?
@@ -313,6 +315,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         // flashed as a black block in the corner.
         if openingPeek { w.contentView?.isHidden = true }
         window.addChildWindow(w, ordered: .above)
+        ChromiumChildFocus.attach(w)
         positionHostWindow(shell.convert(shell.page.frame, to: nil))
         w.orderFront(nil)
         rejoinPage()
@@ -437,6 +440,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
         shell.layoutSubtreeIfNeeded()
         pw.addChildWindow(window, ordered: .above)
         pw.addChildWindow(controls, ordered: .above)
+        pw.makeMain()
         controls.orderFront(nil)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -456,8 +460,10 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             // Next turn, with the panel on its way to the screen.
             DispatchQueue.main.async { [weak self, weak t] in
                 guard let self, let t, self.transition === t, !self.closingPeek else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + PeekTransition.lead) {
-                    parent.setPeekVeil(true, duration: PeekLayout.openVeilDuration, timing: PeekTransition.easeOutCubic)
+                // A Peek gone by then (Expand, Add To Split, a close) never veils the page.
+                let peek = self.peekID
+                DispatchQueue.main.asyncAfter(deadline: .now() + PeekTransition.lead) { [weak parent] in
+                    parent?.showPeekVeil(for: peek)
                 }
                 self.landPeek(t)
             }
@@ -481,7 +487,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
 
     func repositionPeek() {
         guard let window, let parent = peekParent, let pw = parent.window, !closingPeek else { return }
-        dim?.setFrame(pw.frame, display: true)
+        dim?.reposition(covering: pw)
         window.setFrame(parent.peekFrame(), display: true)
         controls?.place(parent.peekButtonFrames(), theme: parent.focusedSpace.theme)
     }
@@ -530,7 +536,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
                 window.alphaValue = 0
                 if let host = self.browser?.hostWindow { host.alphaValue = 0 }
                 self.controls?.alphaValue = 0
-                parent.setPeekVeil(false, duration: PeekLayout.closeVeilDuration, timing: PeekTransition.easeOutCubic)
+                parent.hidePeekVeil(for: self.peekID)
             }
         }
         let ready: (Bool) -> Void = { timedOut in
@@ -567,7 +573,7 @@ final class LittleWindowController: NSWindowController, NSWindowDelegate, @preco
             self.controls = nil
         }
         if let window, let p = window.parent { p.removeChildWindow(window) }
-        peekParent?.setPeekVeil(false, duration: 0)
+        peekParent?.endPeekVeil(for: peekID)
         if !promoted, let pw = peekParent?.window, NSApp.isActive { pw.makeKeyAndOrderFront(nil) }
     }
 
@@ -1377,40 +1383,6 @@ final class LittleWindow: NSPanel {
             if abs(b.frame.origin.x - target.x) > 0.5 || abs(b.frame.origin.y - target.y) > 0.5 { b.setFrameOrigin(target) }
         }
     }
-}
-
-/// Covers a browser window while a Peek shows on it; a click on it ends the Peek.
-final class PeekDimPanel: NSPanel {
-    private final class Shade: NSView {
-        var onClick: () -> Void = {}
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { onClick() }
-        override func rightMouseDown(with event: NSEvent) { onClick() }
-    }
-
-    init(covering parent: NSWindow, onClick: @escaping () -> Void) {
-        super.init(contentRect: parent.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isMovable = false
-        hidesOnDeactivate = false
-        isReleasedWhenClosed = false
-        let shade = Shade(frame: NSRect(origin: .zero, size: parent.frame.size))
-        shade.onClick = onClick
-        shade.wantsLayer = true
-        // The page fades instead (MainWindowController.setPeekVeil); this only catches the click,
-        // and a window passes clicks through where it is fully clear.
-        shade.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
-        shade.layer?.cornerRadius = LittleWindow.cornerRadius(of: parent)
-        shade.layer?.cornerCurve = .continuous
-        shade.autoresizingMask = [.width, .height]
-        contentView = shade
-    }
-
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-
 }
 
 /// Borderless, non-activating tooltip panel (never takes key status).
